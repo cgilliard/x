@@ -66,11 +66,8 @@ pack() {
 compile bin/fam0 fam0.seed src/fam0.fam0
 cmp ./bin/fam0 ./fam0.seed
 compile bin/fam.uncompressed bin/fam0 src/fam.fam0
-compile bin/fampack \
-	bin/fam.uncompressed \
-	lib/stdlib.fam \
-	lib/mach.fam \
-	lib/asm.fam \
-	src/fampack.fam
-pack bin/fam.uncompressed bin/fam
+# bin/fampack and the packed bin/fam are not built for now: src/fampack.fam
+# needs the Forth libraries, which are gone; it is to be rewritten.
+#compile bin/fampack bin/fam.uncompressed src/fampack.fam
+#pack bin/fam.uncompressed bin/fam
 
