@@ -1,9 +1,9 @@
 #!/bin/sh
 
-CPU="rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
+: "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
 zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
-zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false"
-MEM="128M"
+zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
+: "${MEM:=128M}"
 
 
 serial_qemu() {  # serial_qemu INFILE OUTFILE [extra qemu args...]
