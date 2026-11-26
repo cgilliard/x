@@ -16,8 +16,6 @@ serial_qemu() {  # serial_qemu INFILE OUTFILE [extra qemu args...]
                 "$@"
 }
 
-fsize() { wc -c < "$1" | tr -d ' \t'; }
-
 fresh() {
         [ -z "$BUILD_ALL" ] && [ -e "$1" ] || return 1
         f_out=$1; shift
@@ -51,23 +49,6 @@ compile() {
         fi
 }
 
-pack() {
-        in=$1; out=$2
-        echo "Packing $in → $out" >&2
-        N=$(fsize "$in")
-        stream="$out.in.$$"
-        { printf "$(printf '\\%03o' $((N&255)) $(((N>>8)&255)) $(((N>>16)&255)) $(((N>>24)&255)))"
-          cat "$in"
-        } > "$stream"
-        serial_qemu "$stream" "$out" -device loader,file=bin/fampack,addr=0x80000000
-        rm -f "$stream"
-}
-
 compile bin/fam0 fam0.seed src/fam0.fam0
 cmp ./bin/fam0 ./fam0.seed
 compile bin/fam.uncompressed bin/fam0 src/fam.fam0
-# bin/fampack and the packed bin/fam are not built for now: src/fampack.fam
-# needs the Forth libraries, which are gone; it is to be rewritten.
-#compile bin/fampack bin/fam.uncompressed src/fampack.fam
-#pack bin/fam.uncompressed bin/fam
-
