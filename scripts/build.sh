@@ -1,5 +1,21 @@
 #!/bin/sh
 
+CPU="rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
+zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
+zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false"
+MEM="128M"
+
+
+serial_qemu() {  # serial_qemu INFILE OUTFILE [extra qemu args...]
+        sin=$1; sout=$2; shift 2
+        qemu-system-riscv32 \
+                -machine virt -m "$MEM" -cpu "$CPU" \
+                -display none -bios none \
+                -chardev file,id=ser0,path="$sout",input-path="$sin" \
+                -serial chardev:ser0 \
+                "$@"
+}
+
 fresh() {
         [ -z "$BUILD_ALL" ] && [ -e "$1" ] || return 1
         f_out=$1; shift
