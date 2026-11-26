@@ -1,0 +1,37 @@
+#!/bin/sh
+
+fresh() {
+        [ -z "$BUILD_ALL" ] && [ -e "$1" ] || return 1
+        f_out=$1; shift
+        for f_in; do [ "$f_in" -nt "$f_out" ] && return 1; done
+        return 0
+}
+
+compile() {
+        out=$1; asm=$2; shift 2
+        disk_args=""; disk=""
+        if [ "$1" = "--disk" ]; then
+                disk=$2
+                disk_args="-drive file=$disk,format=raw,if=none,id=hd0 \
+-device virtio-blk-device,drive=hd0"
+                shift 2
+        fi
+        if [ $# -gt 0 ] && fresh "$out" "$asm" "$@"; then return 0; fi
+        [ $# -gt 0 ] && echo "Building $* → $out" >&2
+        stream="$out.in.$$"
+        ([ $# -gt 0 ] && cat "$@"; printf '\004') > "$stream"
+        serial_qemu "$stream" "$out" \
+                -device loader,file="$asm",addr=0x80000000 \
+                $disk_args
+        rm -f "$stream"
+
+        if [ $# -gt 0 ] && [ "$out" != bin/fam0 ] && [ "$(head -c 4 "$out" | od -An -tx1 | tr -d ' \n')" != "13000000" ]; then
+                echo "build.sh: $out: compile error: $(head -c 80 "$out" | tr -d '\0')" >&2
+                rm -f "$out"   # (not taken for a fresh build next time)
+                exit 1
+        fi
+}
+
+compile bin/fam0 fam0.seed src/fam0.fam0
+cmp ./bin/fam0 ./fam0.seed
+
