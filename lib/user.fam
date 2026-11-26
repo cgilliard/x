@@ -1,0 +1,421 @@
+\ ============================================================
+\ lib/user.fam — the stdlib's part for a program the OS runs (docs/OS.md),
+\ in place of lib/mach.fam (`tools/fam --user`): the program runs in user
+\ mode, where the devices and the machine's registers are out of reach, so
+\ its I/O and its exit are system calls, and its stacks are in the memory
+\ the kernel gives it.
+\
+\ System calls: the number in a7, the arguments in a0-a2, `ecall`, the
+\ result in a0 (negative: an error).  1 exit(code), 2 spawn, 3 wait,
+\ 4 thread, 5 thread_exit, 6 join, 7 yield, 8 sleep, 9 lock, 10 unlock,
+\ 11 await, 12 wake, 13 map, 14 unmap, 15 open, 16 read, 17 write, 19
+\ close, 18 seek, 20 pipe, 21 pty, 22 poll, 23-29 the store's, 30 socket, 31 net,
+\ 32 accept, 33 sendto, 34 recvfrom, 35 remove, 36 mkdir, 37 chmod, 38 chown, 39 tty (below).
+\
+\ At the start the kernel gives the program, in a0 and a1, the first byte of
+\ its memory and the byte past it (page-aligned).  The layout there, as
+\ lib/mach.fam's over RAM: return ids (4 KiB), variables (16 KiB), the
+\ program's arguments (their length in bytes, then the strings, each
+\ NUL-ended, an empty one last: see arg), the heap upward from there, the
+\ data stack down from 4 KiB below the end, the loop frames' stack in that
+\ last 4 KiB.
+\ ============================================================
+
+\ sys ( a0 a1 a2 number -- result )  any system call of up to three
+\ arguments.
+: sys
+83280100 ,   \ lw a7,0(sp)
+03264100 ,   \ lw a2,4(sp)
+83258100 ,   \ lw a1,8(sp)
+0325C100 ,   \ lw a0,12(sp)
+1301C100 ,   \ addi sp,sp,12
+73000000 ,   \ ecall
+2320A100 ,   \ sw a0,0(sp)
+;
+
+\ bye ( -- )  the program ends: exit(0).
+: bye
+13050000 ,   \ addi a0,zero,0
+93081000 ,   \ addi a7,zero,1
+73000000 ,   \ ecall
+6F000000 ,   \ jal zero,.
+;
+
+\ putc ( c -- )  write(1, the byte, 1); the byte is the stack's top word's
+\ first (little-endian).
+: putc
+93050100 ,   \ addi a1,sp,0
+13051000 ,   \ addi a0,zero,1
+13061000 ,   \ addi a2,zero,1
+93081001 ,   \ addi a7,zero,17
+73000000 ,   \ ecall
+13014100 ,   \ addi sp,sp,4
+;
+
+\ puts ( addr -- )  a NUL-terminated string, in one write.
+: puts
+83250100 ,   \ lw a1,0(sp)
+13014100 ,   \ addi sp,sp,4
+93820500 ,   \ addi t0,a1,0
+03C30200 ,   \ lbu t1,0(t0)               length:
+63060300 ,   \ beq t1,zero,done
+93821200 ,   \ addi t0,t0,1
+6FF05FFF ,   \ jal zero,length
+3386B240 ,   \ sub a2,t0,a1               done:
+13051000 ,   \ addi a0,zero,1
+93081001 ,   \ addi a7,zero,17
+73000000 ,   \ ecall
+;
+
+\ u. ( u -- )  an unsigned decimal.
+: u.  dup A lit u< if 30 lit + putc else dup A lit / u. A lit % 30 lit + putc then ;
+
+\ . ( n -- )  a signed decimal.
+: .  dup 0< if 2D lit putc 0 lit swap - then u. ;
+
+\ u.x ( u -- )  8 hex digits.
+: u.x  8 lit 0 lit do dup 1C lit rshift dup A lit u< if 30 lit + else 37 lit + then putc 4 lit lshift loop drop ;
+
+\ getc ( -- ch )  read(0, a byte, 1): the byte, or -1 if none came.
+:M getc
+1301C1FF ,   \ addi sp,sp,-4
+23200100 ,   \ sw zero,0(sp)
+93050100 ,   \ addi a1,sp,0
+13050000 ,   \ addi a0,zero,0
+13061000 ,   \ addi a2,zero,1
+93080001 ,   \ addi a7,zero,16
+73000000 ,   \ ecall
+93021000 ,   \ addi t0,zero,1
+63065500 ,   \ beq a0,t0,got
+9302F0FF ,   \ addi t0,zero,-1
+23205100 ,   \ sw t0,0(sp)
+;                            \ got:
+
+\ ── Processes and threads (docs/OS.md, section 5) ──
+
+: exit    0 lit 0 lit 1 lit sys drop ;       \ ( code -- )  this process ends
+: spawn   0 lit 0 lit 2 lit sys ;            \ ( name -- pid )  a child running that program
+: spawnv  2 lit sys ;                        \ ( name args fds -- pid )  its arguments, its descriptors
+: wait    0 lit 3 lit sys ;                  \ ( pid status-addr -- pid )  a child's end (pid -1: any)
+: thread  4 lit sys ;                        \ ( entry stack-top arg -- tid )  16 KiB below stack-top its own
+: texit   0 lit 0 lit 5 lit sys drop ;       \ ( value -- )  this thread ends
+: join    0 lit 0 lit 6 lit sys ;            \ ( tid -- value )
+: yield   0 lit 0 lit 0 lit 7 lit sys drop ;
+: sleep   0 lit 0 lit 8 lit sys drop ;       \ ( ns -- )
+: lock    0 lit 0 lit 9 lit sys drop ;       \ ( addr -- )  a mutex: the word at addr, 0 free
+: unlock  0 lit 0 lit A lit sys drop ;       \ ( addr -- )
+: await   B lit sys ;                        \ ( addr expected ns -- r )  0; -11 not expected; -110 time ran out
+: wake    0 lit C lit sys ;                  \ ( addr n -- woken )
+
+\ map ( bytes -- addr | 0 )  a new block of pages (docs/OS.md, section 10);
+\ 0 if no slot is free (4 a process) or memory ran out.
+: map   0 lit 0 lit D lit sys ;
+\ unmap ( addr -- )  a block from map given back.
+: unmap  0 lit 0 lit E lit sys drop ;
+
+\ ── Descriptors (docs/OS.md, section 5) ──
+\
+\ 0, 1 and 2 are a program's input, output and errors; spawnv gives a
+\ child others: fds is a count n, then n of the caller's descriptors (or
+\ -1) to be the child's 0 to n-1.  args are the child's arguments, packed
+\ (each NUL-ended, an empty one last, the first the program's name).
+
+: open    0 lit F lit sys ;                  \ ( path flags -- fd )  flags 0 read, 1 write, 2 both
+: read    10 lit sys ;                       \ ( fd buf n -- n' )  0 at the end
+: write   11 lit sys ;                       \ ( fd buf n -- n' )  all of it
+: close   0 lit 0 lit 13 lit sys ;           \ ( fd -- r )
+: pipe    0 lit 0 lit 14 lit sys ;           \ ( fds -- r )  fds[0] read, fds[1] write
+: pty     0 lit 0 lit 15 lit sys ;           \ ( fds -- n )  a terminal: fds[0] master, fds[1] slave (/dev/tty/n)
+: poll    16 lit sys ;                       \ ( fds n ns -- r )  8-byte entries: fd, events, revents
+
+\ The store (docs/OS.md, section 6): open(path, TREE [| CREATE]) a tree,
+\ then transactions on it.  txbegin's flags: 0 a reader, 1 the writer.
+:M TREE   100 lit ;
+:M CREATE 200 lit ;                          \ open's flags: (a file) made if not there,
+:M TRUNC  400 lit ;                          \ emptied,
+:M APPEND 800 lit ;                          \ written at its end
+: seek    12 lit sys ;                       \ ( fd offset whence -- place )  0 start, 1 here, 2 end
+: remove  0 lit 0 lit 23 lit sys ;           \ ( path -- r )  a file, a tree, an empty directory
+: mkdir   0 lit 0 lit 24 lit sys ;           \ ( path -- r )
+: chmod   0 lit 25 lit sys ;                 \ ( path mode -- r )  its owner, or root
+: chown   26 lit sys ;                       \ ( path user group -- r )  root
+: tty     27 lit sys ;                       \ ( fd op arg -- r )  0 mode, 1 set it (1 raw), 2 size (rows * 65536 + columns), 3 set it
+\ sys5 ( a0 a1 a2 a3 a4 number -- result )  a call of five arguments.
+: sys5
+83280100 ,   \ lw a7,0(sp)
+03274100 ,   \ lw a4,4(sp)
+83268100 ,   \ lw a3,8(sp)
+0326C100 ,   \ lw a2,12(sp)
+83250101 ,   \ lw a1,16(sp)
+03254101 ,   \ lw a0,20(sp)
+13014101 ,   \ addi sp,sp,20
+73000000 ,   \ ecall
+2320A100 ,   \ sw a0,0(sp)
+;
+: txbegin   0 lit 17 lit sys ;                \ ( fd flags -- txn )
+: txcommit  0 lit 0 lit 18 lit sys ;          \ ( txn -- r )  0, or -28 (undone)
+: txabort   0 lit 0 lit 19 lit sys ;          \ ( txn -- r )
+: txget     1A lit sys5 ;                     \ ( txn key klen buf n -- vlen )  -2 not there
+: txput     1B lit sys5 ;                     \ ( txn key klen value vlen -- r )
+: txdel     1C lit sys ;                      \ ( txn key klen -- r )  -2 not there
+: txnext    0 lit 1D lit sys5 ;               \ ( txn key klen buf -- klen' )  -2 none after
+
+\ Sockets (UDP, TCP: read and write).  An address is a number: 10.0.2.2 is A000202.
+: socket    0 lit 0 lit 1E lit sys ;          \ ( kind -- fd )  1 UDP, 2 TCP
+: net       0 lit 1F lit sys5 ;               \ ( fd op ip port -- r )  op 1 bind, 2 connect, 3 listen
+: accept    0 lit 0 lit 20 lit sys ;          \ ( fd -- fd' )  a connection to a listening socket
+: sendto    21 lit sys5 ;                     \ ( fd buf n ip port -- n )
+: recvfrom  0 lit 22 lit sys5 ;               \ ( fd buf n from -- n )  from: address, port (or 0)
+
+\ strlen ( s -- n ), streq ( a b -- ok ), scpy ( dst src -- dst' ) (no NUL
+\ written), atoi ( s -- n ) the decimal at s, snum ( dst u -- dst' ) its
+\ decimal digits.
+: strlen  dup begin dup c@ while 1 lit + repeat swap - ;
+: streq
+begin
+	over c@ over c@ over <>
+	if 2drop drop 0 lit 1 lit else
+	0= if 2drop 1 lit 1 lit else
+	1 lit + swap 1 lit + swap 0 lit then then
+until ;
+: scpy  begin dup c@ ?dup while 2 lit pick c! swap 1 lit + swap 1 lit + repeat drop ;
+: atoi  0 lit swap begin dup c@ 30 lit - A lit u< while dup c@ 30 lit - rot dup 3 lit lshift swap 1 lit lshift + + swap 1 lit + repeat drop ;   \ ( s -- n )
+: snum  dup A lit u< if 30 lit + over c! 1 lit + else tuck A lit / snum swap A lit % 30 lit + over c! 1 lit + then ;
+
+\ fputs ( s fd -- ), eputs ( s -- ) to errors, eputc ( c -- ).
+: fputs  swap dup strlen write drop ;
+: eputs  2 lit fputs ;
+: eputc
+93050100 ,   \ addi a1,sp,0
+13052000 ,   \ addi a0,zero,2
+13061000 ,   \ addi a2,zero,1
+93081001 ,   \ addi a7,zero,17
+73000000 ,   \ ecall
+13014100 ,   \ addi sp,sp,4
+;
+
+\ args ( -- addr )  the arguments; arg ( i -- s | 0 ) the ith (0: the
+\ program's name); argn ( -- n ) how many.
+:M s10@
+1301C1FF ,   \ addi sp,sp,-4
+2320A101 ,   \ sw s10,0(sp)
+;
+: args  s10@ 5004 lit + ;
+: snext  begin dup c@ while 1 lit + repeat 1 lit + ;
+: arg  args swap ?dup if 0 lit do dup c@ if snext then loop then dup c@ 0= if drop 0 lit then ;
+: argn  0 lit args begin dup c@ while snext swap 1 lit + swap repeat drop ;
+
+\ ── malloc and free (docs/OS.md, section 10) ──
+\
+\ A free list sorted by address, so neighbours merge.  A block: its size
+\ (bytes, header included) at 0, the next free block at 4 (0 at the end);
+\ malloc returns the 8 bytes past the header.  First fit, split when the
+\ remainder holds a header; when none fits, a fresh arena is mapped (the
+\ request rounded up to pages, at least 64 KiB and at least what is mapped
+\ already, so the 4 map slots go a long way) and added.  Blocks never merge
+\ across an arena's start, so an arena wholly free is one block, and free
+\ unmaps it unless it is the last.  Threads share the heap, so a lock (mlk,
+\ the kernel's mutex) guards it all.
+
+: max  2dup u< if swap then drop ;
+
+: fb variable ;  : fp variable ;  : mcur variable ;  : mneed variable ;
+\ The heap's own state is in 11 cells at mst (made at the start, below),
+\ not in variables: a thread with variables of its own (pthread) shares
+\ the heap, so it must share these too (its copy of mst points at the
+\ same cells; fb, fp, mcur and mneed are used under the lock only, so
+\ each thread's own copies serve).
+: mst variable ;
+: freelist  mst @ ;          \ the first free block (0: empty)
+: mlk  mst @ 4 lit + ;       \ its lock: threads share the heap
+: mbytes  mst @ 8 lit + ;    \ the bytes mapped in arenas
+\ The arenas, (first byte, byte past) in 4 pairs, one table.  0: an empty
+\ pair.
+: arena  3 lit lshift mst @ C lit + + ;      \ ( i -- pair )
+
+\ astart? ( a -- flag )  a is an arena's first byte.
+: astart?  0 lit swap 4 lit 0 lit do dup i arena @ = rot or swap loop drop ;
+\ marenas ( -- n )  the arenas mapped.
+: marenas  0 lit 4 lit 0 lit do i arena @ if 1 lit + then loop ;
+\ marec ( bytes first -- )  a new arena noted, in an empty pair.
+: marec
+over mbytes @ + mbytes !
+1 lit 4 lit 0 lit do
+	dup if i arena @ 0= if drop dup i arena ! 2dup + i arena 4 lit + ! 0 lit then then
+loop
+drop 2drop ;
+
+\ fwalk  fp := the block before the first free block of mneed bytes or more,
+\ mcur := that block (0: none); the free list is sorted by address.
+: fwalk
+0 lit fp !  freelist @ mcur !
+begin mcur @ if mcur @ @ mneed @ u< else 0 lit then while
+	mcur @ fp !  mcur @ 4 lit + @ mcur !
+repeat ;
+
+\ mtake ( -- ptr )  mcur taken (it fits): split off the remainder if it
+\ would hold a header, else unlink the whole block.
+: mtake
+mcur @ @ mneed @ - 10 lit u< if
+	fp @ 0= if mcur @ 4 lit + @ freelist ! else mcur @ 4 lit + @ fp @ 4 lit + ! then
+else
+	mcur @ mneed @ +                   \ ( new )
+	mcur @ @ mneed @ - over !          \ [new] = remainder
+	mcur @ 4 lit + @ over 4 lit + !    \ [new+4] = old next
+	fp @ 0= if dup freelist ! else dup fp @ 4 lit + ! then
+	drop
+	mneed @ mcur @ !
+then
+mcur @ 8 lit + ;
+
+\ finsert ( block -- )  into the list in address order, merged with the
+\ block before it and the one after when they touch (and are one arena's).
+: finsert
+fb !
+0 lit fp !  freelist @ mcur !
+begin mcur @ if mcur @ fb @ u< else 0 lit then while
+	mcur @ fp !  mcur @ 4 lit + @ mcur !
+repeat
+mcur @ fb @ 4 lit + !
+fp @ 0= if fb @ freelist ! else fb @ fp @ 4 lit + ! then
+mcur @ ?dup if
+	fb @ fb @ @ + over = over astart? 0= and if
+		dup @ fb @ @ + fb @ !
+		4 lit + @ fb @ 4 lit + !
+	else drop then
+then
+fp @ ?dup if
+	dup dup @ + fb @ = fb @ astart? 0= and if
+		dup @ fb @ @ + over !
+		fb @ 4 lit + @ over 4 lit + !
+	then
+	drop
+then ;
+
+\ mrel  an arena wholly free (one block, its size the arena's) unlinked and
+\ unmapped, unless it is the last.
+: mrel
+4 lit 0 lit do
+	i arena @ ?dup if
+		0 lit fp !  freelist @ mcur !
+		begin mcur @ if mcur @ over u< else 0 lit then while
+			mcur @ fp !  mcur @ 4 lit + @ mcur !
+		repeat
+		mcur @ = if
+			mcur @ @  i arena 4 lit + @ mcur @ - =  marenas 1 lit u> and if
+				mcur @ 4 lit + @  fp @ ?dup if 4 lit + ! else freelist ! then
+				mbytes @ i arena 4 lit + @ i arena @ - - mbytes !
+				mcur @ unmap  0 lit i arena !  0 lit i arena 4 lit + !
+			then
+		then
+	then
+loop ;
+
+\ malloc ( n -- ptr | 0 )
+: malloc
+mlk lock
+8 lit + 7 lit + FFFFFFF8 lit and 10 lit max mneed !
+fwalk
+mcur @ if mtake else
+	mneed @ 10000 lit max mbytes @ max FFF lit + FFFFF000 lit and
+	dup map
+	\ that much not to be had: only what is needed
+	dup 0= if 2drop  mneed @ 10000 lit max FFF lit + FFFFF000 lit and  dup map then
+	dup 0= if 2drop 0 lit else
+		2dup marec
+		swap over !
+		0 lit over 4 lit + !
+		finsert
+		fwalk
+		mcur @ if mtake else 0 lit then
+	then
+then
+mlk unlock ;
+
+\ free ( ptr -- )
+: free  mlk lock 8 lit - finsert mrel mlk unlock ;
+
+\ tcode[ ... ]tcode ( -- entry )  a thread's code, compiled where it is but
+\ jumped over; its address left for `thread`.  It runs on its own stacks
+\ (the variables and malloc's heap are shared; pthread's, below, has
+\ variables of its own), begins with the thread's
+\ argument on the data stack, and ends with texit(0) if it does not end
+\ itself.  A thread allocates with malloc, never alloc: alloc moves gp, and
+\ each thread's gp is its own copy of its parent's.
+:I [skip  here ,j0 ;
+:I skip]  jpat! ;
+:M tcode[
+97020000 ,   \ auipc t0,0x0
+93824201 ,   \ addi t0,t0,20              ( the entry, past the jump )
+1301C1FF ,   \ addi sp,sp,-4
+23205100 ,   \ sw t0,0(sp)
+[skip
+1301C1FF ,   \ addi sp,sp,-4              ( the body's first act: a0, the )
+2320A100 ,   \ sw a0,0(sp)                ( thread.s argument, onto the data stack )
+;
+:M ]tcode  0 lit texit skip] ;
+
+\ ptcode[ ... ]tcode ( -- entry )  as tcode[, for pthread: a thread with
+\ variables of its own.  Its first act takes, from the block pthread
+\ made (a0), its argument and its heap, and puts its return ids,
+\ variables and data stack there.
+:M ptcode[
+97020000 ,   \ auipc t0,0x0
+93824201 ,   \ addi t0,t0,20              ( the entry, past the jump )
+1301C1FF ,   \ addi sp,sp,-4
+23205100 ,   \ sw t0,0(sp)
+[skip
+83230500 ,   \ lw t2,0(a0)                ( its argument )
+83214500 ,   \ lw gp,4(a0)                ( its heap )
+130D0500 ,   \ addi s10,a0,0              ( its return ids and variables )
+B7120000 ,   \ lui t0,0x1
+B30D5D00 ,   \ add s11,s10,t0
+33015C40 ,   \ sub sp,s8,t0               ( its data stack, below the loop frames )
+1301C1FF ,   \ addi sp,sp,-4
+23207100 ,   \ sw t2,0(sp)                ( the argument, onto it )
+;
+
+\ pthread ( entry arg bytes -- tid )  a thread (entry from ptcode[) with
+\ variables of its own: a copy of the caller's, as they are now, so it
+\ starts with every value the caller has, and what either then sets the
+\ other does not see.  So any fam word may run on it beside the caller,
+\ each with its own buffers, once the thread has made its own of those
+\ it uses (a copied variable that holds a buffer's address still points
+\ at the caller's).  What both are to see goes through memory from
+\ malloc (shared, as the heap is) whose address arg carries.  Its block,
+\ from the caller's alloc: return ids (4 KiB), the variables (16 KiB),
+\ the arguments (args) copied, then bytes for its own alloc and its data
+\ stack, then 4 KiB of loop frames.  The block is not given back when the
+\ thread ends (alloc has no free): for threads that last.  -12 if the
+\ caller's heap has not the room; else thread's result.  The caller is
+\ the program's first thread or one from pthread (not from thread,
+\ whose alloc is not its own).
+: pta variable ;  : ptl variable ;  : ptb variable ;  : ptn variable ;
+\ pcopy ( src dst n -- )  n bytes, a multiple of 4.
+: pcopy  2 lit rshift ?dup if 0 lit do over i 2 lit lshift + @ over i 2 lit lshift + ! loop then 2drop ;
+: pthread
+ptn ! pta !
+s10@ 5000 lit + @ 7 lit + FFFFFFFC lit and ptl !
+6000 lit ptl @ + ptn @ + F lit + FFFFFFF0 lit and  dup alloc  dup ptb !
+if
+	s10@ 1000 lit + ptb @ 1000 lit + 4000 lit pcopy
+	s10@ 5000 lit + ptb @ 5000 lit + ptl @ pcopy
+	pta @ ptb @ !
+	ptb @ 5000 lit + ptl @ + ptb @ 4 lit + !
+	ptb @ +  ptb @ thread
+else 2drop FFFFFFF4 lit then ;
+
+\ The start: the stacks and the heap in the memory given (a0, a1).
+130D0500 ,   \ addi s10,a0,0              ( return ids from the start )
+B7120000 ,   \ lui t0,0x1
+B30D5500 ,   \ add s11,a0,t0              ( growing down from 4 KiB on )
+B7520000 ,   \ lui t0,0x5
+B3025500 ,   \ add t0,a0,t0               ( the arguments, past the variables: )
+03A30200 ,   \ lw t1,0(t0)                ( their length, )
+B3816200 ,   \ add gp,t0,t1               ( and the heap past them )
+93814100 ,   \ addi gp,gp,4
+138C0500 ,   \ addi s8,a1,0               ( loop frames, down from the end )
+B7120000 ,   \ lui t0,0x1
+33815540 ,   \ sub sp,a1,t0               ( the data stack, down from 4 KiB below it )
+\ the heap's state (mst, above), zeroed
+2C lit alloc mst !  B lit 0 lit do 0 lit mst @ i 2 lit lshift + ! loop

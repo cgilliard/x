@@ -16,6 +16,8 @@ serial_qemu() {  # serial_qemu INFILE OUTFILE [extra qemu args...]
                 "$@"
 }
 
+fsize() { wc -c < "$1" | tr -d ' \t'; }
+
 fresh() {
         [ -z "$BUILD_ALL" ] && [ -e "$1" ] || return 1
         f_out=$1; shift
@@ -41,14 +43,34 @@ compile() {
                 $disk_args
         rm -f "$stream"
 
-        if [ $# -gt 0 ] && [ "$out" != bin/fam0 ] && [ "$(head -c 4 "$out" | od -An -tx1 | tr -d ' \n')" != "13000000" ]; then
+        if [ $# -gt 0 ] && [ "$out" != bin/fam0 ] &&
+		[ "$(head -c 4 "$out" | od -An -tx1 | tr -d ' \n')" != "13000000" ]; then
                 echo "build.sh: $out: compile error: $(head -c 80 "$out" | tr -d '\0')" >&2
                 rm -f "$out"   # (not taken for a fresh build next time)
                 exit 1
         fi
 }
 
+pack() {
+        in=$1; out=$2
+        echo "Packing $in → $out" >&2
+        N=$(fsize "$in")
+        stream="$out.in.$$"
+        { printf "$(printf '\\%03o' $((N&255)) $(((N>>8)&255)) $(((N>>16)&255)) $(((N>>24)&255)))"
+          cat "$in"
+        } > "$stream"
+        serial_qemu "$stream" "$out" -device loader,file=bin/fampack,addr=0x80000000
+        rm -f "$stream"
+}
+
 compile bin/fam0 fam0.seed src/fam0.fam0
 cmp ./bin/fam0 ./fam0.seed
 compile bin/fam.uncompressed bin/fam0 src/fam.fam0
+compile bin/fampack \
+	bin/fam.uncompressed \
+	lib/stdlib.fam \
+	lib/mach.fam \
+	lib/asm.fam \
+	src/fampack.fam
+pack bin/fam.uncompressed bin/fam
 
