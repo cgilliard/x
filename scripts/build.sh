@@ -1,8 +1,8 @@
 #!/bin/sh
 # scripts/build.sh -- build everything in bin/ from fam0.seed.
 #
-# It needs qemu-system-riscv32, this shell, cat and cmp.  (printf, which it
-# uses once, is part of the shell: dash, bash and BusyBox all have it.)
+# It needs qemu-system-riscv32, this shell and cat.  (printf, which it uses
+# once, is part of the shell: dash, bash and BusyBox all have it.)
 
 # to the repository's root, from wherever this is run
 case $0 in */*) cd "${0%/*}/.." ;; *) cd .. ;; esac || exit 1
@@ -51,13 +51,11 @@ compile() {
         fi
 }
 
-compile bin/fam0 fam0.seed src/fam0.fam0
-cmp ./bin/fam0 ./fam0.seed # verify they're identical
-
-# the core of fam
-compile bin/fam bin/fam0 src/fam.fam0
-compile bin/famc bin/fam0 src/famc.fam0
-compile bin/famld bin/fam0 src/famld.fam0
+# the core of fam: the back end, the compiler and the linker, each built by
+# the seed from its hex
+compile bin/fam   fam0.seed src/fam.fam0
+compile bin/famc  fam0.seed src/famc.fam0
+compile bin/famld fam0.seed src/famld.fam0
 
 # the runtime, which tools/famc adds to every link: startup and library,
 # and the last step (call main, or report the tests)
@@ -70,3 +68,11 @@ compile bin/rttest.o  bin/famc lib/rttest.fam
 compile bin/fampack.o    bin/famc  src/fampack.fam
 compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
 compile bin/fampack      bin/fam bin/fampack.core
+
+# a check: the seed, given its own source, builds itself.  bin/same, a fam
+# program, compares the two and stops the build if they differ.
+compile bin/fam0      fam0.seed src/fam0.fam0
+compile bin/same.o    bin/famc  src/same.fam
+compile bin/same.core bin/famld bin/rt.o bin/same.o bin/rtmain.o
+compile bin/same      bin/fam   bin/same.core
+compile bin/fam0.same bin/same  bin/fam0 fam0.seed
