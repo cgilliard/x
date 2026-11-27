@@ -37,7 +37,7 @@ only the functions the program uses.
 | `famc a.fam b.fam -o prog` | Compile and link. Without `-o` the binary is `a.out`. |
 | `famc -c a.fam` | Compile only, to `a.o`. |
 | `famc main.fam util.o -o prog` | Sources and objects together. |
-| `famc --test a.fam -o t` | Build the files' tests: see "Tests". |
+| `famc --test a.fam` | Build the files' tests and run them: see "Tests". |
 | `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
 
 Both run QEMU (`qemu-system-riscv32`), and need `scripts/build.sh` to have
@@ -183,11 +183,10 @@ test "add adds" {
 }
 ```
 
-`famc --test` builds the files given with their tests, and running the
-result runs them all:
+`famc --test` builds the files given with their tests and runs them all:
 
 ```
-$ tools/famc --test math.fam -o t && tools/q32 t
+$ tools/famc --test math.fam
 ok    add adds
 FAIL  add handles big numbers (math.fam:14)
 
@@ -200,6 +199,8 @@ FAIL  add handles big numbers (math.fam:14)
 - The exit code is 0 if every test passed, else 1.
 - Tests run in the order they are written, file by file. `main` is not
   called.
+- `famc --test math.fam -o t` keeps the test binary as `t` and does not
+  run it; `tools/q32 t` runs it later.
 - A normal build (without `--test`) skips test blocks.
 - `assert` is only allowed in a test block.
 - A panic or a trap in a test ends the whole run.

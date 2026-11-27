@@ -5,9 +5,11 @@
 #   famc hello.fam -o hello         the same, to `hello`
 #   famc -c hello.fam               compile only: hello.o
 #   famc main.fam util.o -o prog    sources and objects together
-#   famc --test math.fam -o t       build the files' `test` blocks: running
-#                                   t runs them all, in place of main
-# Run the result with tools/q32.
+#   famc --test math.fam            build the files' `test` blocks and run
+#                                   them; exit code 0 if all pass
+#   famc --test math.fam -o t       the same, but keep the binary as `t`
+#                                   and do not run it
+# Run a binary with tools/q32.
 #
 # A file is taken by its ending: .fam is fam source, .o an object
 # (docs/OBJECT.md).  Linking adds the runtime (lib/rt.fam).  An error is
@@ -33,7 +35,8 @@ zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
-        echo "usage: famc [-c] [--test] [-o OUTPUT] FILE...
+        echo "usage: famc [-c] [-o OUTPUT] FILE...
+       famc --test [-c] [-o OUTPUT] FILE...
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
@@ -134,4 +137,16 @@ done
 last=$bin/rtmain.o; [ -z "$testing" ] || last=$bin/rttest.o
 [ -r "$CORE" ] || die "no $CORE: run scripts/build.sh first"
 tool "$bin/famld" "$tmp/core" "$bin/rt.o" $objs "$last" || exit 1
-tool "$CORE" "${out:-a.out}" "$tmp/core" || exit 1
+if [ -z "$testing" ] || [ -n "$out" ]; then
+        tool "$CORE" "${out:-a.out}" "$tmp/core" || exit 1
+        exit 0
+fi
+
+# --test without -o: run the tests now.  The serial port is our standard
+# input and output, as in tools/q32, and the exit code is the tests'.
+tool "$CORE" "$tmp/tests" "$tmp/core" || exit 1
+qemu-system-riscv32 \
+        -machine virt -m "$MEM" -cpu "$CPU" \
+        -display none -bios none \
+        -chardev stdio,id=ser0 -serial chardev:ser0 \
+        -device loader,file="$tmp/tests",addr=0x80000000
