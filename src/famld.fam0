@@ -46,7 +46,7 @@
 # the function, which so returns through it.  It keeps every function that
 # has an id.
 #
-# Built from this file by tools/s2fam0_fam.py into src/famld.fam0, which
+# Built from this file by tools/s2fam0.py into src/famld.fam0, which
 # bin/fam0 turns into bin/famld.
 #
 # Memory, from the page after the code (base):

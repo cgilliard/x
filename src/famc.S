@@ -104,7 +104,7 @@
 #         __test_end()
 # Otherwise test blocks are skipped.
 #
-# Built from this file by tools/s2fam0_fam.py into src/famc.fam0, which
+# Built from this file by tools/s2fam0.py into src/famc.fam0, which
 # bin/fam0 turns into bin/famc.
 #
 # Memory and registers: see O_SETUP below, and after its source:
