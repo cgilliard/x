@@ -21,14 +21,12 @@ fresh() {
         return 0
 }
 
-# compile OUT PROGRAM IN... -- run PROGRAM under QEMU with the INs, one
-# after another, as what it reads from the serial port; what it writes is
-# OUT.  Skipped if OUT is fresh.  bin/build.in is where the input is put
+# run PROGRAM OUT IN... -- run PROGRAM under QEMU with the INs, one after
+# another, as what it reads from the serial port; what it writes is OUT.
+# Its exit status is the program's.  bin/build.in is where the input is put
 # together; it is left there.
-compile() {
-        out=$1; program=$2; shift 2
-        if fresh "$out" "$program" "$@"; then return 0; fi
-        echo "Building $* → $out" >&2
+run() {
+        r_program=$1; r_out=$2; shift 2
         # the input ends with 0x04; the linker wants four of them after its
         # last object, and the others stop at the first.  bin/end.bin is
         # those four bytes, made here the first time.
@@ -37,19 +35,41 @@ compile() {
         qemu-system-riscv32 \
                 -machine virt -m "$MEM" -cpu "$CPU" \
                 -display none -bios none \
-                -chardev file,id=ser0,path="$out",input-path=bin/build.in \
+                -chardev file,id=ser0,path="$r_out",input-path=bin/build.in \
                 -serial chardev:ser0 \
-                -device loader,file="$program",addr=0x80000000
+                -device loader,file="$r_program",addr=0x80000000
+}
 
+# compile OUT PROGRAM IN... -- make OUT by running PROGRAM over the INs.
+# Skipped if OUT is fresh.
+compile() {
+        out=$1; program=$2; shift 2
+        if fresh "$out" "$program" "$@"; then return 0; fi
+        echo "Building $* → $out" >&2
         # A program that fails exits with 1, its message where its output
-        # goes.  Show it (after $on_fail, if that is set, in place of our
-        # own line), empty OUT so it is not taken for fresh, and stop.
-        if [ $? -ne 0 ]; then
-                echo "${on_fail:-build.sh: $out: error:}" >&2
+        # goes.  Show it, empty OUT so it is not taken for fresh, and stop.
+        if ! run "$program" "$out" "$@"; then
+                echo "build.sh: $out: error:" >&2
                 cat "$out" >&2
                 : > "$out"
                 exit 1
         fi
+}
+
+# verify A B -- stop the build unless the files A and B are identical.
+# bin/same, a fam program, compares them: it exits with 1 if they differ and
+# writes nothing.  A note in bin/<A's name>.same says the check was made;
+# then it is made again only when A, B or bin/same changes.
+verify() {
+        note=bin/${1##*/}.same
+        if fresh "$note" bin/same "$1" "$2"; then return 0; fi
+        echo "Verifying $1 = $2" >&2
+        if ! run bin/same "$note" "$1" "$2"; then
+                echo "ERROR: Build failed! Root of trust was tampered with?" >&2
+                : > "$note"
+                exit 1
+        fi
+        echo "$1 and $2 are identical" > "$note"
 }
 
 # the core of fam: the back end, the compiler and the linker, each built by
@@ -70,14 +90,9 @@ compile bin/fampack.o    bin/famc  src/fampack.fam
 compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
 compile bin/fampack      bin/fam bin/fampack.core
 
-# a check: the seed, given its own source, builds itself.  bin/same, a fam
-# program, compares the two: it exits with 1 if they differ, which stops
-# the build.  It writes nothing, so a note goes in bin/fam0.same to say the
-# check was made; then it is made again only when something it uses changes.
+# a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0
 compile bin/same.o    bin/famc  src/same.fam
 compile bin/same.core bin/famld bin/rt.o bin/same.o bin/rtmain.o
 compile bin/same      bin/fam   bin/same.core
-on_fail="ERROR: Build failed! Root of trust was tampered with?"
-compile bin/fam0.same bin/same  bin/fam0 fam0.seed
-[ -s bin/fam0.same ] || echo "the seed builds itself" > bin/fam0.same
+verify  bin/fam0      fam0.seed
