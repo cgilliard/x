@@ -1,0 +1,15 @@
+// exit: 0
+// output: 42 -42 42 0 1000000 | 3 -3 -3 3 0 | 1 -1 1 -1 | 7 24\n
+fn show(n) { print_int(n); putc(32); }
+fn main() {
+    show(6 * 7); show(-6 * 7); show(-6 * -7); show(0 * 99); show(1000 * 1000);
+    print("| ");
+    show(7 / 2); show(-7 / 2); show(7 / -2); show(-7 / -2); show(1 / 2);
+    print("| ");
+    show(7 % 2); show(-7 % 2); show(7 % -2); show(-7 % -2);
+    print("| ");
+    show(1 + 2 * 3);            // * before +
+    print_int(100 / 5 / 2 * 3 - 6 % 4 * 3);     // left to right: 30 - 6
+    putc(10);
+    return 0;
+}

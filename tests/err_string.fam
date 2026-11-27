@@ -1,0 +1,4 @@
+// error: tests/err_string.fam:3: string without its closing quote
+fn main() {
+    print("no end);
+}

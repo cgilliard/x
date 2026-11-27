@@ -1,0 +1,4 @@
+// exit: 1
+// Calls nested without end run out of return ids: reported, exit code 1.
+fn down(n) { return down(n + 1) + 1; }
+fn main() { return down(0); }

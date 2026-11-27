@@ -7,9 +7,10 @@ Parts listed under "Open questions" are the ones most likely to change.
 ## Pipeline
 
 ```
-source.fam ──famc───▶ source.o ─┐
+lib/rt0.s ───famas──▶ rt0.o ────┐
+source.fam ──famc───▶ source.o ─┤
 source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ core text ──▶ core ──▶ binary
-lib/rt0.s ───famas──▶ rt0.o ────┘
+lib/rt.fam ──famc───▶ rt.o ─────┘
 ```
 
 - The **front end** (`famc`) compiles one source file to one object.
@@ -151,17 +152,19 @@ of four `0x04` bytes. It:
 1. Reads and checks every object, in the order given.
 2. Gives each name a short name the core accepts: `_` and seven hex digits
    (`_0000001`). The underscore keeps it from ever reading as a hex word.
-3. Orders the functions so each is defined before any function that calls
-   it.
+3. Finds the functions the init records reach, directly or through other
+   functions, and orders them so each is defined before any function that
+   calls it. A function nothing reaches is left out of the binary.
 4. Breaks each cycle (functions that call each other) with a stub: a word
    holding one jump, defined ahead of the cycle. Calls made before the real
    function is defined go to the stub, and the jump is pointed at the
    function when it is defined. Three small words at the top of the
    linker's output, run by the core as it compiles, do the recording and
    pointing. A function calling itself needs no stub.
-5. Writes all functions, then every init record as top-level code, in
+5. Writes those functions, then every init record as top-level code, in
    input order. The core runs top-level code in order at startup, so the
-   startup object goes first on the link line.
+   startup object goes first; `fam.sh ld` sees to that, and adds the
+   runtime library after the program's objects.
 
 For the example above the linker writes:
 
@@ -186,7 +189,8 @@ so.
 
 Link errors are reported as text in place of the output, with exit code 1:
 
-- a call to a name no object defines (naming the caller)
+- a call, in a function that is kept, to a name no object defines (naming
+  the caller)
 - a name defined by two objects
 - functions that call each other ending up over 1 MiB apart
 - input that is not an object, or an object whose contents are inconsistent
@@ -260,5 +264,5 @@ Each of these is a new part or a new symbol kind, under a new version.
 - The linker is its own program and its own pass. A single driver that
   compiles or links depending on its inputs, the way `gcc` does, comes
   later and sits on top of the tools.
-- The program starts in the startup object's init record, which calls
-  `main`.
+- The program starts in the startup object's init record (`lib/rt0.s`),
+  which lays out memory and calls `main`, then `exit` with its result.

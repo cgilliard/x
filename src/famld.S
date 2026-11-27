@@ -23,9 +23,9 @@
 # famld -- the fam linker (docs/OBJECT.md).
 #
 # Reads objects from the UART, one after another, up to the end marker (four
-# EOT bytes), and writes text in the core's language: every function as
-# `: _NNNNNNN ... ;`, each before its first caller, then every init record
-# as top-level code, in input order.  On an error, writes a message in place
+# EOT bytes), and writes text in the core's language: every function the
+# init records reach as `: _NNNNNNN ... ;`, each before its first caller,
+# then every init record as top-level code, in input order.  On an error, writes a message in place
 # of the output and exits with 1.
 #
 # Functions that call each other in a cycle cannot all come before their
@@ -363,16 +363,32 @@ _start:
     addi    s1, s1, 8
     j       .Lc_next
 
-    # --- pass 2: write every function (emit_fn writes its callees first),
-    # --- then the init records.
+    # --- pass 2: write every function an init record calls (emit_fn writes
+    # --- its callees first), then the init records.  A function nothing
+    # --- reaches is left out.
 .Lp_done:
-    mv      ra, s3
-1:  bgeu    ra, s4, 3f
-    lw      t2, 8(ra)
-    beqz    t2, 2f                      # never defined; an error if called
-    mv      a2, ra
+    mv      ra, s5
+1:  bgeu    ra, s6, 3f
+    lw      a5, 0(ra)
+    lw      t2, 4(ra)
+    lw      a2, 12(t2)
+    lw      s2, 16(t2)
+    add     s2, s2, a2                  # s2 = where the record's code ends
+    CALL    first_call
+    mv      s1, a6                      # s1 = the call site to look at next
+2:  lw      a5, 0(ra)
+    lw      t2, 8(a5)
+    bgeu    s1, t2, 6f
+    lw      t3, 0(s1)
+    bgeu    t3, s2, 6f
+    mv      a6, s1
+    addi    s1, s1, 8
+    CALL    call_sym
+    lw      t3, 8(a2)
+    beqz    t3, err_undef
     CALL    emit_fn
-2:  addi    ra, ra, 28
+    j       2b
+6:  addi    ra, ra, 8
     j       1b
 3:  mv      ra, s5
 4:  bgeu    ra, s6, 5f

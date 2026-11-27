@@ -1,0 +1,6 @@
+// exit: 0
+// output: hello, world\n
+fn main() {
+    print("hello, world\n");
+    return 0;
+}

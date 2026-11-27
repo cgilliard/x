@@ -1,0 +1,13 @@
+// exit: 0
+// output: a\tb "q" \\ [] [x] [xy] [xyz] [wxyz] [vwxyz]\n
+// Strings of every length around a word, and the escapes.
+fn main() {
+    print("a\tb \"q\" \\ ");
+    print("[");      print("");      print("] ");
+    print("[");      print("x");     print("] ");
+    print("[");      print("xy");    print("] ");
+    print("[");      print("xyz");   print("] ");
+    print("[");      print("wxyz");  print("] ");
+    print("[");      print("vwxyz"); print("]\n");
+    return load8("A") - 65 + load8("\0");
+}

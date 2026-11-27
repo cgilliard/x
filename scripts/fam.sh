@@ -3,7 +3,7 @@
 #
 #   fam.sh cc   SOURCE OBJECT       compile one source file to an object
 #   fam.sh as   TEXT OBJECT         assemble the text form of an object
-#   fam.sh ld   BINARY OBJECT...    link objects (bin/rt0.o first) to a binary
+#   fam.sh ld   BINARY OBJECT...    link objects and the runtime to a binary
 #   fam.sh run  BINARY              run a binary; its exit code is ours
 #   fam.sh dump OBJECT              print an object in its text form
 #
@@ -56,7 +56,8 @@ as)
 ld)
         [ $# -ge 2 ] || { echo "usage: fam.sh ld BINARY OBJECT..." >&2; exit 2; }
         out=$1; shift
-        stage bin/famld "$out.core" "$@" || exit 1
+        # startup first: its init record must run first; then the library
+        stage bin/famld "$out.core" bin/rt0.o "$@" bin/rt.o || exit 1
         stage bin/fam.uncompressed "$out" "$out.core"
         rc=$?
         rm -f "$out.core"

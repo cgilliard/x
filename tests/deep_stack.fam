@@ -1,0 +1,12 @@
+// exit: 1
+// Frames this large run out of stack before return ids: reported too.
+fn down(n) {
+    let a = n; let b = a; let c = b; let d = c; let e = d; let f = e;
+    let g = f; let h = g; let i = h; let j = i; let k = j; let l = k;
+    let m = l; let o = m; let p = o; let q = p; let r = q; let s = r;
+    let t = s; let u = t; let v = u; let w = v; let x = w; let y = x;
+    let z = y; let a2 = z; let b2 = a2; let c2 = b2; let d2 = c2;
+    let e2 = d2; let f2 = e2; let g2 = f2; let h2 = g2; let i2 = h2;
+    return down(i2 + 1) + a;
+}
+fn main() { return down(0); }

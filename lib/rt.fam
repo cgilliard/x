@@ -1,0 +1,227 @@
+// lib/rt.fam -- the runtime library.  scripts/build.sh compiles it to
+// bin/rt.o, and `fam.sh ld` adds it to every link; only the functions a
+// program uses end up in its binary.  Startup is lib/rt0.s.
+//
+// The machine is QEMU's virt: a UART at 0x10000000 for output and the test
+// finisher at 0x100000 to leave.
+
+// ---- output ---------------------------------------------------------------
+
+// putc(c): write one byte to the console.
+fn putc(c) {
+    asm {
+        B7030010    // lui t2,0x10000
+        // wait:
+        03CE5300    // lbu t3,5(t2)
+        137E0E02    // andi t3,t3,32
+        E30C0EFE    // beqz t3,wait
+        2380A300    // sb a0,0(t2)
+    }
+}
+
+// print(s): write a string (bytes up to a zero byte).
+fn print(s) {
+    while load8(s) != 0 {
+        putc(load8(s));
+        s = s + 1;
+    }
+}
+
+// print_int(n): write a number in decimal.
+fn print_int(n) {
+    if n < 0 {
+        putc(45);                               // -
+        if n == 0x80000000 {                    // has no positive
+            print("2147483648");
+            return;
+        }
+        n = -n;
+    }
+    if n >= 10 { print_int(n / 10); }
+    putc(48 + n % 10);
+}
+
+// print_hex(n): write a number as 0x and eight hex digits.
+fn print_hex(n) {
+    print("0x");
+    let shift = 28;
+    while shift >= 0 {
+        let digit = (n >> shift) & 15;
+        if digit < 10 { putc(48 + digit); } else { putc(55 + digit); }
+        shift = shift - 4;
+    }
+}
+
+// ---- leaving --------------------------------------------------------------
+
+// exit(code): end the program.  The low 8 bits of the code reach the shell.
+fn exit(code) {
+    asm {
+        B7031000    // lui t2,0x100
+        630E0500    // beqz a0,pass
+        13150501    // slli a0,a0,0x10
+        373E0000    // lui t3,0x3
+        130E3E33    // addi t3,t3,819
+        3365C501    // or a0,a0,t3
+        23A0A300    // sw a0,0(t2)
+        // fail:
+        6F000000    // j fail
+        // pass:
+        375E0000    // lui t3,0x5
+        130E5E55    // addi t3,t3,1365
+        23A0C301    // sw t3,0(t2)
+        // stop:
+        6F000000    // j stop
+    }
+}
+
+// panic(message): write "panic: " and the message, and exit with code 1.
+fn panic(message) {
+    print("panic: ");
+    print(message);
+    putc(10);
+    exit(1);
+}
+
+// ---- memory ---------------------------------------------------------------
+
+// load8(address), load32(address): the byte (0 to 255) or word there.
+fn load8(address) {
+    asm {
+        03450500    // lbu a0,0(a0)
+    }
+}
+fn load32(address) {
+    asm {
+        03250500    // lw a0,0(a0)
+    }
+}
+
+// store8(address, value), store32(address, value): put a byte or word there.
+fn store8(address, value) {
+    asm {
+        2300B500    // sb a1,0(a0)
+    }
+}
+fn store32(address, value) {
+    asm {
+        2320B500    // sw a1,0(a0)
+    }
+}
+
+// ---- what the compiler calls ----------------------------------------------
+
+// The CPU has no multiply or divide instructions: `a * b`, `a / b` and
+// `a % b` are calls to these.
+
+// __mul(a, b): add a, shifted, for each bit set in b.
+fn __mul(a, b) {
+    asm {
+        93030500    // mv t2,a0
+        13050000    // li a0,0
+        // next:
+        638E0500    // beqz a1,done
+        13FE1500    // andi t3,a1,1
+        63040E00    // beqz t3,skip
+        33057500    // add a0,a0,t2
+        // skip:
+        93931300    // slli t2,t2,0x1
+        93D51500    // srli a1,a1,0x1
+        6FF09FFE    // j next
+    }
+}
+
+// __div(a, b), __rem(a, b): the quotient, rounded toward zero, and the
+// remainder, which has the sign of a.  Dividing by zero is a panic.
+fn __div(a, b) {
+    if b == 0 { panic("division by zero"); }
+    return __div_bits(a, b);
+}
+fn __rem(a, b) {
+    if b == 0 { panic("division by zero"); }
+    return __rem_bits(a, b);
+}
+
+// Long division of the sizes of a and b, a bit at a time: t2 = quotient,
+// t3 = remainder, t5 and t6 keep the signs for the result.
+fn __div_bits(a, b) {
+    asm {
+        334FB500    // xor t5,a0,a1
+        930F0500    // mv t6,a0
+        63540500    // bgez a0,apos
+        3305A040    // neg a0,a0
+        // apos:
+        63D40500    // bgez a1,bpos
+        B305B040    // neg a1,a1
+        // bpos:
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13850300    // mv a0,t2
+        63540F00    // bgez t5,done
+        3305A040    // neg a0,a0
+    }
+}
+fn __rem_bits(a, b) {
+    asm {
+        334FB500    // xor t5,a0,a1
+        930F0500    // mv t6,a0
+        63540500    // bgez a0,apos
+        3305A040    // neg a0,a0
+        // apos:
+        63D40500    // bgez a1,bpos
+        B305B040    // neg a1,a1
+        // bpos:
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13050E00    // mv a0,t3
+        63D40F00    // bgez t6,done
+        3305A040    // neg a0,a0
+    }
+}
+
+// __trap(cause, pc, address, guard): lib/rt0.s comes here on a trap, with
+// the CPU's cause, the pc and the address it faulted on, and the address of
+// the guard page under the stack.
+fn __trap(cause, pc, address, guard) {
+    print("fam: ");
+    if cause == 3 {
+        print("calls nested too deep");
+    } else if (cause == 5 || cause == 7) && address - guard >= 0 && address - guard < 4096 {
+        print("stack overflow");
+    } else {
+        print("trap ");
+        print_int(cause);
+        print(" on address ");
+        print_hex(address);
+    }
+    print(" at ");
+    print_hex(pc);
+    putc(10);
+    exit(1);
+}

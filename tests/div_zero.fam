@@ -1,0 +1,6 @@
+// exit: 1
+// output: panic: division by zero\n
+fn main() {
+    let zero = 0;
+    return 5 / zero;
+}

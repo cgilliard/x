@@ -38,10 +38,13 @@
 #               | expr ";"
 #     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 #                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
-#     unary     = ( "-" | "!" | "~" ) unary | NUMBER | NAME
+#                   * / %
+#     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
 #               | NAME "(" [ expr { "," expr } ] ")" | "(" expr ")"
 #     NAME      = a letter or '_', then letters, digits, '_'
 #     NUMBER    = decimal digits, or 0x and hex digits (up to 32 bits)
+#     STRING    = "..." with \n \t \0 \\ \" for a newline, a tab, a zero
+#                 byte, a backslash and a quote; its value is its address
 #     HEXWORD   = eight uppercase hex digits: four bytes of code
 #     // starts a comment that runs to the end of the line
 #
@@ -55,6 +58,10 @@
 #   - An expression leaves its value in a0.  An operator saves its left
 #     side in a temporary, computes the right side, and reloads the left
 #     into a1.
+#   - `*`, `/` and `%` are calls to __mul, __div and __rem (lib/rt.fam):
+#     the CPU has no instructions for them.
+#   - A string's bytes, and a zero byte, sit in the code where it is used,
+#     behind a `jal a0` that jumps over them and so leaves their address.
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
@@ -582,6 +589,9 @@ expr:
     lw      a4, 12(sp)
     addi    a4, a4, 1
     CALL    expr
+    lw      t2, 4(sp)
+    li      t3, 16
+    bltu    t2, t3, .Le_call
     li      a3, 1
     CALL    slot_drop                   # a3 = the temporary
     li      a2, 11
@@ -592,6 +602,31 @@ expr:
     beqz    a0, .Le_next
     CALL    o_word
     j       .Le_next
+.Le_call:                               # * / %: a call, left side in a0 and
+    EMIT    0x00050593                  # right in a1.  mv a1, a0
+    li      a3, 1
+    CALL    slot_drop
+    li      a2, 10
+    CALL    e_lw_slot
+    lw      t2, 4(sp)                   # the name, spelled on the stack
+    addi    sp, sp, -8
+    li      t3, '_' | '_'<<8 | 'm'<<16 | 'u'<<24
+    li      t4, 'l'
+    li      t5, 1
+    beq     t2, t5, 1f
+    li      t3, '_' | '_'<<8 | 'd'<<16 | 'i'<<24
+    li      t4, 'v'
+    li      t5, 2
+    beq     t2, t5, 1f
+    li      t3, '_' | '_'<<8 | 'r'<<16 | 'e'<<24
+    li      t4, 'm'
+1:  sw      t3, 0(sp)
+    sw      t4, 4(sp)
+    mv      a0, sp
+    li      a1, 5
+    CALL    o_call
+    addi    sp, sp, 8
+    j       .Le_next
 .Le_done:
     mv      s1, a0                      # not ours: leave the token unread
     addi    sp, sp, 16
@@ -600,6 +635,7 @@ expr:
 # binop -- a0/a1/a6 = a token; a4 = its precedence as a binary operator
 #   (0: it is not one), a5/a7 = its instructions, which compute a0 from
 #   a1 (the left side) and a0 (the right); a7 = 0 if there is only one.
+#   For * / % a5 is 1, 2, 3: they are calls.
 #   Clobbers a2, a3, t2, t3, t4.
 binop:
     li      a4, 0
@@ -621,14 +657,20 @@ binop:
     BINOP   0x3E3E, 7, 0x40A5D533, 0            # >>  sra a0,a1,a0
     BINOP   0x2B,   8, 0x00A58533, 0            # +   add a0,a1,a0
     BINOP   0x2D,   8, 0x40A58533, 0            # -   sub a0,a1,a0
+    BINOP   0x2A,   9, 1, 0                     # *   __mul
+    BINOP   0x2F,   9, 2, 0                     # /   __div
+    BINOP   0x25,   9, 3, 0                     # %   __rem
 1:  RET
 
-# unary -- ( "-" | "!" | "~" ) unary | NUMBER | NAME | a call | "(" expr ")"
+# unary -- ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME | a call
+#   | "(" expr ")"
 unary:
     CALL    chk_deep
     CALL    lex
     li      t2, 2
     beq     a6, t2, .Lu_num
+    li      t2, 4
+    beq     a6, t2, .Lu_str
     li      t2, 1
     beq     a6, t2, .Lu_name
     beqz    a6, err_syntax
@@ -660,6 +702,63 @@ unary:
 .Lu_num:
     CALL    parse_num
     j       emit_li_a0                  # (its RET returns for us)
+    # A string: `jal a0, <past it>`, its bytes, a zero byte, and zero
+    # bytes up to a whole word.  a4/a5 = the text left, a6 = the word being
+    # filled, a7 = how many bytes it has.
+.Lu_str:
+    addi    a4, a0, 1
+    add     a5, a0, a1
+    addi    a5, a5, -1
+    li      a0, 0x56F                   # jal a0, 0
+    CALL    o_word
+    addi    sp, sp, -4
+    addi    t2, s9, -4
+    sw      t2, 0(sp)
+    li      a6, 0
+    li      a7, 0
+1:  li      t3, 0
+    bltu    a4, a5, 9f
+    addi    a4, a5, 1                   # the text is done: the zero byte,
+    j       4f                          # and this is the last time round
+9:  lbu     t3, 0(a4)
+    addi    a4, a4, 1
+    li      t4, 0x5C                    # a backslash: the next says what
+    bne     t3, t4, 4f
+    lbu     t3, 0(a4)
+    addi    a4, a4, 1
+    beq     t3, t4, 4f
+    li      t4, '"'
+    beq     t3, t4, 4f
+    li      t4, 'n'
+    bne     t3, t4, 2f
+    li      t3, 0x0A
+    j       4f
+2:  li      t4, 't'
+    bne     t3, t4, 3f
+    li      t3, 0x09
+    j       4f
+3:  li      t4, '0'
+    bne     t3, t4, err_escape
+    li      t3, 0
+4:  slli    t4, a7, 3                   # the byte into the word
+    sll     t4, t3, t4
+    or      a6, a6, t4
+    addi    a7, a7, 1
+    li      t4, 4
+    bltu    a7, t4, 5f
+    mv      a0, a6
+    CALL    o_word
+    li      a6, 0
+    li      a7, 0
+5:  bleu    a4, a5, 1b
+    beqz    a7, 8f
+    mv      a0, a6
+    CALL    o_word
+8:  lw      a0, 0(sp)
+    addi    sp, sp, 4
+    mv      a1, s9
+    li      a2, 0x56F
+    j       patch_jal
 .Lu_name:
     CALL    chk_ident
     addi    sp, sp, -12                 # [name start, name length, arguments]
@@ -876,8 +975,11 @@ e_jph:
     RET
 
 # patch_j -- a0 = where a jump is, a1 = where it must go; make it
-#   `jal x0, <there>`.  Clobbers t2, t3, t4.
+#   `jal x0, <there>`.  Clobbers a2, t2, t3, t4.
+# patch_jal -- the same with a2 = the jal's low 12 bits (its register).
 patch_j:
+    li      a2, 0x6F
+patch_jal:
     sub     t2, a1, a0
     srai    t3, t2, 20                  # jal reaches 1 MiB either way
     beqz    t3, 1f
@@ -898,7 +1000,7 @@ patch_j:
     andi    t4, t4, 0xFF
     slli    t4, t4, 12
     or      t3, t3, t4
-    ori     t3, t3, 0x6F
+    or      t3, t3, a2
     sw      t3, 0(a0)
     RET
 
@@ -926,7 +1028,8 @@ cls:
 
 # lex -- the next token: a0 = start, a1 = length, a6 = kind (0 the end of
 #   the source, 1 a name, 2 a number, 3 punctuation: one character, or one
-#   of == != <= >= << >> && ||), s1 moved past it, s3 = its line.
+#   of == != <= >= << >> && ||, 4 a string, quotes and all), s1 moved past
+#   it, s3 = its line.
 #   Clobbers t2-t5.  To leave a token unread: mv s1, a0.
 lex:
 1:  bgeu    s1, s2, 8f
@@ -960,7 +1063,27 @@ lex:
     CALL    cls
     bnez    t5, 6b
     j       9f
-7:  li      a6, 3
+7:  li      t3, '"'
+    bne     t2, t3, 14f
+    li      a6, 4                       # a string: to its closing quote, on
+12: addi    s1, s1, 1                   # this line
+    bgeu    s1, s2, err_string
+    lbu     t2, 0(s1)
+    li      t3, 0x0A
+    beq     t2, t3, err_string
+    li      t3, 0x5C                    # a backslash takes the next with it
+    bne     t2, t3, 13f
+    addi    s1, s1, 1
+    bgeu    s1, s2, err_string
+    lbu     t2, 0(s1)
+    li      t3, 0x0A
+    beq     t2, t3, err_string
+    j       12b
+13: li      t3, '"'
+    bne     t2, t3, 12b
+    addi    s1, s1, 1
+    j       9f
+14: li      a6, 3
     addi    s1, s1, 1
     bgeu    s1, s2, 9f
     lbu     t3, 0(s1)                   # the character after it
@@ -1167,6 +1290,42 @@ err_unknown:                            # a0/a1 = the name
     li      a0, ' '
     CALL    uput4
     j       err_tok
+err_string:
+    CALL    err_line
+    # say "string without its closing quote"
+    li      a0, 's' | 't'<<8 | 'r'<<16 | 'i'<<24
+    CALL    uput4
+    li      a0, 'n' | 'g'<<8 | ' '<<16 | 'w'<<24
+    CALL    uput4
+    li      a0, 'i' | 't'<<8 | 'h'<<16 | 'o'<<24
+    CALL    uput4
+    li      a0, 'u' | 't'<<8 | ' '<<16 | 'i'<<24
+    CALL    uput4
+    li      a0, 't' | 's'<<8 | ' '<<16 | 'c'<<24
+    CALL    uput4
+    li      a0, 'l' | 'o'<<8 | 's'<<16 | 'i'<<24
+    CALL    uput4
+    li      a0, 'n' | 'g'<<8 | ' '<<16 | 'q'<<24
+    CALL    uput4
+    li      a0, 'u' | 'o'<<8 | 't'<<16 | 'e'<<24
+    CALL    uput4
+    j       err_end
+err_escape:
+    CALL    err_line
+    # say "unknown \\ in a string"
+    li      a0, 'u' | 'n'<<8 | 'k'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 'o' | 'w'<<8 | 'n'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 0x5C | ' '<<8 | 'i'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, ' ' | 'a'<<8 | ' '<<16 | 's'<<24
+    CALL    uput4
+    li      a0, 't' | 'r'<<8 | 'i'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 'g'
+    CALL    uput4
+    j       err_end
 err_locals:
     CALL    err_line
     # say "function needs too many locals"

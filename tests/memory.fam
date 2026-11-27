@@ -1,0 +1,15 @@
+// exit: 0
+// output: 120 305419896 8\n
+// store and load, on the bytes of a string.
+fn main() {
+    let s = "abcdefgh";
+    store8(s + 1, 120);
+    print_int(load8(s + 1)); putc(32);
+    store32(s + 4, 0x12345678);
+    print_int(load32(s + 4)); putc(32);
+    let n = 0;
+    while load8(s + n) != 0 { n = n + 1; }     // still 8 bytes before the zero
+    print_int(n);
+    putc(10);
+    return 0;
+}

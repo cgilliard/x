@@ -3,9 +3,10 @@
 # tests/).  Exit 0 if every one passes.
 #
 # A test is a source file (tests/*.fam) or the text form of an object
-# (tests/*.s).  It is compiled or assembled, linked with bin/rt0.o and run.
-# Comments in its first three lines say what must happen:
+# (tests/*.s).  It is compiled or assembled, linked with the runtime and
+# run.  Comments in its first four lines say what must happen:
 #     exit: N          the program runs and exits with code N
+#     output: TEXT     and writes exactly TEXT (\n for a newline)
 #     error: TEXT      a step fails with exactly the message TEXT
 # and may name more files (relative to tests/) to build and link with it:
 #     with: FILE...
@@ -38,20 +39,22 @@ check() {
         fi
 }
 
-# link_run OBJECT... -- link with bin/rt0.o and run; prints the outcome.
+# link_run OBJECT... -- link and run; prints the outcome.  What the program
+# wrote is left in $tmp.txt.
 link_run() {
-        l_msg=$(sh scripts/fam.sh ld "$tmp" bin/rt0.o "$@" 2>&1) ||
+        l_msg=$(sh scripts/fam.sh ld "$tmp" "$@" 2>&1) ||
                 { echo "error: $l_msg"; return; }
-        timeout 60 sh scripts/fam.sh run "$tmp" > /dev/null 2>&1
+        timeout 60 sh scripts/fam.sh run "$tmp" > "$tmp.txt" 2>&1
         echo "exit: $?"
 }
 
 raw=
 [ $# -gt 0 ] || { set -- tests/*.fam tests/*.s; raw=1; }
 for t; do
-        head3=$(head -n 3 "$t" | sed 's/^\(\/\/\|#\) *//')
-        want=$(echo "$head3" | sed -n 's/^\(exit\|error\): */\1: /p' | head -n 1)
-        with=$(echo "$head3" | sed -n 's/^with: *//p')
+        head3=$(head -n 4 "$t" | sed 's/^\(\/\/\|#\) *//')
+        want=$(printf "%s\n" "$head3" | sed -n 's/^\(exit\|error\): */\1: /p' | head -n 1)
+        with=$(printf "%s\n" "$head3" | sed -n 's/^with: *//p')
+        wout=$(printf "%s\n" "$head3" | sed -n 's/^output: //p')
         got=; objs=; i=0
         for f in "$t" $(for w in $with; do echo "tests/$w"; done); do
                 i=$((i + 1))
@@ -60,15 +63,19 @@ for t; do
                 objs="$objs $tmp.$i.o"
         done
         [ -n "$got" ] || got=$(link_run $objs)
+        if [ -n "$wout" ] && [ "$got" = "$want" ]; then
+                printf '%b' "$wout" | cmp -s - "$tmp.txt" ||
+                        got="$got, output: $(cat "$tmp.txt")"
+        fi
         check "$t" "$want" "$got"
-        rm -f "$tmp" "$tmp".*.o
+        rm -f "$tmp" "$tmp".*.o "$tmp.txt"
 done
 
 # raw NAME WANT BYTES -- give the linker BYTES (a printf format) as an object.
 raw() {
         printf "$3" > "$tmp.1.o"
         check "$1" "$2" "$(link_run "$tmp.1.o")"
-        rm -f "$tmp" "$tmp".*.o
+        rm -f "$tmp" "$tmp".*.o "$tmp.txt"
 }
 if [ -n "$raw" ]; then
         raw "(a text as an object)" "error: famld: the input is not a fam object" \

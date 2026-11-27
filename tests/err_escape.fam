@@ -1,0 +1,4 @@
+// error: tests/err_escape.fam:3: unknown \ in a string
+fn main() {
+    print("a\qb");
+}

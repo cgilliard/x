@@ -1,0 +1,9 @@
+// exit: 9
+// output: before
+// exit() ends the program at once.
+fn main() {
+    print("before");
+    exit(9);
+    print(" after");
+    return 0;
+}

@@ -11,12 +11,12 @@ fn fib(n) {
 
 fn main() {
     let i = 1;
-    let sum = 0;
     while i <= 10 {
-        sum = sum + fib(i);
+        print_int(fib(i));
+        print("\n");
         i = i + 1;
     }
-    return sum;
+    return 0;
 }
 ```
 
@@ -24,17 +24,23 @@ Build and run it with `scripts/fam.sh`:
 
 ```
 sh scripts/fam.sh cc prog.fam prog.o
-sh scripts/fam.sh ld prog bin/rt0.o prog.o
+sh scripts/fam.sh ld prog prog.o
 sh scripts/fam.sh run prog; echo $?
 ```
 
 The program starts at `main`, and what `main` returns is the exit code.
+`ld` adds the runtime (startup and library) to every link; a binary holds
+only the functions the program uses.
 
 ## Values
 
 Every value is a signed 32-bit integer. Arithmetic wraps around.
 
 Numbers are decimal (`42`) or hex (`0x2A`), up to 32 bits.
+
+A string, `"hello\n"`, is the address of its bytes, which end with a zero
+byte. Inside one, `\n` is a newline, `\t` a tab, `\0` a zero byte, `\\` a
+backslash and `\"` a quote. A string must end on the line it starts on.
 
 ## Functions
 
@@ -76,9 +82,41 @@ have the same precedence and group left to right.
 | `&` | bitwise and |
 | `<<` `>>` | shifts; `>>` keeps the sign |
 | `+` `-` | add, subtract |
+| `*` `/` `%` | multiply, divide, remainder; division rounds toward zero, the remainder has the sign of the left side, and dividing by zero is a panic |
 | `-x` `!x` `~x` | negate; 1 if zero, else 0; bitwise not |
 
 Parentheses group. A call is `NAME(EXPR, ...)`.
+
+## The runtime library
+
+These are in `lib/rt.fam` and available to every program. The names are
+provisional, until there are modules.
+
+| Function | Meaning |
+|---|---|
+| `putc(c)` | Write one byte to the console. |
+| `print(s)` | Write a string. |
+| `print_int(n)` | Write a number in decimal. |
+| `print_hex(n)` | Write a number as `0x` and eight hex digits. |
+| `exit(code)` | End the program with that exit code. |
+| `panic(message)` | Write `panic: ` and the message, and exit with code 1. |
+| `load8(address)` `load32(address)` | The byte (0 to 255) or the word at an address. |
+| `store8(address, value)` `store32(address, value)` | Put a byte or a word at an address. |
+
+Names starting with `__` belong to the runtime.
+
+## When a program goes wrong
+
+The startup code (`lib/rt0.s`) gives the stack everything from the end of
+the program to the top of the machine's memory, less a sixteenth for the
+return ids of calls. Running out of either is caught and reported, with
+exit code 1, as is any other fault:
+
+```
+fam: calls nested too deep at 0x80000AF0
+fam: stack overflow at 0x80000B20
+fam: trap 5 on address 0x00000000 at 0x80000B4C
+```
 
 ## Machine code
 
@@ -118,9 +156,9 @@ prog.fam:3: unknown variable y
 
 ## Not yet
 
-- Multiply, divide and remainder (the CPU has no instructions for them;
-  they come with the runtime library).
-- Types other than the 32-bit integer; strings, arrays, pointers, structs.
-- Global variables and constants.
+- Types other than the 32-bit integer; arrays, pointers, structs.
+- Character literals.
+- Global variables and constants; a heap.
+- Console input.
 - Checking the number of arguments of a call.
 - Modules, tests, function pointers.
