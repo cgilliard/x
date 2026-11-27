@@ -1,0 +1,3 @@
+// error: tests/err_module_twice.fam:3: module must come first, and once
+module a;
+module b;

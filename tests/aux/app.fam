@@ -1,0 +1,4 @@
+module app;
+pub fn run() { return app.nine() + later() - 5; }     // its own name needs no import
+pub fn nine() { return 9; }
+fn later() { return 5; }

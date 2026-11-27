@@ -8,7 +8,7 @@
 // ---- output ---------------------------------------------------------------
 
 // putc(c): write one byte to the console.
-fn putc(c) {
+pub fn putc(c) {
     asm {
         B7030010    // lui t2,0x10000
         // wait:
@@ -20,7 +20,7 @@ fn putc(c) {
 }
 
 // print(s): write a string (bytes up to a zero byte).
-fn print(s) {
+pub fn print(s) {
     while load8(s) != 0 {
         putc(load8(s));
         s = s + 1;
@@ -28,7 +28,7 @@ fn print(s) {
 }
 
 // print_int(n): write a number in decimal.
-fn print_int(n) {
+pub fn print_int(n) {
     if n < 0 {
         putc(45);                               // -
         if n == 0x80000000 {                    // has no positive
@@ -42,7 +42,7 @@ fn print_int(n) {
 }
 
 // print_hex(n): write a number as 0x and eight hex digits.
-fn print_hex(n) {
+pub fn print_hex(n) {
     print("0x");
     let shift = 28;
     while shift >= 0 {
@@ -55,7 +55,7 @@ fn print_hex(n) {
 // ---- leaving --------------------------------------------------------------
 
 // exit(code): end the program.  The low 8 bits of the code reach the shell.
-fn exit(code) {
+pub fn exit(code) {
     asm {
         B7031000    // lui t2,0x100
         630E0500    // beqz a0,pass
@@ -76,7 +76,7 @@ fn exit(code) {
 }
 
 // panic(message): write "panic: " and the message, and exit with code 1.
-fn panic(message) {
+pub fn panic(message) {
     print("panic: ");
     print(message);
     putc(10);
@@ -86,24 +86,24 @@ fn panic(message) {
 // ---- memory ---------------------------------------------------------------
 
 // load8(address), load32(address): the byte (0 to 255) or word there.
-fn load8(address) {
+pub fn load8(address) {
     asm {
         03450500    // lbu a0,0(a0)
     }
 }
-fn load32(address) {
+pub fn load32(address) {
     asm {
         03250500    // lw a0,0(a0)
     }
 }
 
 // store8(address, value), store32(address, value): put a byte or word there.
-fn store8(address, value) {
+pub fn store8(address, value) {
     asm {
         2300B500    // sb a1,0(a0)
     }
 }
-fn store32(address, value) {
+pub fn store32(address, value) {
     asm {
         2320B500    // sw a1,0(a0)
     }
@@ -115,7 +115,7 @@ fn store32(address, value) {
 // `a % b` are calls to these.
 
 // __mul(a, b): add a, shifted, for each bit set in b.
-fn __mul(a, b) {
+pub fn __mul(a, b) {
     asm {
         93030500    // mv t2,a0
         13050000    // li a0,0
@@ -133,18 +133,18 @@ fn __mul(a, b) {
 
 // __div(a, b), __rem(a, b): the quotient, rounded toward zero, and the
 // remainder, which has the sign of a.  Dividing by zero is a panic.
-fn __div(a, b) {
+pub fn __div(a, b) {
     if b == 0 { panic("division by zero"); }
     return __div_bits(a, b);
 }
-fn __rem(a, b) {
+pub fn __rem(a, b) {
     if b == 0 { panic("division by zero"); }
     return __rem_bits(a, b);
 }
 
 // Long division of the sizes of a and b, a bit at a time: t2 = quotient,
 // t3 = remainder, t5 and t6 keep the signs for the result.
-fn __div_bits(a, b) {
+pub fn __div_bits(a, b) {
     asm {
         334FB500    // xor t5,a0,a1
         930F0500    // mv t6,a0
@@ -174,7 +174,7 @@ fn __div_bits(a, b) {
         3305A040    // neg a0,a0
     }
 }
-fn __rem_bits(a, b) {
+pub fn __rem_bits(a, b) {
     asm {
         334FB500    // xor t5,a0,a1
         930F0500    // mv t6,a0
@@ -211,7 +211,7 @@ fn __rem_bits(a, b) {
 //     +0   tests passed            +4   tests failed
 //     +8   the running test's name +12  its file
 //     +16  1 once it has failed
-fn __vars() {
+pub fn __vars() {
     asm {
         13050200    // mv a0,tp
     }
@@ -222,13 +222,13 @@ fn __vars() {
 // A `test "name" { ... }` block, compiled for testing, is an init record:
 // it runs at startup, between these two calls.  A failed assert calls
 // __test_fail with its line and jumps to the end of the block.
-fn __test_begin(name, file) {
+pub fn __test_begin(name, file) {
     let v = __vars();
     store32(v + 8, name);
     store32(v + 12, file);
     store32(v + 16, 0);
 }
-fn __test_fail(line) {
+pub fn __test_fail(line) {
     let v = __vars();
     print("FAIL  ");
     print(load32(v + 8));
@@ -239,7 +239,7 @@ fn __test_fail(line) {
     print(")\n");
     store32(v + 16, 1);
 }
-fn __test_end() {
+pub fn __test_end() {
     let v = __vars();
     if load32(v + 16) {
         store32(v + 4, load32(v + 4) + 1);
@@ -253,7 +253,7 @@ fn __test_end() {
 
 // __tests_done(): after the last test (lib/rttest.s).  Exit code 1 if any
 // failed.
-fn __tests_done() {
+pub fn __tests_done() {
     let v = __vars();
     putc(10);
     print_int(load32(v));
@@ -268,7 +268,7 @@ fn __tests_done() {
 // __trap(cause, pc, address, guard): lib/rt0.s comes here on a trap, with
 // the CPU's cause, the pc and the address it faulted on, and the address of
 // the guard page under the stack.
-fn __trap(cause, pc, address, guard) {
+pub fn __trap(cause, pc, address, guard) {
     print("fam: ");
     if cause == 3 {
         print("calls nested too deep");

@@ -87,6 +87,49 @@ have the same precedence and group left to right.
 
 Parentheses group. A call is `NAME(EXPR, ...)`.
 
+## Modules
+
+A file belongs to a module if it starts with a `module` line:
+
+```
+module shapes;
+
+pub fn area(w, h) { return w * h; }
+
+fn twice(x) { return x + x; }       // only this file can call it
+
+pub fn around(w, h) { return twice(w) + twice(h); }
+```
+
+Another file imports the module and calls its functions by their full
+names:
+
+```
+import shapes;
+
+fn main() {
+    print_int(shapes.area(3, 4));
+    return 0;
+}
+```
+
+- **`pub`** makes a function callable from other files. Without it a
+  function is private to its file, and other files may have their own
+  function of the same name. `main` needs no `pub`.
+- **A file without a `module` line** is in the root module, whose public
+  functions need no prefix anywhere. The runtime library is there, which is
+  why `print` works in every file.
+- **A bare name**, `twice(x)`, is this file's function of that name if it
+  has one, and the root module's otherwise.
+- **A full name**, `shapes.area(3, 4)`, needs `import shapes;` earlier in
+  the file, unless `shapes` is the file's own module.
+- **Several files** may belong to one module. They call each other's `pub`
+  functions by full name.
+- **`import` does not read anything.** It only allows the prefix; the
+  module's object must be given to `fam.sh ld`. Calling a function that
+  does not exist, or is not `pub`, is a link error:
+  `famld: undefined: shapes.twice in main`.
+
 ## Tests
 
 A `test` block sits next to the code it tests:
@@ -122,8 +165,8 @@ FAIL  add handles big numbers (math.fam:14)
 
 ## The runtime library
 
-These are in `lib/rt.fam` and available to every program. The names are
-provisional, until there are modules.
+These are in `lib/rt.fam`, in the root module, so every file can call them
+by their bare names.
 
 | Function | Meaning |
 |---|---|
@@ -194,4 +237,6 @@ prog.fam:3: unknown variable y
 - Global variables and constants; a heap.
 - Console input.
 - Checking the number of arguments of a call.
-- Modules, function pointers.
+- Nested modules; importing single names; checking at compile time that
+  an imported function exists.
+- Function pointers.

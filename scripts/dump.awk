@@ -33,7 +33,7 @@ END {
                 sym = syms + 20 * s
                 kind = word(sym)
                 if (kind == 0) continue
-                print (kind == 1 ? "fn " name(sym) : "init")
+                print (kind == 1 ? "fn " name(sym) : kind == 3 ? "local " name(sym) : "init")
                 at = word(sym + 12); end = at + word(sym + 16)
                 while (at < end) {
                         if (at in callee) {

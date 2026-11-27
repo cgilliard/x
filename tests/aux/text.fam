@@ -1,0 +1,12 @@
+// A second module with names the first one has too.
+module text;
+
+pub fn say(s) { print(s); }         // print is the root's (the library's)
+
+pub fn name() { return twice("text"); }
+
+fn twice(x) { return x; }           // another module's twice is another function
+
+test "a module's tests see its private functions" {
+    assert twice(4) == 4;
+}

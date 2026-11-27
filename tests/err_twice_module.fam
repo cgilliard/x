@@ -1,0 +1,4 @@
+// error: tests/err_twice_module.fam:4: defined twice: m.f
+module m;
+fn f() { return 1; }
+pub fn f() { return 2; }

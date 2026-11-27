@@ -1,0 +1,4 @@
+// error: tests/err_import.fam:3: unknown module shapes
+fn main() {
+    return shapes.area(1, 2);
+}

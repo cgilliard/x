@@ -66,28 +66,31 @@ show it.
 
 | Word | Contents |
 |---|---|
-| 0 | the kind: 0 external, 1 function, 2 init |
+| 0 | the kind: 0 external, 1 function, 2 init, 3 local function |
 | 1 | where the name starts, as an offset into the names |
 | 2 | the length of the name in bytes |
 | 3 | where the record's code starts, as an offset into the code |
 | 4 | the size of the record's code in bytes |
 
-- A **function** defines its name. Its code is the function's body.
+- A **function** defines its name for the whole link. Its code is the
+  function's body.
+- A **local function** is the same, but only this object's call sites can
+  reach it. Other objects may have a function of the same name.
 - An **external** is a name this object calls and does not define. Its code
   fields are zero.
 - An **init** record is code run once at startup. It has no name; its name
   fields are zero.
 
-A name is 1 to 255 bytes. Names are global across the link. The front end
-makes them unique by prefixing the module: `math.add`. Visibility between
-modules is the front end's job, not the linker's.
+A name is 1 to 255 bytes. Function names are global across the link. The
+front end prefixes a function's module, `math.add`, and makes a function
+that is not `pub` a local one.
 
 ### Call sites
 
 | Word | Contents |
 |---|---|
 | 0 | where the call is, as an offset into the code |
-| 1 | the index of the symbol called: a function or an external |
+| 1 | the index of the symbol called: a function, a local function or an external |
 
 A call site is 28 bytes of code, all zero in the object. That is the size
 of the core's call sequence, which the linker has the core put there. So
@@ -118,6 +121,7 @@ its keyword and runs to `end`:
 | Record | Meaning |
 |---|---|
 | `fn NAME` | Defines the function `NAME`. |
+| `local NAME` | Defines the local function `NAME`. |
 | `init` | Code run once at startup. |
 
 A body is a sequence of two kinds of token:

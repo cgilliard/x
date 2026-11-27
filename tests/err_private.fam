@@ -1,0 +1,5 @@
+// error: famld: undefined: shapes.twice in main
+// with: aux/shapes.fam
+// A function that is not pub cannot be called from another file.
+import shapes;
+fn main() { return shapes.twice(2); }

@@ -54,7 +54,8 @@
 #   - header word 2 (the size) holds the address of its code, which is also
 #     where its call sites end
 #   - word 1 of each of its symbols (the name offset) holds the address of
-#     the linker's symbol for it, for functions and externals
+#     the linker's symbol for it, for functions and externals.  A local
+#     function gets a linker symbol of its own, which no name finds.
 #
 # A linker symbol is 28 bytes: name start, name length, the object defining
 #   it (0: none yet), its symbol there, state (0 not written, 1 being
@@ -281,8 +282,9 @@ _start:
 .Ls_next:
     bgeu    s1, s2, .Ls_done
     lw      t2, 0(s1)                   # kind
-    li      t3, 2
+    li      t3, 3
     bgtu    t2, t3, err_bad
+    li      t3, 2
     beq     t2, t3, .Ls_init
     lw      a0, 4(s1)                   # the name
     lw      a1, 8(s1)
@@ -297,8 +299,12 @@ _start:
     add     a0, a0, t3
     lw      t3, 20(ra)
     add     a0, a0, t3                  # its address
-    CALL    find_sym
-    bnez    a2, 2f
+    li      a2, 0
+    lw      t2, 0(s1)
+    li      t3, 3
+    beq     t2, t3, 3f                  # local: its own symbol, whatever
+    CALL    find_sym                    # other objects call their names
+3:  bnez    a2, 2f
     addi    t2, s4, 28                  # a new name
     bgtu    t2, s5, err_big
     mv      a2, s4

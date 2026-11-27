@@ -2,5 +2,5 @@
 // with: aux/more.test.fam
 // output: ok    here\nok    there\n\n2 passed, 0 failed\n
 // Tests from every file of the link run, in order.
-fn twice(x) { return x + x; }
+pub fn twice(x) { return x + x; }
 test "here" { assert thrice(2) == 6; }

@@ -26,8 +26,9 @@
 # On an error, writes a message in place of the object and exits with 1.
 #
 # The language so far (every value is a 32-bit integer):
-#     program   = { function | test }
-#     function  = "fn" NAME "(" [ NAME { "," NAME } ] ")" block
+#     program   = [ "module" NAME ";" ] { import | function | test }
+#     import    = "import" NAME ";"
+#     function  = [ "pub" ] "fn" NAME "(" [ NAME { "," NAME } ] ")" block
 #     test      = "test" STRING block
 #     block     = "{" { statement } "}"
 #     statement = "let" NAME "=" expr ";"
@@ -42,7 +43,8 @@
 #                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 #                   * / %
 #     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
-#               | NAME "(" [ expr { "," expr } ] ")" | "(" expr ")"
+#               | [ NAME "." ] NAME "(" [ expr { "," expr } ] ")"
+#               | "(" expr ")"
 #     NAME      = a letter or '_', then letters, digits, '_'
 #     NUMBER    = decimal digits, or 0x and hex digits (up to 32 bits)
 #     STRING    = "..." with \n \t \0 \\ \" for a newline, a tab, a zero
@@ -67,6 +69,15 @@
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
+# Modules.  A function `f` of a file that says `module m;` is the symbol
+# `m.f`; without a module line it is `f` (the root module).  It is a local
+# symbol, which only this object can call, unless it is `pub` (or is the
+# root's `main`).  A call `m.f()` is to the symbol `m.f`, and m must be
+# this file's module or imported.  A call `f()` in module m is to this
+# file's `m.f` if it defines one, else to the root's `f`: it is noted as
+# a symbol `f` of kind 0x100, and resolve settles it when the whole file has
+# been read.
+#
 # Tests.  If the source starts with the byte 0x01, that and the rest of its
 # first line are not source: the line is the file's name, and the tests are
 # wanted (`fam.sh cc --test`).  Each test block then becomes an init
@@ -84,6 +95,9 @@
 #   + 0x2000000         the compile stack, 64 KiB   (sp), for the parser
 #   + 0x2010000         the locals in scope, 64 KiB: 12 bytes each, name
 #                       start, name length, slot
+#   + 0x2020000         the modules imported, 64 KiB: 8 bytes each, name
+#                       start, name length
+#   + 0x2030000         room to spell one `module.name`
 # Variables, at these offsets from s4:
 .equ V_LTOP,  -8        # the locals: next free entry
 .equ V_LBASE, -12       # the locals: base
@@ -97,6 +111,9 @@
 .equ V_MODE,  -40       # 1 if tests are wanted
 .equ V_FILE,  -44       # then: where the file's name starts
 .equ V_FEND,  -48       #       and ends
+.equ V_MOD,   -52       # where this file's module name starts
+.equ V_MODLEN, -56      #   and its length (0: the root module)
+.equ V_ITOP,  -60       # the imports: next free entry
 # ---------------------------------------------------------------------------
 
 .altmacro
@@ -266,6 +283,10 @@ _start:
     li      t1, 0x10000
     add     sp, t0, t1                  # the compile stack: top
     sw      sp, V_LBASE(s4)             # the locals, after it
+    sw      zero, V_MODLEN(s4)
+    li      t0, 0x10000
+    add     t0, sp, t0
+    sw      t0, V_ITOP(s4)              # the imports, after the locals
     sw      zero, V_MODE(s4)
     bgeu    s1, s2, 3f                  # 0x01 and the file's name first?
     lbu     t2, 0(s1)
@@ -291,13 +312,38 @@ _start:
     li      t2, 1
     bne     a6, t2, err_syntax
     CALL    pack_tok
-    bnez    a3, err_syntax
+    li      t2, 'm' | 'o'<<8 | 'd'<<16 | 'u'<<24
+    bne     a2, t2, 1f
+    li      t2, 'l' | 'e'<<8
+    beq     a3, t2, .Lm_module
+1:  li      t2, 'i' | 'm'<<8 | 'p'<<16 | 'o'<<24
+    bne     a2, t2, 1f
+    li      t2, 'r' | 't'<<8
+    beq     a3, t2, .Lm_import
+1:  bnez    a3, err_syntax
     li      t2, 't' | 'e'<<8 | 's'<<16 | 't'<<24
     beq     a2, t2, .Lt_test
-    li      t2, 'f' | 'n'<<8
+    li      a7, 3                       # a7 = its kind: local unless pub
+    li      t2, 'p' | 'u'<<8 | 'b'<<16
+    bne     a2, t2, 1f
+    li      a7, 1
+    CALL    lex
+    li      t2, 1
+    bne     a6, t2, err_syntax
+    CALL    pack_tok
+    bnez    a3, err_syntax
+1:  li      t2, 'f' | 'n'<<8
     bne     a2, t2, err_syntax
     CALL    lex                         # the name
     CALL    chk_ident
+    lw      t2, V_MODLEN(s4)            # the root's main is always public
+    bnez    t2, 1f
+    bnez    a3, 1f
+    li      t2, 'm' | 'a'<<8 | 'i'<<16 | 'n'<<24
+    bne     a2, t2, 1f
+    li      a7, 1
+1:  CALL    qualify
+    mv      a5, a7
     CALL    o_define
     beqz    a2, err_dup
     CALL    fn_begin
@@ -383,8 +429,44 @@ _start:
     CALL    o_end
     j       .Lf_next
 .Lf_done:
+    CALL    resolve
     CALL    o_write
     j       exit_ok
+
+    # "module" NAME ";" -- before anything else, once
+.Lm_module:
+    lw      t2, V_MODLEN(s4)
+    bnez    t2, err_modfirst
+    lw      t2, -4(s4)                  # any symbol, code or import yet?
+    bnez    t2, err_modfirst
+    bne     s9, s8, err_modfirst
+    lw      t2, V_LBASE(s4)
+    li      t3, 0x10000
+    add     t2, t2, t3
+    lw      t3, V_ITOP(s4)
+    bne     t2, t3, err_modfirst
+    CALL    lex
+    CALL    chk_ident
+    sw      a0, V_MOD(s4)
+    sw      a1, V_MODLEN(s4)
+    EXPECT  0x3B                        # ;
+    j       .Lf_next
+
+    # "import" NAME ";"
+.Lm_import:
+    CALL    lex
+    CALL    chk_ident
+    lw      t2, V_ITOP(s4)
+    lw      t3, V_LBASE(s4)
+    li      t4, 0x20000
+    add     t3, t3, t4
+    addi    t4, t2, 8
+    bgtu    t4, t3, err_big
+    sw      a0, 0(t2)
+    sw      a1, 4(t2)
+    sw      t4, V_ITOP(s4)
+    EXPECT  0x3B                        # ;
+    j       .Lf_next
 
     # test = "test" STRING block
 .Lt_test:
@@ -849,15 +931,17 @@ unary:
     j       e_string                    # (its RET returns for us)
 .Lu_name:
     CALL    chk_ident
-    addi    sp, sp, -12                 # [name start, name length, arguments]
-    sw      a0, 0(sp)
+    addi    sp, sp, -12                 # [name start, name length, -];
+    sw      a0, 0(sp)                   # for a call, [symbol, -, arguments]
     sw      a1, 4(sp)
-    CALL    lex                         # a call if ( follows
+    CALL    lex                         # a call if ( or . follows
     li      t2, 3
     bne     a6, t2, 1f
     lbu     t2, 0(a0)
     li      t3, '('
     beq     t2, t3, .Lu_call
+    li      t3, '.'
+    beq     t2, t3, .Lu_qual
 1:  mv      s1, a0                      # else a local
     lw      a0, 0(sp)
     lw      a1, 4(sp)
@@ -868,8 +952,30 @@ unary:
 
     # A call: each argument's value into a temporary; then the first eight
     # into a0 to a7 and the rest into the frame's low end; then the call.
-.Lu_call:
-    sw      zero, 8(sp)
+.Lu_qual:                               # module . name (
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    CALL    chk_module
+    CALL    lex
+    CALL    chk_ident
+    lw      a2, 0(sp)
+    lw      a3, 4(sp)
+    CALL    join
+    li      a5, 0
+    CALL    o_ref
+    sw      a3, 0(sp)
+    EXPECT  0x28                        # (
+    j       1f
+.Lu_call:                               # name (: this file's, or the root's
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    li      a5, 0
+    lw      t2, V_MODLEN(s4)
+    beqz    t2, 2f
+    li      a5, 0x100                   # (resolve says which)
+2:  CALL    o_ref
+    sw      a3, 0(sp)
+1:  sw      zero, 8(sp)
     CALL    lex
     li      t2, 3
     bne     a6, t2, 1f
@@ -923,10 +1029,9 @@ unary:
     lw      t3, V_OUT(s4)
     ble     t2, t3, 8f
     sw      t2, V_OUT(s4)
-8:  lw      a0, 0(sp)
-    lw      a1, 4(sp)
+8:  lw      a3, 0(sp)
     addi    sp, sp, 12
-    j       o_call
+    j       o_site
 
 # e_string -- a4/a5 = the start and end of a string's text, as written
 #   (with its \ escapes); append `jal a0, <past it>`, its bytes, a zero
@@ -983,6 +1088,136 @@ e_string:
     mv      a1, s9
     li      a2, 0x56F
     j       patch_jal
+
+# join -- a2/a3 = a module's name, a0/a1 = a name; a0/a1 = `module.name`,
+#   spelled in the room kept for that.  Clobbers t2-t5.
+join:
+    lw      t2, V_LBASE(s4)
+    li      t3, 0x20000
+    add     t2, t2, t3
+    add     t3, a3, a1
+    li      t4, 254
+    bgtu    t3, t4, err_long
+    mv      t5, t2
+    li      t3, 0
+1:  bgeu    t3, a3, 2f
+    add     t4, a2, t3
+    lbu     t4, 0(t4)
+    sb      t4, 0(t5)
+    addi    t5, t5, 1
+    addi    t3, t3, 1
+    j       1b
+2:  li      t4, '.'
+    sb      t4, 0(t5)
+    addi    t5, t5, 1
+    li      t3, 0
+3:  bgeu    t3, a1, 4f
+    add     t4, a0, t3
+    lbu     t4, 0(t4)
+    sb      t4, 0(t5)
+    addi    t5, t5, 1
+    addi    t3, t3, 1
+    j       3b
+4:  mv      a0, t2
+    sub     a1, t5, t2
+    RET
+
+# qualify -- a0/a1 = a name; a0/a1 = the symbol of that name in this file's
+#   module: `module.name`, or the name itself in the root module.
+#   Clobbers a2, a3, t2-t5.
+qualify:
+    lw      a3, V_MODLEN(s4)
+    beqz    a3, 1f
+    lw      a2, V_MOD(s4)
+    j       join
+1:  RET
+
+# str_eq -- a0/a1 and a2/a3 = two names; t6 = 1 if they are the same, else
+#   0.  Clobbers t2-t5.
+str_eq:
+    li      t6, 0
+    bne     a1, a3, 2f
+    li      t2, 0
+1:  bgeu    t2, a1, 3f
+    add     t3, a0, t2
+    lbu     t3, 0(t3)
+    add     t4, a2, t2
+    lbu     t4, 0(t4)
+    bne     t3, t4, 2f
+    addi    t2, t2, 1
+    j       1b
+3:  li      t6, 1
+2:  RET
+
+# chk_module -- a0/a1 = a name; error unless it is this file's module or
+#   one it imports.  Clobbers a2-a4, t2-t6.
+chk_module:
+    lw      a2, V_MOD(s4)
+    lw      a3, V_MODLEN(s4)
+    CALL    str_eq
+    bnez    t6, 2f
+    lw      a4, V_LBASE(s4)
+    li      t2, 0x10000
+    add     a4, a4, t2
+1:  lw      t2, V_ITOP(s4)
+    bgeu    a4, t2, err_module
+    lw      a2, 0(a4)
+    lw      a3, 4(a4)
+    CALL    str_eq
+    addi    a4, a4, 8
+    beqz    t6, 1b
+2:  RET
+
+# resolve -- at the end of a file with a module: settle the calls by a bare
+#   name (symbols of kind 0x100).  If the file defines `module.name`, the
+#   calls go to that, and the bare name is left as an external nothing
+#   calls; else the bare name is the root's.
+resolve:
+    lw      t2, V_MODLEN(s4)
+    beqz    t2, 9f
+    mv      a7, s4                      # each such symbol: 0x200 and the
+1:  bgeu    a7, s5, 3f                  # index to use instead, or external
+    lw      t2, 0(a7)
+    li      t3, 0x100
+    bne     t2, t3, 2f
+    sw      zero, 0(a7)
+    lw      a0, 4(a7)
+    add     a0, a0, gp
+    lw      a1, 8(a7)
+    CALL    qualify
+    CALL    o_find
+    beqz    a2, 2f
+    lw      t2, 0(a2)
+    beqz    t2, 2f                      # known, but not defined here
+    li      t2, 0x200
+    sw      t2, 0(a7)
+    sw      a3, 12(a7)
+2:  addi    a7, a7, 20
+    j       1b
+3:  mv      a7, s6                      # each call site: follow a 0x200
+4:  bgeu    a7, s7, 6f
+    lw      t2, 4(a7)
+    slli    t3, t2, 4
+    slli    t2, t2, 2
+    add     t2, t2, t3
+    add     t2, t2, s4
+    lw      t3, 0(t2)
+    li      t4, 0x200
+    bne     t3, t4, 5f
+    lw      t3, 12(t2)
+    sw      t3, 4(a7)
+5:  addi    a7, a7, 8
+    j       4b
+6:  mv      a7, s4                      # and the 0x200s become externals
+7:  bgeu    a7, s5, 9f
+    lw      t2, 0(a7)
+    li      t3, 0x200
+    bne     t2, t3, 8f
+    sw      zero, 0(a7)
+    sw      zero, 12(a7)
+8:  addi    a7, a7, 20
+    j       7b
+9:  RET
 
 # chk_deep -- error if the compile stack or the return ids are nearly
 #   used up.  Clobbers t2.
@@ -1474,6 +1709,52 @@ err_escape:
     li      a0, 'g'
     CALL    uput4
     j       err_end
+err_module:                             # a0/a1 = the name
+    mv      a2, a0
+    mv      a3, a1
+    CALL    err_line
+    # say "unknown module "
+    li      a0, 'u' | 'n'<<8 | 'k'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 'o' | 'w'<<8 | 'n'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'm' | 'o'<<8 | 'd'<<16 | 'u'<<24
+    CALL    uput4
+    li      a0, 'l' | 'e'<<8 | ' '<<16
+    CALL    uput4
+    j       err_tok
+err_modfirst:
+    CALL    err_line
+    # say "module must come first, and once"
+    li      a0, 'm' | 'o'<<8 | 'd'<<16 | 'u'<<24
+    CALL    uput4
+    li      a0, 'l' | 'e'<<8 | ' '<<16 | 'm'<<24
+    CALL    uput4
+    li      a0, 'u' | 's'<<8 | 't'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'c' | 'o'<<8 | 'm'<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, ' ' | 'f'<<8 | 'i'<<16 | 'r'<<24
+    CALL    uput4
+    li      a0, 's' | 't'<<8 | ','<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'a' | 'n'<<8 | 'd'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'o' | 'n'<<8 | 'c'<<16 | 'e'<<24
+    CALL    uput4
+    j       err_end
+err_long:
+    CALL    err_line
+    # say "name too long"
+    li      a0, 'n' | 'a'<<8 | 'm'<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, ' ' | 't'<<8 | 'o'<<16 | 'o'<<24
+    CALL    uput4
+    li      a0, ' ' | 'l'<<8 | 'o'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 'g'
+    CALL    uput4
+    j       err_end
 err_assert:
     CALL    err_line
     # say "assert outside a test"
@@ -1605,21 +1886,20 @@ o_new:
     sw      t2, -4(s4)
     RET
 
-# o_define -- a0 = name start, a1 = length; start the record of that
-#   function.  a2 = its symbol, or 0 if the name is defined already.
-#   Clobbers a3, a4, t2-t6.
+# o_define -- a0 = name start, a1 = length, a5 = kind (1 a function, 3 a
+#   local function); start the record of that function.  a2 = its symbol,
+#   or 0 if the name is defined already.  Clobbers a3, a4, t2-t6.
 o_define:
     CALL    o_find
     bnez    a2, 1f
-    li      a4, 1
+    mv      a4, a5
     CALL    o_new
     j       3f
 1:  lw      t2, 0(a2)
     beqz    t2, 2f
     li      a2, 0                       # defined already
     RET
-2:  li      t2, 1                       # called earlier: now defined
-    sw      t2, 0(a2)
+2:  sw      a5, 0(a2)                   # called earlier: now defined
 3:  sub     t2, s9, s8
     sw      t2, 12(a2)
     mv      ra, a2
@@ -1653,14 +1933,26 @@ o_word:
     mv      s9, t2
     RET
 
-# o_call -- a0 = name start, a1 = length; append a call to that function:
-#   a call site and its 28 zero bytes of code.  Clobbers a2-a4, t2-t6.
-o_call:
+# o_ref -- a0 = name start, a1 = length, a5 = the kind to give the symbol
+#   if the name is new (0: external until defined); a2 = the symbol of that
+#   name, a3 = its index.  Clobbers a4, t2-t6.
+o_ref:
     CALL    o_find
     bnez    a2, 1f
-    li      a4, 0                       # not seen yet: external until defined
+    mv      a4, a5
     CALL    o_new
-1:  addi    t2, s7, 8
+1:  RET
+
+# o_call -- a0 = name start, a1 = length; append a call to that function.
+#   Clobbers a2-a5, t2-t6.
+o_call:
+    li      a5, 0
+    CALL    o_ref                       # then o_site
+
+# o_site -- a3 = a symbol's index; append a call to it: a call site and its
+#   28 zero bytes of code.  Clobbers t2, t3, t4.
+o_site:
+    addi    t2, s7, 8
     bgtu    t2, gp, err_big
     addi    t3, s9, 28
     bgtu    t3, s0, err_big

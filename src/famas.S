@@ -28,6 +28,7 @@
 #
 # The text form:
 #     fn NAME            a function: its body follows, up to `end`
+#     local NAME         the same, for a function only this object can call
 #     init               startup code: its body follows, up to `end`
 #     XXXXXXXX           in a body: four bytes of code, in memory order
 #     @NAME              in a body: a call to the function NAME
@@ -176,7 +177,13 @@ _start:
     CALL    next_tok
     beqz    a1, .La_done
     CALL    pack_tok
-    bnez    a3, err_record
+    li      a7, 3
+    li      t2, 'l' | 'o'<<8 | 'c'<<16 | 'a'<<24
+    bne     a2, t2, 1f
+    li      t2, 'l'
+    beq     a3, t2, .La_fn
+1:  bnez    a3, err_record
+    li      a7, 1
     li      t2, 'f' | 'n'<<8
     beq     a2, t2, .La_fn
     li      t2, 'i' | 'n'<<8 | 'i'<<16 | 't'<<24
@@ -186,6 +193,7 @@ _start:
     CALL    next_tok                    # the name
     beqz    a1, err_noend
     CALL    chk_name
+    mv      a5, a7
     CALL    o_define
     beqz    a2, err_dup
     j       .La_body
@@ -424,21 +432,20 @@ o_new:
     sw      t2, -4(s4)
     RET
 
-# o_define -- a0 = name start, a1 = length; start the record of that
-#   function.  a2 = its symbol, or 0 if the name is defined already.
-#   Clobbers a3, a4, t2-t6.
+# o_define -- a0 = name start, a1 = length, a5 = kind (1 a function, 3 a
+#   local function); start the record of that function.  a2 = its symbol,
+#   or 0 if the name is defined already.  Clobbers a3, a4, t2-t6.
 o_define:
     CALL    o_find
     bnez    a2, 1f
-    li      a4, 1
+    mv      a4, a5
     CALL    o_new
     j       3f
 1:  lw      t2, 0(a2)
     beqz    t2, 2f
     li      a2, 0                       # defined already
     RET
-2:  li      t2, 1                       # called earlier: now defined
-    sw      t2, 0(a2)
+2:  sw      a5, 0(a2)                   # called earlier: now defined
 3:  sub     t2, s9, s8
     sw      t2, 12(a2)
     mv      ra, a2
@@ -472,14 +479,26 @@ o_word:
     mv      s9, t2
     RET
 
-# o_call -- a0 = name start, a1 = length; append a call to that function:
-#   a call site and its 28 zero bytes of code.  Clobbers a2-a4, t2-t6.
-o_call:
+# o_ref -- a0 = name start, a1 = length, a5 = the kind to give the symbol
+#   if the name is new (0: external until defined); a2 = the symbol of that
+#   name, a3 = its index.  Clobbers a4, t2-t6.
+o_ref:
     CALL    o_find
     bnez    a2, 1f
-    li      a4, 0                       # not seen yet: external until defined
+    mv      a4, a5
     CALL    o_new
-1:  addi    t2, s7, 8
+1:  RET
+
+# o_call -- a0 = name start, a1 = length; append a call to that function.
+#   Clobbers a2-a5, t2-t6.
+o_call:
+    li      a5, 0
+    CALL    o_ref                       # then o_site
+
+# o_site -- a3 = a symbol's index; append a call to it: a call site and its
+#   28 zero bytes of code.  Clobbers t2, t3, t4.
+o_site:
+    addi    t2, s7, 8
     bgtu    t2, gp, err_big
     addi    t3, s9, 28
     bgtu    t3, s0, err_big
