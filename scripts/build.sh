@@ -1,56 +1,50 @@
 #!/bin/sh
 # scripts/build.sh -- build everything in bin/ from fam0.seed.
+#
+# It needs qemu-system-riscv32, this shell, cat and cmp (and printf, where
+# the shell has none of its own).
 
-cd "$(dirname "$0")/.." || exit 1
+# to the repository's root, from wherever this is run
+case $0 in */*) cd "${0%/*}/.." ;; *) cd .. ;; esac || exit 1
 
 : "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
 zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 : "${MEM:=128M}"
 
-
-serial_qemu() {  # serial_qemu INFILE OUTFILE [extra qemu args...]
-        sin=$1; sout=$2; shift 2
-        qemu-system-riscv32 \
-                -machine virt -m "$MEM" -cpu "$CPU" \
-                -display none -bios none \
-                -chardev file,id=ser0,path="$sout",input-path="$sin" \
-                -serial chardev:ser0 \
-                "$@"
-}
-
+# fresh OUT IN... -- is OUT there, not empty, and newer than every IN?
+# (BUILD_ALL=1 says no: build everything again.)
 fresh() {
-        [ -z "$BUILD_ALL" ] && [ -e "$1" ] || return 1
+        [ -z "$BUILD_ALL" ] && [ -s "$1" ] || return 1
         f_out=$1; shift
         for f_in; do [ "$f_in" -nt "$f_out" ] && return 1; done
         return 0
 }
 
+# compile OUT PROGRAM IN... -- run PROGRAM under QEMU with the INs, one
+# after another, as what it reads from the serial port; what it writes is
+# OUT.  Skipped if OUT is fresh.  bin/build.in is where the input is put
+# together; it is left there.
 compile() {
-        out=$1; asm=$2; shift 2
-        disk_args=""; disk=""
-        if [ "$1" = "--disk" ]; then
-                disk=$2
-                disk_args="-drive file=$disk,format=raw,if=none,id=hd0 \
--device virtio-blk-device,drive=hd0"
-                shift 2
-        fi
-        if [ $# -gt 0 ] && fresh "$out" "$asm" "$@"; then return 0; fi
-        [ $# -gt 0 ] && echo "Building $* → $out" >&2
-        stream="$out.in.$$"
+        out=$1; program=$2; shift 2
+        if fresh "$out" "$program" "$@"; then return 0; fi
+        echo "Building $* → $out" >&2
         # the input ends with 0x04; the linker wants four of them after its
         # last object, and the others stop at the first
-        ([ $# -gt 0 ] && cat "$@"; printf '\004\004\004\004') > "$stream"
-        serial_qemu "$stream" "$out" \
-                -device loader,file="$asm",addr=0x80000000 \
-                $disk_args
-        rc=$?
-        rm -f "$stream"
+        { cat "$@"; printf '\004\004\004\004'; } > bin/build.in
+        qemu-system-riscv32 \
+                -machine virt -m "$MEM" -cpu "$CPU" \
+                -display none -bios none \
+                -chardev file,id=ser0,path="$out",input-path=bin/build.in \
+                -serial chardev:ser0 \
+                -device loader,file="$program",addr=0x80000000
 
-        # a program that fails exits with 1, its message where its output goes
-        if [ $rc -ne 0 ]; then
-                echo "build.sh: $out: error: $(head -c 200 "$out" | tr -d '\0')" >&2
-                rm -f "$out"   # (not taken for a fresh build next time)
+        # A program that fails exits with 1, its message where its output
+        # goes.  Show it, and empty OUT so it is not taken for fresh.
+        if [ $? -ne 0 ]; then
+                echo "build.sh: $out: error:" >&2
+                cat "$out" >&2
+                : > "$out"
                 exit 1
         fi
 }
