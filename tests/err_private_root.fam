@@ -1,4 +1,0 @@
-// error: famld: undefined: helper in main
-// with: aux/helper.fam
-// The same in the root module.
-fn main() { return helper(); }

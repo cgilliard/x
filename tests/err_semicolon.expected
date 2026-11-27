@@ -1,0 +1,2 @@
+tests/err_semicolon.fam:3: unexpected }
+exit 1

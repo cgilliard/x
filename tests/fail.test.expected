@@ -1,0 +1,7 @@
+ok    first
+FAIL  second (tests/fail.test.fam:7)
+FAIL  third (tests/fail.test.fam:12)
+ok    fourth
+
+2 passed, 2 failed
+exit 1

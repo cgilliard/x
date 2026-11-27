@@ -1,4 +1,3 @@
-// exit: 96
 fn check(got, want) {
     if got == want { return 6; }
     return 0;

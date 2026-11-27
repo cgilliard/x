@@ -1,5 +1,3 @@
-// exit: 0
-// output: 1 2 3 4 5 6 7 | 28 | 11\n
 // Enough functions for the dispatcher to branch every way, a call through
 // an id with stack arguments, and a function that is only ever called
 // through its id.

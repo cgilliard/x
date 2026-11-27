@@ -1,5 +1,3 @@
-// exit: 0
-// output: 16 1 4950 0\n
 fn main() {
     let a = alloc(10);
     let b = alloc(100);

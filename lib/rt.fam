@@ -130,10 +130,16 @@ pub fn print_hex(n) {
     print("0x");
     let shift = 28;
     while shift >= 0 {
-        let digit = (n >> shift) & 15;
-        if digit < 10 { putc(48 + digit); } else { putc(55 + digit); }
+        putc(__hex_digit(n >> shift));
         shift = shift - 4;
     }
+}
+
+// __hex_digit(n): the character for the low four bits of n: 0-9, A-F.
+fn __hex_digit(n) {
+    n = n & 15;
+    if n < 10 { return 48 + n; }
+    return 55 + n;
 }
 
 // ---- input ----------------------------------------------------------------
@@ -442,6 +448,14 @@ test "dividing and the remainder agree" {
         assert a / 7 * 7 + a % 7 == a;
         a = a + 37;
     }
+}
+
+test "hex digits are 0 to 9 and A to F" {
+    assert __hex_digit(0) == 48;                // 0
+    assert __hex_digit(9) == 57;                // 9
+    assert __hex_digit(10) == 65;               // A
+    assert __hex_digit(15) == 70;               // F
+    assert __hex_digit(0x1234ABCD) == 68;       // D: only the low four bits
 }
 
 test "alloc gives pieces that do not overlap, each on a 16-byte boundary" {

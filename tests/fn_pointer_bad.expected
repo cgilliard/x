@@ -1,0 +1,2 @@
+fam: bad instruction, or a call through a number that is no function's id, at <HEX>
+exit 1

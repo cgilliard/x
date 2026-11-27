@@ -1,4 +1,3 @@
-// exit: 11
 // Two functions that call each other.
 fn is_even(n) {
     if n == 0 { return 1; }

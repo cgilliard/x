@@ -1,5 +1,3 @@
-// exit: 1
-// output: panic: out of memory\n
 fn main() {
     alloc(0x70000000);
     return 0;

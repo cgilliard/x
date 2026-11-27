@@ -1,0 +1,3 @@
+// The other file of this test.
+pub fn thrice(x) { return twice(x) + x; }
+test "there" { assert twice(4) == 8; }

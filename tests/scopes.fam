@@ -1,4 +1,3 @@
-// exit: 13
 // A let lasts to the end of its block and may hide an outer one.
 fn main() {
     let x = 1;

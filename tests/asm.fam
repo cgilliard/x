@@ -1,4 +1,3 @@
-// exit: 9
 // asm { } puts hex words in the code.  Arguments are in a0, a1, ... when
 // a function starts, and a function that ends without return returns a0.
 fn add3(x) {

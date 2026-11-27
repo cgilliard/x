@@ -1,0 +1,2 @@
+tests/err_hex.fam:2: bad hex word 1305
+exit 1

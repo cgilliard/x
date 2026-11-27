@@ -1,0 +1,2 @@
+tests/err_number.fam:1: bad number 12ab
+exit 1

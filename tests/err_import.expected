@@ -1,0 +1,2 @@
+tests/err_import.fam:2: unknown module shapes
+exit 1

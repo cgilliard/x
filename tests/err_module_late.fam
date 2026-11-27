@@ -1,3 +1,2 @@
-// error: tests/err_module_late.fam:3: module must come first, and once
 fn f() { return 1; }
 module late;

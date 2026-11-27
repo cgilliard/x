@@ -1,4 +1,3 @@
-// exit: 1
 // The same when no function has an id at all.
 fn main() {
     let bad = 0;

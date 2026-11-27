@@ -1,0 +1,2 @@
+tests/err_overflow.fam:1: bad number 4294967296
+exit 1

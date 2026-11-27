@@ -1,0 +1,2 @@
+tests/err_expr.fam:2: unexpected ;
+exit 1

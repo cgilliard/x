@@ -1,3 +1,2 @@
-// error: tests/err_eof.fam:4: unexpected end of file
 fn main() {
     return 1;

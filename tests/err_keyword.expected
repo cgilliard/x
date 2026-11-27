@@ -1,0 +1,2 @@
+tests/err_keyword.fam:1: unexpected func
+exit 1

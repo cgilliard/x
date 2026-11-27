@@ -1,4 +1,3 @@
-// exit: 15
 // A function that calls through an id and has its own id taken: it and the
 // dispatcher call each other.
 fn count(f, n) {

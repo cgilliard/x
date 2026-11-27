@@ -1,4 +1,3 @@
-// exit: 4
 // A function nothing calls is left out of the binary, even if it calls
 // something that does not exist.
 fn unused() { return nowhere(1); }

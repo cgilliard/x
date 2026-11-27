@@ -1,0 +1,2 @@
+tests/err_scope.fam:3: unknown variable inner
+exit 1

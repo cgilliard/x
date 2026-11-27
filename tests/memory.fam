@@ -1,5 +1,3 @@
-// exit: 0
-// output: 120 305419896 8\n
 // store and load, on the bytes of a string.
 fn main() {
     let s = "abcdefgh";

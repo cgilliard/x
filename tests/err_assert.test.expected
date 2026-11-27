@@ -1,0 +1,2 @@
+tests/err_assert.test.fam:3: unexpected }
+exit 1

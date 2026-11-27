@@ -1,4 +1,3 @@
-// exit: 77
 // Each line adds 7 if its expression is right.
 fn check(got, want) {
     if got == want { return 7; }

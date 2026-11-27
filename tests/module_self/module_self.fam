@@ -1,0 +1,3 @@
+// main is the root's; it calls into a module that names itself.
+import app;
+fn main() { return app.run(); }

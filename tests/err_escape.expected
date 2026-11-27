@@ -1,0 +1,2 @@
+tests/err_escape.fam:2: unknown \ in a string
+exit 1

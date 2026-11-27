@@ -1,0 +1,2 @@
+tests/err_unknown.fam:2: unknown variable y
+exit 1

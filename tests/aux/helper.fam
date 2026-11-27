@@ -1,3 +1,0 @@
-// A file-private function in the root module, for err_private_root.fam.
-fn helper() { return 1; }
-pub fn other() { return helper(); }

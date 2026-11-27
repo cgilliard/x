@@ -1,4 +1,3 @@
-// exit: 40
 // A cycle of three, entered at each of its members, and a second cycle
 // inside the first.
 fn a(n) {

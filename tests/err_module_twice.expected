@@ -1,0 +1,2 @@
+tests/err_module_twice.fam:2: module must come first, and once
+exit 1

@@ -1,5 +1,3 @@
-// exit: 1
-// output: ok    first\nFAIL  second (tests/fail.test.fam:9)\nFAIL  third (tests/fail.test.fam:14)\nok    fourth\n\n2 passed, 2 failed\n
 // Every failure is reported; a test stops at its first failed assert.
 test "first" { assert 1; }
 

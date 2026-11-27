@@ -1,4 +1,3 @@
-// exit: 1
 // Frames this large run out of stack before return ids: reported too.
 fn down(n) {
     let a = n; let b = a; let c = b; let d = c; let e = d; let f = e;

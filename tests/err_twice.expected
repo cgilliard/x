@@ -1,0 +1,2 @@
+tests/err_twice.fam:2: defined twice: main
+exit 1

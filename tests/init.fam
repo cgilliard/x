@@ -1,5 +1,3 @@
-// exit: 0
-// output: first second main\n
 // init blocks run at startup, before main, in the order written.
 init { print("first "); }
 fn main() {

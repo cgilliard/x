@@ -1,0 +1,2 @@
+tests/err_string.fam:2: string without its closing quote
+exit 1

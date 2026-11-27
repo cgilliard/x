@@ -1,0 +1,6 @@
+// A cycle across two objects.
+pub fn ping(n) {
+    if n == 0 { return 0; }
+    return pong(n - 1) + 1;
+}
+fn main() { return ping(6); }

@@ -1,4 +1,3 @@
-// error: tests/err_assert.fam:3: assert outside a test
 fn main() {
     assert 1;
 }

@@ -1,0 +1,2 @@
+tests/err_init.fam:1: unexpected (
+exit 1

@@ -1,6 +1,3 @@
-// exit: 0
-// input: hello\n
-// output: HELLO\n
 // Read a line and write it in capitals.
 fn main() {
     let c = getc();

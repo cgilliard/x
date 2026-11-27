@@ -1,0 +1,3 @@
+// A file-private function in the root module.
+fn helper() { return 1; }
+pub fn other() { return helper(); }

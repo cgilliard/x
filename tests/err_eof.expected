@@ -1,0 +1,2 @@
+tests/err_eof.fam:3: unexpected end of file
+exit 1

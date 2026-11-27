@@ -1,0 +1,2 @@
+tests/err_bytes.fam:2: bad hex word 1G
+exit 1

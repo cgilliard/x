@@ -1,2 +1,1 @@
-// error: tests/err_overflow.fam:2: bad number 4294967296
 fn main() { return 4294967296; }

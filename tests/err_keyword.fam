@@ -1,2 +1,1 @@
-// error: tests/err_keyword.fam:2: unexpected func
 func main() { return 1; }

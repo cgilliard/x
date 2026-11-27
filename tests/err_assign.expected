@@ -1,0 +1,2 @@
+tests/err_assign.fam:2: unknown variable x
+exit 1

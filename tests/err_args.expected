@@ -1,0 +1,2 @@
+tests/err_args.fam:2: wrong number of arguments
+exit 1

@@ -1,3 +1,0 @@
-// The second file of two_files.test.fam.
-pub fn thrice(x) { return twice(x) + x; }
-test "there" { assert twice(4) == 8; }

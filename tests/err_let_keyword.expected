@@ -1,0 +1,2 @@
+tests/err_let_keyword.fam:2: unexpected while
+exit 1

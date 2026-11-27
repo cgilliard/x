@@ -1,5 +1,3 @@
-// exit: 1
-// output: panic: it broke\n
 fn main() {
     panic("it broke");
     return 0;

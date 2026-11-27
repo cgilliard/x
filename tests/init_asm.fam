@@ -1,4 +1,3 @@
-// exit: 7
 // init asm is code with no frame around it.  This one leaves 7 in s9, a
 // register that compiled code never touches.
 init asm {

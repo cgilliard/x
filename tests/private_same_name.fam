@@ -1,5 +1,0 @@
-// exit: 12
-// with: aux/helper.fam
-// Two files may each have a private function of the same name.
-fn helper() { return 11; }
-fn main() { return helper() + other(); }
