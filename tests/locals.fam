@@ -1,0 +1,7 @@
+// exit: 30
+fn main() {
+    let a = 10;
+    let b = a + a;
+    a = b + a;      // 30
+    return a;
+}

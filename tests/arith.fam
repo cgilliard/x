@@ -1,0 +1,21 @@
+// exit: 77
+// Each line adds 7 if its expression is right.
+fn check(got, want) {
+    if got == want { return 7; }
+    return 0;
+}
+fn main() {
+    let n = 0;
+    n = n + check(2 + 3 - 1, 4);
+    n = n + check(10 - 2 - 3, 5);               // left to right
+    n = n + check(1 + 2 << 3, 24);              // + before <<
+    n = n + check(6 & 3 | 8, 10);               // & before |
+    n = n + check(5 ^ 1, 4);
+    n = n + check(-16 >> 2, -4);                // arithmetic shift
+    n = n + check(~0, -1);
+    n = n + check(-(3 - 5), 2);
+    n = n + check(0x10 + 0xff, 271);
+    n = n + check(2 - (3 - 4), 3);
+    n = n + check(4000000000 + 294967296, 0);   // wraps at 32 bits
+    return n;
+}

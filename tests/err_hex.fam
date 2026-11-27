@@ -1,0 +1,4 @@
+// error: tests/err_hex.fam:3: bad hex word 1305
+fn main() {
+    asm { 1305 }
+}

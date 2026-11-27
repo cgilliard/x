@@ -1,0 +1,4 @@
+// error: tests/err_let_keyword.fam:3: unexpected while
+fn main() {
+    let while = 1;
+}

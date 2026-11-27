@@ -1,0 +1,11 @@
+// exit: 9
+// asm { } puts hex words in the code.  Arguments are in a0, a1, ... when
+// a function starts, and a function that ends without return returns a0.
+fn add3(x) {
+    asm { 13053500 }        // addi a0, a0, 3
+}
+fn main() {
+    let x = add3(4);
+    asm { 13000000 13000000 }   // two nops
+    return x + 2;
+}

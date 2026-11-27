@@ -1,0 +1,18 @@
+// exit: 23
+fn pick(x) {
+    if x < 10 {
+        return 1;
+    } else if x < 20 {
+        return 2;
+    } else {
+        return 3;
+    }
+}
+fn main() {
+    let r = 0;
+    if pick(5) == 1 { r = r + 1; } else { r = 100; }
+    if pick(15) == 2 { r = r + 2; }
+    if pick(25) == 3 { r = r + 20; }
+    if pick(25) == 1 { r = 100; }
+    return r;
+}

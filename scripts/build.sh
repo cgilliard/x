@@ -52,3 +52,8 @@ compile() {
 compile bin/fam0 fam0.seed src/fam0.fam0
 cmp ./bin/fam0 ./fam0.seed
 compile bin/fam.uncompressed bin/fam0 src/fam.fam0
+compile bin/famc bin/fam0 src/famc.fam0
+compile bin/famas bin/fam0 src/famas.fam0
+compile bin/famld bin/fam0 src/famld.fam0
+fresh bin/rt0.o bin/famas lib/rt0.s ||
+        sh "$(dirname "$0")/fam.sh" as lib/rt0.s bin/rt0.o || exit 1

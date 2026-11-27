@@ -1,0 +1,4 @@
+// error: tests/err_unknown.fam:3: unknown variable y
+fn main() {
+    return y;
+}

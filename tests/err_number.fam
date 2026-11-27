@@ -1,0 +1,2 @@
+// error: tests/err_number.fam:2: bad number 12ab
+fn main() { return 12ab; }

@@ -1,0 +1,4 @@
+// error: tests/err_assign.fam:3: unknown variable x
+fn main() {
+    x = 1;
+}

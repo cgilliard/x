@@ -1,0 +1,5 @@
+// error: tests/err_scope.fam:4: unknown variable inner
+fn main() {
+    if 1 { let inner = 2; }
+    return inner;
+}

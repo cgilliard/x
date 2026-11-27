@@ -1,0 +1,2 @@
+// error: famld: undefined: missing in main
+fn main() { return missing(1); }

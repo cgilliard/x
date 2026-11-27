@@ -1,0 +1,13 @@
+// exit: 13
+// A let lasts to the end of its block and may hide an outer one.
+fn main() {
+    let x = 1;
+    let y = 0;
+    if x == 1 {
+        let x = 10;
+        y = y + x;
+        let x = x + 1;      // its own expression sees the x before it
+        y = y - x + 13;     // 10 - 11 + 13
+    }
+    return y + x;           // 12 + 1
+}

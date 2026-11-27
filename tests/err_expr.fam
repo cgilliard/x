@@ -1,0 +1,4 @@
+// error: tests/err_expr.fam:3: unexpected ;
+fn main() {
+    return 1 + ;
+}

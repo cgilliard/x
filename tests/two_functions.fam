@@ -1,0 +1,7 @@
+// exit: 5
+fn unused() { return 9; }   // a comment
+
+fn main()
+{
+    return 5 ;
+}

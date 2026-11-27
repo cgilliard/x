@@ -1,0 +1,8 @@
+// exit: 0
+// `return;` returns 0.
+fn nothing() { return; }
+fn main() {
+    let x = 5;
+    nothing();
+    return nothing();
+}

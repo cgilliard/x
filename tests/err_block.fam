@@ -1,0 +1,4 @@
+// error: tests/err_block.fam:5: unexpected end of file
+fn main() {
+    if 1 {
+        return 2;

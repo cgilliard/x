@@ -1,0 +1,3 @@
+// error: tests/err_twice.fam:3: defined twice: main
+fn main() { return 1; }
+fn main() { return 2; }

@@ -1,0 +1,4 @@
+// error: tests/err_semicolon.fam:4: unexpected }
+fn main() {
+    return 1
+}

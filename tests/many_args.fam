@@ -1,0 +1,10 @@
+// exit: 135
+// The ninth and later arguments go on the stack.
+fn pick(a, b, c, d, e, f, g, h, i, j, k) {
+    return a + c + i + k + (j - b);     // 1 + 3 + 9 + 11 + 8
+}
+fn main() {
+    let x = pick(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);                // 32
+    let y = pick(x, 1, 1, 0, 0, 0, 0, 0, pick(1,1,1,1,1,1,1,1,1,1,1), 2, 1);
+    return x + y + 64;      // 32 + (32 + 1 + 4 + 1 + 1) + 64
+}
