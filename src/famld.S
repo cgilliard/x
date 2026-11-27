@@ -37,13 +37,23 @@
 # and `allot`, which reserves the table they share, are defined at the top
 # of the output (see preamble).
 #
+# Function ids.  An id site (a call site whose symbol index has its top bit
+# set) is two instructions, `lui a0` and `addi a0`, that load the id of a
+# function: a number from 1, given to each function some object takes the
+# id of.  A call through an id is a call to `__call` with the id in t2.
+# If an object calls `__call` and none defines it, the linker writes it:
+# the dispatcher, a word that finds t2 among the ids by halving and calls
+# the function, which so returns through it.  It keeps every function that
+# has an id.
+#
 # Built from this file by tools/s2fam0_fam.py into src/famld.fam0, which
 # bin/fam0 turns into bin/famld.
 #
 # Memory, from the page after the code (base):
 #   base                return ids, 64 KiB          (s10 floor, s11 pointer)
 #   base + 0x10000      the emit stack, 64 KiB      (tp floor, sp pointer);
-#                       its top word, at -4(s3), counts the stubs
+#                       its top words count the stubs, at -4(s3), and the
+#                       function ids, at -8(s3)
 #   base + 0x20000      the symbol table, 1 MiB     (s3 base, s4 next free)
 #   base + 0x120000     the init list, 64 KiB       (s5 base, s6 next free)
 #   base + 0x130000     the objects, 32 MiB         (s0 next free)
@@ -57,9 +67,10 @@
 #     the linker's symbol for it, for functions and externals.  A local
 #     function gets a linker symbol of its own, which no name finds.
 #
-# A linker symbol is 28 bytes: name start, name length, the object defining
-#   it (0: none yet), its symbol there, state (0 not written, 1 being
-#   written, 2 written), number (from 1), its stub's index + 1 (0: no stub).
+# A linker symbol is 32 bytes: name start, name length, the object defining
+#   it (0: none yet; 1: it is the dispatcher), its symbol there, state (0
+#   not written, 1 being written, 2 written), number (from 1), its stub's
+#   index + 1 (0: no stub), its function id (0: none).
 # An init entry is 8 bytes: the object, the init symbol there.
 #
 # Other registers:
@@ -210,6 +221,7 @@ _start:
     add     s3, s11, t0                 # symbol table
     addi    sp, s3, -16                 # emit stack: top, under the stub count
     sw      zero, -4(s3)
+    sw      zero, -8(s3)
     mv      s4, s3
     li      t0, 0x100000
     add     s5, s3, t0                  # init list
@@ -305,7 +317,7 @@ _start:
     beq     t2, t3, 3f                  # local: its own symbol, whatever
     CALL    find_sym                    # other objects call their names
 3:  bnez    a2, 2f
-    addi    t2, s4, 28                  # a new name
+    addi    t2, s4, 32                  # a new name
     bgtu    t2, s5, err_big
     mv      a2, s4
     sw      a0, 0(a2)
@@ -314,9 +326,10 @@ _start:
     sw      zero, 12(a2)
     sw      zero, 16(a2)
     sw      zero, 24(a2)
+    sw      zero, 28(a2)
     li      t3, 1                       # number: the one before's + 1
     beq     s4, s3, 1f
-    lw      t3, -8(s4)
+    lw      t3, -12(s4)
     addi    t3, t3, 1
 1:  sw      t3, 20(a2)
     mv      s4, t2
@@ -351,29 +364,56 @@ _start:
 .Lc_next:
     bgeu    s1, s2, .Ll_next
     lw      t2, 0(s1)                   # its offset: after the one before,
-    andi    t3, t2, 3                   # 28 bytes inside the code
-    bnez    t3, err_bad
+    andi    t3, t2, 3                   # 28 bytes inside the code (8 for an
+    bnez    t3, err_bad                 # id site)
     bltu    t2, a3, err_bad
     bgtu    t2, a4, err_bad
+    lw      t3, 4(s1)
+    srli    t5, t3, 31                  # t5 = 1 for an id site
     addi    a3, t2, 28
-    bgtu    a3, a4, err_bad
-    lw      t3, 4(s1)                   # its symbol: a function or external
+    beqz    t5, 1f
+    addi    a3, t2, 8
+1:  bgtu    a3, a4, err_bad
+    slli    t3, t3, 1                   # its symbol: not an init record
+    srli    t3, t3, 1
     bgeu    t3, a5, err_bad
     slli    t4, t3, 4
     slli    t3, t3, 2
     add     t3, t3, t4
     add     t3, t3, ra
     lw      t4, 28(t3)
-    li      t5, 2
-    beq     t4, t5, err_bad
-    addi    s1, s1, 8
+    li      t6, 2
+    beq     t4, t6, err_bad
+    beqz    t5, 2f
+    lw      t4, 32(t3)                  # an id site: the function gets an
+    lw      t6, 28(t4)                  # id, if it has none
+    bnez    t6, 2f
+    lw      t6, -8(s3)
+    addi    t6, t6, 1
+    li      t5, 20000                   # (the dispatcher stays under 1 MiB)
+    bgtu    t6, t5, err_ids
+    sw      t6, -8(s3)
+    sw      t6, 28(t4)
+2:  addi    s1, s1, 8
     j       .Lc_next
 
     # --- pass 2: write every function an init record calls (emit_fn writes
     # --- its callees first), then the init records.  A function nothing
     # --- reaches is left out.
 .Lp_done:
-    mv      ra, s5
+    li      t2, '_' | '_'<<8 | 'c'<<16 | 'a'<<24
+    sw      t2, 0(tp)                   # (spelled at the emit stack's floor)
+    li      t2, 'l' | 'l'<<8
+    sw      t2, 4(tp)
+    mv      a0, tp
+    li      a1, 6
+    CALL    find_sym                    # __call, called and not defined: the
+    beqz    a2, 7f                      # dispatcher
+    lw      t2, 8(a2)
+    bnez    t2, 7f
+    li      t2, 1
+    sw      t2, 8(a2)
+7:  mv      ra, s5
 1:  bgeu    ra, s6, 3f
     lw      a5, 0(ra)
     lw      t2, 4(ra)
@@ -389,10 +429,10 @@ _start:
     bgeu    t3, s2, 6f
     mv      a6, s1
     addi    s1, s1, 8
+    lw      t3, 4(a6)
+    bltz    t3, 2b                      # an id site calls nothing
     CALL    call_sym
-    lw      t3, 8(a2)
-    beqz    t3, err_undef
-    CALL    emit_fn
+    CALL    visit
     j       2b
 6:  addi    ra, ra, 8
     j       1b
@@ -461,7 +501,7 @@ find_sym:
     bne     t5, t6, 3f
     addi    t4, t4, 1
     j       2b
-3:  addi    a2, a2, 28
+3:  addi    a2, a2, 32
     j       1b
 4:  li      a2, 0
 5:  RET
@@ -489,6 +529,8 @@ first_call:
 #   Clobbers t2, t3.
 call_sym:
     lw      t2, 4(a6)
+    slli    t2, t2, 1                   # (less an id site's mark)
+    srli    t2, t2, 1
     slli    t3, t2, 4
     slli    t2, t2, 2
     add     t2, t2, t3
@@ -544,50 +586,21 @@ out_hex1:
 1:  addi    a0, a0, '0'
     j       out_ch                      # (its RET returns for us)
 
-# emit_fn -- a2 = symbol (defined, not being written).  Write the function,
-#   after the functions it calls (recursively).  A callee that is being
-#   written -- this call closes a cycle -- gets a stub instead, if it has
-#   none yet.  (A call to itself needs none: the core defines a name before
-#   its body.)
-#   Frame on the emit stack: [s1, s2, s9]; s1 = the call site to look at
-#   next, s2 = the offset where the function's code ends.
-emit_fn:
-    lw      t2, 16(a2)
-    li      t3, 2
-    beq     t2, t3, 3f                  # written already
-    li      t2, 1
-    sw      t2, 16(a2)
-    addi    sp, sp, -12
-    bltu    sp, tp, err_deep
-    sw      s1, 0(sp)
-    sw      s2, 4(sp)
-    sw      s9, 8(sp)
-    mv      s9, a2
-    lw      a5, 8(s9)                   # first its callees
-    lw      t2, 12(s9)
-    lw      a2, 12(t2)
-    lw      s2, 16(t2)
-    add     s2, s2, a2
-    CALL    first_call
-    mv      s1, a6
-1:  lw      a5, 8(s9)
-    lw      t2, 8(a5)
-    bgeu    s1, t2, 2f
-    lw      t3, 0(s1)
-    bgeu    t3, s2, 2f
-    mv      a6, s1
-    addi    s1, s1, 8
-    CALL    call_sym
+# visit -- a2 = a symbol the function being written (s9; 0: an init
+#   record) calls.  If it is not written yet, write it now, so it comes
+#   first.  If it is being written -- this call closes a cycle -- give it a
+#   stub, if it has none.  (A call to itself needs none: the core defines a
+#   name before its body.)  Undefined is an error.
+visit:
     lw      t3, 8(a2)
     beqz    t3, err_undef
-    beq     a2, s9, 1b                  # itself
+    beq     a2, s9, 2f                  # itself
     lw      t3, 16(a2)
     li      t4, 1
-    beq     t3, t4, 4f
-    CALL    emit_fn
-    j       1b
-4:  lw      t3, 24(a2)                  # being written: through its stub
-    bnez    t3, 1b
+    beq     t3, t4, 1f
+    j       emit_fn                     # (its RET returns for us)
+1:  lw      t3, 24(a2)                  # being written: through its stub
+    bnez    t3, 2f
     lw      t3, -4(s3)                  # a new stub, the next index
     addi    t3, t3, 1
     li      t4, 0xE000                  # (the core has room for these many)
@@ -617,6 +630,60 @@ emit_fn:
     CALL    out4
     li      a0, ' ' | ';'<<8 | 0x0A<<16
     CALL    out4
+2:  RET
+
+# out_callee -- a2 = a symbol the function being written (s9) calls;
+#   append the name to call it by, and a space: its stub's if it is being
+#   written (and is not s9 itself), else its own.  Clobbers a0, a1, t2-t4.
+out_callee:
+    lw      t2, 16(a2)
+    li      t3, 1
+    bne     t2, t3, 1f
+    beq     a2, s9, 1f
+    li      a0, '>'
+    lw      a1, 20(a2)
+    CALL    out_num
+    j       2f
+1:  CALL    out_name
+2:  li      a0, ' '
+    j       out_ch                      # (its RET returns for us)
+
+# emit_fn -- a2 = symbol (defined, not being written).  Write the function,
+#   after the functions it calls (visit).
+#   Frame on the emit stack: [s1, s2, s9]; s1 = the call site to look at
+#   next, s2 = the offset where the function's code ends.
+emit_fn:
+    lw      t2, 16(a2)
+    li      t3, 2
+    beq     t2, t3, 3f                  # written already
+    li      t2, 1
+    sw      t2, 16(a2)
+    addi    sp, sp, -12
+    bltu    sp, tp, err_deep
+    sw      s1, 0(sp)
+    sw      s2, 4(sp)
+    sw      s9, 8(sp)
+    mv      s9, a2
+    lw      a5, 8(s9)                   # first its callees
+    li      t2, 1
+    beq     a5, t2, .Ld_callees
+    lw      t2, 12(s9)
+    lw      a2, 12(t2)
+    lw      s2, 16(t2)
+    add     s2, s2, a2
+    CALL    first_call
+    mv      s1, a6
+1:  lw      a5, 8(s9)
+    lw      t2, 8(a5)
+    bgeu    s1, t2, 2f
+    lw      t3, 0(s1)
+    bgeu    t3, s2, 2f
+    mv      a6, s1
+    addi    s1, s1, 8
+    lw      t3, 4(a6)
+    bltz    t3, 1b                      # an id site calls nothing
+    CALL    call_sym
+    CALL    visit
     j       1b
 2:  li      a0, ':' | ' '<<8            # then its text
     CALL    out4
@@ -634,11 +701,12 @@ emit_fn:
     CALL    out4
     li      a0, 'c' | 'h'<<8 | ' '<<16
     CALL    out4
-5:
-    lw      a5, 8(s9)
+5:  lw      a5, 8(s9)
+    li      t2, 1
+    beq     a5, t2, .Ld_text
     lw      a1, 12(s9)
     CALL    emit_code
-    li      a0, ';' | 0x0A<<8
+4:  li      a0, ';' | 0x0A<<8
     CALL    out4
     li      t2, 2
     sw      t2, 16(s9)
@@ -648,10 +716,133 @@ emit_fn:
     addi    sp, sp, 12
 3:  RET
 
+    # The dispatcher.  Its callees: every function with an id.
+.Ld_callees:
+    mv      s1, s3
+1:  bgeu    s1, s4, 2b
+    mv      a2, s1
+    addi    s1, s1, 32
+    lw      t2, 28(a2)
+    beqz    t2, 1b
+    CALL    visit
+    j       1b
+    # Its text: an illegal instruction unless 1 <= t2 <= the last id, then
+    # the tree (gen).  s1 = bytes of tree written, s2 = bytes in all.
+.Ld_text:
+    li      a0, 0x00039463              # bnez t2, +8
+    CALL    out_word
+    li      a0, 0
+    CALL    out_word
+    lw      t2, -8(s3)
+    beqz    t2, 4b                      # no ids at all: every call is bad
+    addi    t2, t2, 1
+    CALL    out_li_t3
+    li      a0, 0x01C3E463              # bltu t2, t3, +8
+    CALL    out_word
+    li      a0, 0
+    CALL    out_word
+    lw      a5, -8(s3)
+    slli    s2, a5, 5
+    slli    t2, a5, 4
+    add     s2, s2, t2
+    addi    s2, s2, -16                 # 48 a function, less 16
+    li      s1, 0
+    li      a4, 1
+    CALL    gen
+    j       4b
+
+# gen -- a4/a5 = the first and last of a run of ids; append the code that
+#   calls the function whose id t2 holds, known to be in the run.  For one
+#   id, 32 bytes:   <call it> ; j <the tree's end>
+#   For more, with m the middle id, 16 bytes and the two halves:
+#       li t3, m ; bltu t2, t3, +8 ; j <second half> ; <first half>
+#   so a run of n ids is 48n - 16 bytes.
+#   Frame on the emit stack: [first, last, middle].
+gen:
+    bne     a4, a5, 3f
+    mv      a2, s3                      # one id: find whose
+1:  lw      t2, 28(a2)
+    beq     t2, a4, 2f
+    addi    a2, a2, 32
+    j       1b
+2:  CALL    out_callee
+    addi    s1, s1, 28
+    sub     t2, s2, s1
+    CALL    out_j
+    addi    s1, s1, 4
+    RET
+3:  addi    sp, sp, -12
+    bltu    sp, tp, err_deep
+    sw      a4, 0(sp)
+    sw      a5, 4(sp)
+    add     t2, a4, a5
+    addi    t2, t2, 1
+    srli    t2, t2, 1
+    sw      t2, 8(sp)
+    CALL    out_li_t3
+    li      a0, 0x01C3E463              # bltu t2, t3, +8
+    CALL    out_word
+    lw      t2, 8(sp)                   # past the first half: 48 for each
+    lw      t3, 0(sp)                   # of its ids, less 16, and this jump
+    sub     t2, t2, t3
+    slli    t3, t2, 5
+    slli    t2, t2, 4
+    add     t2, t2, t3
+    addi    t2, t2, -12
+    CALL    out_j
+    addi    s1, s1, 16
+    lw      a4, 0(sp)
+    lw      a5, 8(sp)
+    addi    a5, a5, -1
+    CALL    gen
+    lw      a4, 8(sp)
+    lw      a5, 4(sp)
+    CALL    gen
+    addi    sp, sp, 12
+    RET
+
+# out_li_t3 -- t2 = a number; append `lui t3` and `addi t3, t3` that load
+#   it.  Clobbers a0, a1, t2-t5.
+out_li_t3:
+    mv      a1, t2
+    li      t3, 0x800
+    add     t2, t2, t3
+    srli    t2, t2, 12
+    slli    a0, t2, 12
+    ori     a0, a0, 0x637               # lui t3, 0  (0xE37)
+    li      t3, 0x800
+    or      a0, a0, t3
+    CALL    out_word
+    slli    a0, a1, 20
+    li      t3, 0x000E0E13              # addi t3, t3, 0
+    or      a0, a0, t3
+    j       out_word
+
+# out_j -- t2 = a distance; append `jal x0` over it.  Clobbers a0, t2-t5.
+out_j:
+    srli    t3, t2, 20                  # offset bit 20 -> bit 31
+    andi    t3, t3, 1
+    slli    t3, t3, 31
+    srli    t4, t2, 1                   # bits 10:1 -> 30:21
+    andi    t4, t4, 0x3FF
+    slli    t4, t4, 21
+    or      t3, t3, t4
+    srli    t4, t2, 11                  # bit 11 -> 20
+    andi    t4, t4, 1
+    slli    t4, t4, 20
+    or      t3, t3, t4
+    srli    t4, t2, 12                  # bits 19:12 stay
+    andi    t4, t4, 0xFF
+    slli    t4, t4, 12
+    or      t3, t3, t4
+    ori     a0, t3, 0x6F
+    j       out_word
+
 # emit_code -- a5 = object, a1 = one of its symbols; write that record's
 #   code in the core's language: a word as `XXXXXXXX ,`, a call site as the
-#   callee's short name.  a3 = offset, a4 = where it ends, a6 = the next
-#   call site, a7 = the code (and the end of the call sites).
+#   callee's short name, an id site as the two instructions that load the
+#   id.  a3 = offset, a4 = where it ends, a6 = the next call site, a7 = the
+#   code (and the end of the call sites).
 emit_code:
     lw      a3, 12(a1)
     lw      a4, 16(a1)
@@ -663,23 +854,31 @@ emit_code:
     bgeu    a6, a7, 2f
     lw      t2, 0(a6)
     bne     t2, a3, 2f
+    lw      t2, 4(a6)
+    bltz    t2, 4f
     addi    a3, a3, 28                  # a call site
     bgtu    a3, a4, err_bad
     CALL    call_sym
     lw      t2, 8(a2)
     beqz    t2, err_undef
     addi    a6, a6, 8
-    lw      t2, 16(a2)                  # one being written (not the one
-    li      t3, 1                       # this code is in): its stub
-    bne     t2, t3, 4f
-    beq     a2, s9, 4f
-    li      a0, '>'
-    lw      a1, 20(a2)
-    CALL    out_num
-    j       5f
-4:  CALL    out_name
-5:  li      a0, ' '
-    CALL    out_ch
+    CALL    out_callee
+    j       1b
+4:  addi    a3, a3, 8                   # an id site
+    bgtu    a3, a4, err_bad
+    CALL    call_sym
+    addi    a6, a6, 8
+    lw      a1, 28(a2)
+    li      t3, 0x800
+    add     t2, a1, t3
+    srli    t2, t2, 12
+    slli    a0, t2, 12
+    ori     a0, a0, 0x537               # lui a0, 0
+    CALL    out_word
+    slli    a0, a1, 20
+    li      t3, 0x00050513              # addi a0, a0, 0
+    or      a0, a0, t3
+    CALL    out_word
     j       1b
 2:  add     t2, a7, a3                  # a word
     lw      a0, 0(t2)
@@ -1012,6 +1211,33 @@ err_big:
     li      a0, 'f' | ' '<<8 | 'm'<<16 | 'e'<<24
     CALL    uput4
     li      a0, 'm' | 'o'<<8 | 'r'<<16 | 'y'<<24
+    CALL    uput4
+    j       err_end
+err_ids:
+    # say "famld: too many functions have their id taken"
+    li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
+    CALL    uput4
+    li      a0, 'd' | ':'<<8 | ' '<<16 | 't'<<24
+    CALL    uput4
+    li      a0, 'o' | 'o'<<8 | ' '<<16 | 'm'<<24
+    CALL    uput4
+    li      a0, 'a' | 'n'<<8 | 'y'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'f' | 'u'<<8 | 'n'<<16 | 'c'<<24
+    CALL    uput4
+    li      a0, 't' | 'i'<<8 | 'o'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 's' | ' '<<8 | 'h'<<16 | 'a'<<24
+    CALL    uput4
+    li      a0, 'v' | 'e'<<8 | ' '<<16 | 't'<<24
+    CALL    uput4
+    li      a0, 'h' | 'e'<<8 | 'i'<<16 | 'r'<<24
+    CALL    uput4
+    li      a0, ' ' | 'i'<<8 | 'd'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 't' | 'a'<<8 | 'k'<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, 'n'
     CALL    uput4
     j       err_end
 err_stubs:

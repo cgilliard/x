@@ -27,8 +27,11 @@ END {
         syms = 28; calls = syms + 20 * nsym; code = calls + 8 * ncall
         names = code + word(20)
         if (word(8) != n || names + word(24) != n) bad("bad object")
-        for (c = 0; c < ncall; c++)
-                callee[word(calls + 8 * c)] = syms + 20 * word(calls + 8 * c + 4)
+        for (c = 0; c < ncall; c++) {
+                at = word(calls + 8 * c); i = word(calls + 8 * c + 4)
+                if (i >= 2147483648) { i -= 2147483648; idsite[at] = 1 }
+                callee[at] = syms + 20 * i
+        }
         for (s = 0; s < nsym; s++) {
                 sym = syms + 20 * s
                 kind = word(sym)
@@ -36,7 +39,9 @@ END {
                 print (kind == 1 ? "fn " name(sym) : kind == 3 ? "local " name(sym) : "init")
                 at = word(sym + 12); end = at + word(sym + 16)
                 while (at < end) {
-                        if (at in callee) {
+                        if (at in idsite) {
+                                print "&" name(callee[at]); at += 8
+                        } else if (at in callee) {
                                 print "@" name(callee[at]); at += 28
                         } else {
                                 printf "%02X%02X%02X%02X\n", b[code + at],

@@ -1,0 +1,8 @@
+// exit: 15
+// A function that calls through an id and has its own id taken: it and the
+// dispatcher call each other.
+fn count(f, n) {
+    if n == 0 { return 0; }
+    return n + f(f, n - 1);
+}
+fn main() { return count(&count, 5); }

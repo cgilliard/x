@@ -1,0 +1,18 @@
+// exit: 0
+// output: 7 12 7 12 1 0 22\n
+fn add(a, b) { return a + b; }
+fn mul(a, b) { return a * b; }
+fn apply(f, a, b) { return f(a, b); }
+fn main() {
+    let f = &add;
+    print_int(f(3, 4)); putc(32);
+    f = &mul;
+    print_int(f(3, 4)); putc(32);
+    print_int(apply(&add, 3, 4)); putc(32);
+    print_int(apply(&mul, 3, 4)); putc(32);
+    print_int(&add == &add); putc(32);
+    print_int(&add == &mul); putc(32);
+    print_int(apply(f, apply(&add, 1, 1), 11));
+    putc(10);
+    return 0;
+}

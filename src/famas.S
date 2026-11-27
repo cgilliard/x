@@ -32,6 +32,8 @@
 #     init               startup code: its body follows, up to `end`
 #     XXXXXXXX           in a body: four bytes of code, in memory order
 #     @NAME              in a body: a call to the function NAME
+#     &NAME              in a body: the two instructions that load the
+#                        function NAME's id into a0
 #     # ...              a token starting with # is a comment to the line's end
 #
 # Built from this file by tools/s2fam0_fam.py into src/famas.fam0, which
@@ -209,6 +211,15 @@ _start:
     addi    a1, a1, -1
     CALL    chk_name
     CALL    o_call
+    j       .La_body
+1:  li      t3, '&'
+    bne     t2, t3, 1f
+    addi    a0, a0, 1                   # an id
+    addi    a1, a1, -1
+    CALL    chk_name
+    li      a5, 0
+    CALL    o_ref
+    CALL    o_idsite
     j       .La_body
 1:  CALL    pack_tok
     li      t2, 'e' | 'n'<<8 | 'd'<<16
@@ -509,6 +520,25 @@ o_site:
 2:  sw      zero, 0(s9)
     addi    s9, s9, 4
     bltu    s9, t3, 2b
+    RET
+
+# o_idsite -- a3 = a symbol's index; append the loading of that function's
+#   id into a0: an id site (a call site with the index's top bit set) and
+#   its 8 zero bytes of code.  Clobbers t2, t3, t4.
+o_idsite:
+    addi    t2, s7, 8
+    bgtu    t2, gp, err_big
+    addi    t3, s9, 8
+    bgtu    t3, s0, err_big
+    sub     t4, s9, s8
+    sw      t4, 0(s7)
+    li      t4, 0x80000000
+    or      t4, t4, a3
+    sw      t4, 4(s7)
+    mv      s7, t2
+    sw      zero, 0(s9)
+    sw      zero, 4(s9)
+    mv      s9, t3
     RET
 
 # uput_w -- a0 = a word; write its four bytes to the UART, lowest first.

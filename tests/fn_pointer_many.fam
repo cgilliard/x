@@ -1,0 +1,28 @@
+// exit: 0
+// output: 1 2 3 4 5 6 7 | 28 | 11\n
+// Enough functions for the dispatcher to branch every way, a call through
+// an id with stack arguments, and a function that is only ever called
+// through its id.
+fn f1() { return 1; }
+fn f2() { return 2; }
+fn f3() { return 3; }
+fn f4() { return 4; }
+fn f5() { return 5; }
+fn f6() { return 6; }
+fn f7() { return 7; }
+fn show(f) { print_int(f()); putc(32); }
+fn sum(a, b, c, d, e, f, g, h, i, j) { return a + j + i; }
+fn total(f, n) {
+    if n == 0 { return 0; }
+    return f() + total(f, n - 1);
+}
+fn main() {
+    show(&f1); show(&f2); show(&f3); show(&f4); show(&f5); show(&f6); show(&f7);
+    print("| ");
+    print_int(total(&f7, 4));
+    print(" | ");
+    let s = &sum;
+    print_int(s(1, 0, 0, 0, 0, 0, 0, 0, 4, 6));
+    putc(10);
+    return 0;
+}

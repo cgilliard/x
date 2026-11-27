@@ -43,6 +43,7 @@
 #                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 #                   * / %
 #     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
+#               | "&" [ NAME "." ] NAME         a function's id
 #               | [ NAME "." ] NAME "(" [ expr { "," expr } ] ")"
 #               | "(" expr ")"
 #     NAME      = a letter or '_', then letters, digits, '_'
@@ -66,6 +67,9 @@
 #     the CPU has no instructions for them.
 #   - A string's bytes, and a zero byte, sit in the code where it is used,
 #     behind a `jal a0` that jumps over them and so leaves their address.
+#   - `&f` is an id site: the linker fills in the two instructions that
+#     load f's id.  A call `p(...)` where p is a local is a call through an
+#     id: a call to __call, which the linker writes, with the id in t2.
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
@@ -912,10 +916,43 @@ unary:
     EMIT    0x00153513                  # seqz a0, a0
     RET
 1:  li      t3, '~'
-    bne     t2, t3, err_syntax
+    bne     t2, t3, 1f
     CALL    unary
     EMIT    0xFFF54513                  # not a0, a0
     RET
+1:  li      t3, '&'                     # & [ module . ] name: its id
+    bne     t2, t3, err_syntax
+    CALL    lex
+    CALL    chk_ident
+    addi    sp, sp, -8
+    sw      a0, 0(sp)
+    sw      a1, 4(sp)
+    CALL    lex
+    li      t2, 3
+    bne     a6, t2, 2f
+    lbu     t2, 0(a0)
+    li      t3, '.'
+    bne     t2, t3, 2f
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    CALL    chk_module
+    CALL    lex
+    CALL    chk_ident
+    lw      a2, 0(sp)
+    lw      a3, 4(sp)
+    CALL    join
+    li      a5, 0
+    j       3f
+2:  mv      s1, a0                      # a bare name, as in a call
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    li      a5, 0
+    lw      t2, V_MODLEN(s4)
+    beqz    t2, 3f
+    li      a5, 0x100
+3:  addi    sp, sp, 8
+    CALL    o_ref
+    j       o_idsite                    # (its RET returns for us)
 .Lu_paren:
     li      a4, 1
     CALL    expr
@@ -931,8 +968,8 @@ unary:
     j       e_string                    # (its RET returns for us)
 .Lu_name:
     CALL    chk_ident
-    addi    sp, sp, -12                 # [name start, name length, -];
-    sw      a0, 0(sp)                   # for a call, [symbol, -, arguments]
+    addi    sp, sp, -12                 # [name start, name length, -]; for a
+    sw      a0, 0(sp)                   # call, [symbol, id's slot + 1, arguments]
     sw      a1, 4(sp)
     CALL    lex                         # a call if ( or . follows
     li      t2, 3
@@ -964,11 +1001,18 @@ unary:
     li      a5, 0
     CALL    o_ref
     sw      a3, 0(sp)
+    sw      zero, 4(sp)
     EXPECT  0x28                        # (
     j       1f
-.Lu_call:                               # name (: this file's, or the root's
-    lw      a0, 0(sp)
+.Lu_call:                               # name (: a local holding an id, or
+    lw      a0, 0(sp)                   # this file's function, or the root's
     lw      a1, 4(sp)
+    CALL    l_look
+    bltz    a3, 3f
+    addi    a3, a3, 1
+    sw      a3, 4(sp)
+    j       1f
+3:  sw      zero, 4(sp)
     li      a5, 0
     lw      t2, V_MODLEN(s4)
     beqz    t2, 2f
@@ -1029,7 +1073,18 @@ unary:
     lw      t3, V_OUT(s4)
     ble     t2, t3, 8f
     sw      t2, V_OUT(s4)
-8:  lw      a3, 0(sp)
+8:  lw      a3, 4(sp)
+    beqz    a3, 9f
+    addi    a3, a3, -1                  # through an id: lw t2, <its slot>
+    li      a2, 7
+    CALL    e_lw_slot
+    addi    sp, sp, 12
+    li      t3, '_' | '_'<<8 | 'c'<<16 | 'a'<<24
+    li      t4, 'l' | 'l'<<8
+    li      t5, 0
+    li      a1, 6
+    j       call_rt                     # __call
+9:  lw      a3, 0(sp)
     addi    sp, sp, 12
     j       o_site
 
@@ -1197,6 +1252,10 @@ resolve:
 3:  mv      a7, s6                      # each call site: follow a 0x200
 4:  bgeu    a7, s7, 6f
     lw      t2, 4(a7)
+    srli    t5, t2, 31                  # (an id site's mark, kept)
+    slli    t5, t5, 31
+    slli    t2, t2, 1
+    srli    t2, t2, 1
     slli    t3, t2, 4
     slli    t2, t2, 2
     add     t2, t2, t3
@@ -1205,6 +1264,7 @@ resolve:
     li      t4, 0x200
     bne     t3, t4, 5f
     lw      t3, 12(t2)
+    or      t3, t3, t5
     sw      t3, 4(a7)
 5:  addi    a7, a7, 8
     j       4b
@@ -1299,9 +1359,15 @@ l_add:
 # l_find -- a0/a1 = name; a3 = the slot of the local of that name, the
 #   latest if several.  None is an error.  Clobbers a2, t2-t6.
 l_find:
+    CALL    l_look
+    bltz    a3, err_unknown
+    RET
+
+# l_look -- the same, but a3 = -1 if there is none.
+l_look:
     lw      a2, V_LTOP(s4)
 1:  lw      t2, V_LBASE(s4)
-    bgeu    t2, a2, err_unknown
+    bgeu    t2, a2, 4f
     addi    a2, a2, -12
     lw      t2, 4(a2)
     bne     t2, a1, 1b
@@ -1316,6 +1382,8 @@ l_find:
     addi    t4, t4, 1
     j       2b
 3:  lw      a3, 8(a2)
+    RET
+4:  li      a3, -1
     RET
 
 # e_sw_slot -- a2 = a register's number, a3 = slot; append
@@ -1963,6 +2031,25 @@ o_site:
 2:  sw      zero, 0(s9)
     addi    s9, s9, 4
     bltu    s9, t3, 2b
+    RET
+
+# o_idsite -- a3 = a symbol's index; append the loading of that function's
+#   id into a0: an id site (a call site with the index's top bit set) and
+#   its 8 zero bytes of code.  Clobbers t2, t3, t4.
+o_idsite:
+    addi    t2, s7, 8
+    bgtu    t2, gp, err_big
+    addi    t3, s9, 8
+    bgtu    t3, s0, err_big
+    sub     t4, s9, s8
+    sw      t4, 0(s7)
+    li      t4, 0x80000000
+    or      t4, t4, a3
+    sw      t4, 4(s7)
+    mv      s7, t2
+    sw      zero, 0(s9)
+    sw      zero, 4(s9)
+    mv      s9, t3
     RET
 
 # uput_w -- a0 = a word; write its four bytes to the UART, lowest first.

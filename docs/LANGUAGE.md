@@ -55,6 +55,31 @@ fn NAME(PARAMETER, ...) { STATEMENTS }
   computation left behind. Use `return` when the value matters.
 - Functions may call themselves and each other.
 
+## Function values
+
+`&NAME` is a function as a value, which can be kept in a local, passed and
+compared. Calling a local calls the function it holds:
+
+```
+fn add(a, b) { return a + b; }
+fn apply(f, a, b) { return f(a, b); }
+
+fn main() {
+    let f = &add;
+    return f(1, 2) + apply(&add, 3, 4);
+}
+```
+
+- `&shapes.area` names another module's function, as in a call.
+- A local hides a function of the same name: `f(1, 2)` calls through the
+  local `f` if there is one.
+- The value is a small number, the function's id, not an address. Zero is
+  never a function, so it can stand for "none".
+- A call through a value is slower than a direct call (`docs/OBJECT.md`,
+  "Function ids").
+- Calling a number that is no function's id stops the program with a
+  message. Nothing checks that the function takes the arguments given.
+
 ## Statements
 
 | Statement | Meaning |
@@ -239,4 +264,5 @@ prog.fam:3: unknown variable y
 - Checking the number of arguments of a call.
 - Nested modules; importing single names; checking at compile time that
   an imported function exists.
-- Function pointers.
+- Types for function values (they are plain numbers, like everything
+  else).

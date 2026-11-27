@@ -274,6 +274,8 @@ pub fn __trap(cause, pc, address, guard) {
         print("calls nested too deep");
     } else if (cause == 5 || cause == 7) && address - guard >= 0 && address - guard < 4096 {
         print("stack overflow");
+    } else if cause == 2 {
+        print("bad instruction, or a call through a number that is no function's id,");
     } else {
         print("trap ");
         print_int(cause);

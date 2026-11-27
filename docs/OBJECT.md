@@ -100,6 +100,11 @@ front end can resolve every branch from offsets in its own output.
 Call sites are in ascending order of offset and do not overlap. Each lies
 wholly inside one record's code.
 
+An **id site** is an entry of the same table with the top bit of word 1
+set. It is 8 bytes of code, all zero in the object, where the linker puts
+the two instructions (`lui a0` and `addi a0`) that load the function's id:
+see "Function ids".
+
 ### Code
 
 All branches and data references inside a record are PC-relative and
@@ -130,6 +135,7 @@ A body is a sequence of two kinds of token:
 |---|---|
 | `XXXXXXXX` | Eight uppercase hex digits: four bytes of code, in memory order. `addi sp,sp,-4` is the word `0xFFC10113`, written `1301C1FF`. |
 | `@NAME` | A call to the function `NAME`: a call site, and its 28 bytes of code. |
+| `&NAME` | The id of the function `NAME`, loaded into `a0`: an id site, and its 8 bytes of code. |
 
 In the text form a name cannot contain whitespace or `@`, or start with
 `#`.
@@ -203,6 +209,25 @@ Link errors are reported as text in place of the output, with exit code 1:
 - functions that call each other ending up over 1 MiB apart
 - input that is not an object, or an object whose contents are inconsistent
 
+## Function ids
+
+Compiled code has no `jalr`, so it cannot jump to an address held in a
+register. A function that is to be called through a value has an **id**
+instead: a small number, from 1, that the linker gives to every function
+some object has an id site for. Zero is no function's id.
+
+A call through an id is an ordinary call site for the name `__call`, with
+the id in `t2` and the arguments where they would be for a direct call.
+When an object calls `__call` and none defines it, the linker writes it:
+the **dispatcher**, which finds `t2` among the ids by halving and calls the
+function. The function returns to the dispatcher and the dispatcher to the
+caller, so such a call costs two calls and about as many comparisons as
+the number of ids has bits. A number that is no function's id runs into an
+illegal instruction, which the runtime reports.
+
+Every function with an id is kept in a binary that has the dispatcher,
+whether or not anything calls it directly.
+
 ## What the core imposes on generated code
 
 These come from the core's call and return sequences and are not negotiable
@@ -246,8 +271,6 @@ The deviations:
 - **Shared data.** Globals and constants visible to other objects. Until
   there is a data part, an object exposes data through a function that
   returns its address.
-- **Function pointers.** A way to say "the id of function `NAME`", and the
-  dispatcher the linker would generate.
 - **Interfaces.** Types, constants and inlinable definitions exported for
   other compilations.
 - **Debug information.** Source files and lines.

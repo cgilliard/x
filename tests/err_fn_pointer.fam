@@ -1,0 +1,5 @@
+// error: famld: undefined: missing in __call
+fn main() {
+    let f = &missing;
+    return f();
+}

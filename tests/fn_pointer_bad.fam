@@ -1,0 +1,8 @@
+// exit: 1
+// A call through a number that is no function's id is caught.
+fn f() { return 1; }
+fn main() {
+    let g = &f;
+    let bad = 99;
+    return bad();
+}
