@@ -1,8 +1,8 @@
 #!/bin/sh
 # scripts/build.sh -- build everything in bin/ from fam0.seed.
 #
-# It needs qemu-system-riscv32, this shell, cat and cmp (and printf, where
-# the shell has none of its own).
+# It needs qemu-system-riscv32, this shell, cat and cmp.  (printf, which it
+# uses once, is part of the shell: dash, bash and BusyBox all have it.)
 
 # to the repository's root, from wherever this is run
 case $0 in */*) cd "${0%/*}/.." ;; *) cd .. ;; esac || exit 1
@@ -30,8 +30,10 @@ compile() {
         if fresh "$out" "$program" "$@"; then return 0; fi
         echo "Building $* → $out" >&2
         # the input ends with 0x04; the linker wants four of them after its
-        # last object, and the others stop at the first
-        { cat "$@"; printf '\004\004\004\004'; } > bin/build.in
+        # last object, and the others stop at the first.  bin/end.bin is
+        # those four bytes, made here the first time.
+        [ -s bin/end.bin ] || printf '\004\004\004\004' > bin/end.bin
+        cat "$@" bin/end.bin > bin/build.in
         qemu-system-riscv32 \
                 -machine virt -m "$MEM" -cpu "$CPU" \
                 -display none -bios none \
