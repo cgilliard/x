@@ -42,9 +42,10 @@ compile() {
                 -device loader,file="$program",addr=0x80000000
 
         # A program that fails exits with 1, its message where its output
-        # goes.  Show it, and empty OUT so it is not taken for fresh.
+        # goes.  Show it (after $on_fail, if that is set, in place of our
+        # own line), empty OUT so it is not taken for fresh, and stop.
         if [ $? -ne 0 ]; then
-                echo "build.sh: $out: error:" >&2
+                echo "${on_fail:-build.sh: $out: error:}" >&2
                 cat "$out" >&2
                 : > "$out"
                 exit 1
@@ -70,9 +71,13 @@ compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
 compile bin/fampack      bin/fam bin/fampack.core
 
 # a check: the seed, given its own source, builds itself.  bin/same, a fam
-# program, compares the two and stops the build if they differ.
+# program, compares the two: it exits with 1 if they differ, which stops
+# the build.  It writes nothing, so a note goes in bin/fam0.same to say the
+# check was made; then it is made again only when something it uses changes.
 compile bin/fam0      fam0.seed src/fam0.fam0
 compile bin/same.o    bin/famc  src/same.fam
 compile bin/same.core bin/famld bin/rt.o bin/same.o bin/rtmain.o
 compile bin/same      bin/fam   bin/same.core
+on_fail="ERROR: Build failed! Root of trust was tampered with?"
 compile bin/fam0.same bin/same  bin/fam0 fam0.seed
+[ -s bin/fam0.same ] || echo "the seed builds itself" > bin/fam0.same

@@ -24,12 +24,12 @@
 //
 // It reads the two files one after the other and then the end marker, four
 // 0x04 bytes:     cat A B bin/end.bin
-// and writes "identical" and exits with 0, or says how they differ and
-// exits with 1.
+// and exits with 0 if they are identical and with 1 if they are not.  It
+// writes nothing.
 //
 // A serial port has no end of file, so the end is the first four 0x04
 // bytes in a row, and where A stops and B starts is taken to be the middle.
-// A file with four 0x04 bytes in a row is therefore reported as different,
+// A file with four 0x04 bytes in a row is therefore taken as different,
 // not compared.
 //
 // scripts/build.sh uses it to check that the seed, given its own source,
@@ -41,10 +41,7 @@ fn main() {
     let size = 0;
     let marks = 0;                              // 0x04 bytes in a row so far
     while marks < 4 {
-        if size == room {
-            print("same: the files are too large\n");
-            exit(1);
-        }
+        if size == room { return 1; }           // too large to compare
         let c = getc();
         store8(data + size, c);
         size = size + 1;
@@ -52,23 +49,12 @@ fn main() {
     }
     size = size - 4;
 
-    if size & 1 {
-        print("same: the files differ in size\n");
-        exit(1);
-    }
+    if size & 1 { return 1; }                   // not the same size
     let half = size >> 1;
     let i = 0;
     while i < half {
-        if load8(data + i) != load8(data + half + i) {
-            print("same: the files differ at byte ");
-            print_int(i);
-            print("\n");
-            exit(1);
-        }
+        if load8(data + i) != load8(data + half + i) { return 1; }
         i = i + 1;
     }
-    print("identical: ");
-    print_int(half);
-    print(" bytes\n");
     return 0;
 }
