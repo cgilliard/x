@@ -405,3 +405,62 @@ pub fn __trap(cause, pc, address, guard) {
     putc(10);
     exit(1);
 }
+
+// ---- the runtime's own tests ----------------------------------------------
+//
+//     tools/famc --test lib
+
+test "multiplying" {
+    assert 6 * 7 == 42;
+    assert -6 * 7 == -42;
+    assert -6 * -7 == 42;
+    assert 0 * 99 == 0;
+    assert 1000 * 1000 == 1000000;
+    assert 65536 * 65536 == 0;                  // wraps at 32 bits
+}
+
+test "dividing rounds toward zero" {
+    assert 7 / 2 == 3;
+    assert -7 / 2 == -3;
+    assert 7 / -2 == -3;
+    assert -7 / -2 == 3;
+    assert 1 / 2 == 0;
+    assert 2147483647 / 1 == 2147483647;
+}
+
+test "the remainder has the sign of the left side" {
+    assert 7 % 2 == 1;
+    assert -7 % 2 == -1;
+    assert 7 % -2 == 1;
+    assert -7 % -2 == -1;
+    assert 6 % 3 == 0;
+}
+
+test "dividing and the remainder agree" {
+    let a = -1000;
+    while a <= 1000 {
+        assert a / 7 * 7 + a % 7 == a;
+        a = a + 37;
+    }
+}
+
+test "alloc gives pieces that do not overlap, each on a 16-byte boundary" {
+    let a = alloc(10);
+    let b = alloc(100);
+    let c = alloc(1);
+    assert (a & 15) == 0;
+    assert (b & 15) == 0;
+    assert b - a >= 10;
+    assert c - b >= 100;
+}
+
+test "load and store, a byte and a word" {
+    let p = alloc(8);
+    store32(p, 0x12345678);
+    assert load32(p) == 0x12345678;
+    assert load8(p) == 0x78;                    // the lowest byte first
+    assert load8(p + 3) == 0x12;
+    store8(p + 1, 0xFF);
+    assert load32(p) == 0x1234FF78;
+    assert load8(p + 1) == 255;                 // a byte is 0 to 255
+}

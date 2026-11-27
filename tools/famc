@@ -5,15 +5,22 @@
 #   famc hello.fam -o hello         the same, to `hello`
 #   famc -c hello.fam               compile only: hello.o
 #   famc main.fam util.o -o prog    sources and objects together
-#   famc --test math.fam            build the files' `test` blocks and run
+#   famc --test math.fam            build the file's `test` blocks and run
 #                                   them; exit code 0 if all pass
-#   famc --test math.fam -o t       the same, but keep the binary as `t`
-#                                   and do not run it
+#   famc --test src                 the same for every .fam file in the
+#                                   directory src and the directories in it
+#   famc --test                     the same for the current directory
+#   famc --test src -o t            build them as `t`; do not run them
 # Run a binary with tools/q32.
 #
 # A file is taken by its ending: .fam is fam source, .o an object
 # (docs/OBJECT.md).  Linking adds the runtime (lib/rt.fam).  An error is
 # reported as FILE:LINE: WHAT.
+#
+# With --test, files are linked into one binary: `main` is not called and
+# is private to its file, so several programs can be tested together.  The
+# runtime's own source, lib/rt.fam, if among the files, is built with its
+# tests and used in place of bin/rt.o.
 #
 # One more thing it does:
 #   famc --pack BINARY -o PACKED    pack a binary into one that unpacks itself
@@ -36,7 +43,7 @@ zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
         echo "usage: famc [-c] [-o OUTPUT] FILE...
-       famc --test [-c] [-o OUTPUT] FILE...
+       famc --test [-o OUTPUT] [FILE or DIRECTORY]...
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
@@ -55,9 +62,31 @@ while [ $# -gt 0 ]; do
         esac
         shift
 done
+[ -r "$bin/famc" ] || die "nothing in $bin: run scripts/build.sh first"
+
+# --test: each directory named stands for the .fam files in it and in the
+# directories in it; no name at all, for the current directory.
+sources() {
+        for s_e in "$1"/*; do
+                case $s_e in *" "*) die "no spaces in file names: $s_e" ;; esac
+                if [ -d "$s_e" ]; then
+                        sources "$s_e"
+                else
+                        case $s_e in *.fam) files="$files $s_e" ;; esac
+                fi
+        done
+}
+if [ -n "$testing" ] && [ $mode = build ]; then
+        [ -n "$files" ] || files=.
+        set -- $files
+        files=
+        for f; do
+                if [ -d "$f" ]; then sources "${f%/}"; else files="$files $f"; fi
+        done
+        [ -n "$files" ] || die "no .fam files to test"
+fi
 set -- $files
 [ $# -ge 1 ] || usage
-[ -r "$bin/famc" ] || die "nothing in $bin: run scripts/build.sh first"
 
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
@@ -107,9 +136,14 @@ fi
 [ -z "$only" ] || [ -z "$out" ] || [ $# -eq 1 ] || die "-c with -o takes one file"
 
 # Each source to an object: beside us for -c, else one to link and forget.
-objs=; n=0
+objs=; n=0; rt=$bin/rt.o
 for f; do
         n=$((n + 1))
+        if [ -n "$testing" ]; then
+                # the two files that end a link are not something to test
+                [ "$f" -ef "$root/lib/rtmain.fam" ] && continue
+                [ "$f" -ef "$root/lib/rttest.fam" ] && continue
+        fi
         case $f in
         *.o)    [ -z "$only" ] || die "$f is an object already"
                 objs="$objs $f"; continue ;;
@@ -127,7 +161,11 @@ for f; do
         [ -z "$testing" ] || pre=$(printf '\001%s' "$f")
         tool "$bin/famc" "$obj" "$f" || exit 1
         pre=
-        objs="$objs $obj"
+        if [ -n "$testing" ] && [ "$f" -ef "$root/lib/rt.fam" ]; then
+                rt=$obj                 # the runtime itself, with its tests
+        else
+                objs="$objs $obj"
+        fi
 done
 [ -z "$only" ] || exit 0
 
@@ -136,7 +174,7 @@ done
 # The linker writes text for the core, which makes the binary.
 last=$bin/rtmain.o; [ -z "$testing" ] || last=$bin/rttest.o
 [ -r "$CORE" ] || die "no $CORE: run scripts/build.sh first"
-tool "$bin/famld" "$tmp/core" "$bin/rt.o" $objs "$last" || exit 1
+tool "$bin/famld" "$tmp/core" "$rt" $objs "$last" || exit 1
 if [ -z "$testing" ] || [ -n "$out" ]; then
         tool "$CORE" "${out:-a.out}" "$tmp/core" || exit 1
         exit 0

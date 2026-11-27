@@ -88,7 +88,7 @@
 # Modules.  A function `f` of a file that says `module m;` is the symbol
 # `m.f`; without a module line it is `f` (the root module).  It is a local
 # symbol, which only this object can call, unless it is `pub` (or is the
-# root's `main`).  A call `m.f()` is to the symbol `m.f`, and m must be
+# root's `main`, in a build that is not for the tests).  A call `m.f()` is to the symbol `m.f`, and m must be
 # this file's module or imported.  A call `f()` in module m is to this
 # file's `m.f` if it defines one, else to the root's `f`: it is noted as
 # a symbol `f` of kind 0x100, and resolve settles it when the whole file has
@@ -361,8 +361,10 @@ _start:
     bne     a2, t2, err_syntax
     CALL    lex                         # the name
     CALL    chk_ident
-    lw      t2, V_MODLEN(s4)            # the root's main is always public
-    bnez    t2, 1f
+    lw      t2, V_MODLEN(s4)            # the root's main is always public,
+    bnez    t2, 1f                      # except when the tests are wanted:
+    lw      t2, V_MODE(s4)              # then nothing calls it, and several
+    bnez    t2, 1f                      # files may each have one
     bnez    a3, 1f
     li      t2, 'm' | 'a'<<8 | 'i'<<16 | 'n'<<24
     bne     a2, t2, 1f

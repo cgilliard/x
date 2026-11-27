@@ -37,7 +37,9 @@ only the functions the program uses.
 | `famc a.fam b.fam -o prog` | Compile and link. Without `-o` the binary is `a.out`. |
 | `famc -c a.fam` | Compile only, to `a.o`. |
 | `famc main.fam util.o -o prog` | Sources and objects together. |
-| `famc --test a.fam` | Build the files' tests and run them: see "Tests". |
+| `famc --test a.fam` | Build the file's tests and run them: see "Tests". |
+| `famc --test src` | The same for every `.fam` file under the directory `src`. |
+| `famc --test` | The same for the current directory. |
 | `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
 
 Both run QEMU (`qemu-system-riscv32`), and need `scripts/build.sh` to have
@@ -183,7 +185,9 @@ test "add adds" {
 }
 ```
 
-`famc --test` builds the files given with their tests and runs them all:
+`famc --test` builds the files given with their tests and runs them all.
+A directory stands for every `.fam` file in it and in the directories
+inside it, and no name at all for the current directory:
 
 ```
 $ tools/famc --test math.fam
@@ -198,7 +202,12 @@ FAIL  add handles big numbers (math.fam:14)
   tests still run.
 - The exit code is 0 if every test passed, else 1.
 - Tests run in the order they are written, file by file. `main` is not
-  called.
+  called, and in a test build it is private to its file, so a directory
+  holding several programs can be tested in one go.
+- All the files are linked into one binary, so two of them cannot both
+  define the same `pub` function.
+- `famc --test lib` tests the runtime: its source is compiled with its
+  tests and used in place of the prebuilt one.
 - `famc --test math.fam -o t` keeps the test binary as `t` and does not
   run it; `tools/q32 t` runs it later.
 - A normal build (without `--test`) skips test blocks.
