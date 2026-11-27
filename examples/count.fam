@@ -1,0 +1,18 @@
+// examples/count.fam -- count upward for ever, a line about every second.
+// For trying tools/q32: it shows output as it is written, and Ctrl-C
+// should stop it.
+//
+//     tools/famc examples/count.fam -o count
+//     tools/q32 count
+
+fn main() {
+    let n = 1;
+    while 1 {
+        print_int(n);
+        print("\n");
+        let wait = 0;                           // nothing, for a while
+        while wait < 160000000 { wait = wait + 1; }
+        n = n + 1;
+    }
+    return 0;
+}

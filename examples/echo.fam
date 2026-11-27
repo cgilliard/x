@@ -1,0 +1,33 @@
+// examples/echo.fam -- write back each line typed, in capitals, until a
+// line that says "bye".  For trying tools/q32 with typed input.
+//
+//     tools/famc examples/echo.fam -o echo
+//     tools/q32 echo
+
+fn main() {
+    print("type a line (bye to stop)\n");
+    let line = alloc(256);
+    while 1 {
+        let n = 0;
+        let c = getc();
+        while c != 10 && c != 13 && n < 255 {
+            store8(line + n, c);
+            n = n + 1;
+            c = getc();
+        }
+        store8(line + n, 0);
+        if n == 3 && load8(line) == 98 && load8(line + 1) == 121 && load8(line + 2) == 101 {
+            print("goodbye\n");
+            return 0;
+        }
+        let i = 0;
+        while i < n {
+            c = load8(line + i);
+            if c >= 97 && c <= 122 { c = c - 32; }
+            putc(c);
+            i = i + 1;
+        }
+        putc(10);
+    }
+    return 0;
+}

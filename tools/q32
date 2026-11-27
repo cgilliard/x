@@ -1,9 +1,13 @@
 #!/bin/sh
 # tools/q32 BINARY -- run a fam binary under QEMU.
 #
-# What the binary reads is q32's standard input (nothing, if that is a
-# terminal); what it writes goes to standard output; its exit code is q32's.
+# The machine's serial port is q32's standard input and output: what the
+# binary reads is what q32 is given, or what is typed, and what it writes
+# appears as it writes it.  Its exit code is q32's.  Ctrl-C stops it.
+#
 # MEM and CPU set the machine: MEM=256M tools/q32 prog
+#
+# It needs only qemu-system-riscv32.
 
 : "${MEM:=128M}"
 : "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
@@ -13,18 +17,8 @@ zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 [ $# -eq 1 ] || { echo "usage: q32 BINARY" >&2; exit 2; }
 [ -r "$1" ] || { echo "q32: cannot read $1" >&2; exit 2; }
 
-tmp=$(mktemp -d) || exit 1
-trap 'rm -rf "$tmp"' EXIT
-
-# The machine's serial port reads one file and writes another.  The byte
-# 0x04 after the input tells a program that reads to the end where that is.
-{ [ -t 0 ] || cat; printf '\004'; } > "$tmp/in"
-qemu-system-riscv32 \
+exec qemu-system-riscv32 \
         -machine virt -m "$MEM" -cpu "$CPU" \
         -display none -bios none \
-        -chardev file,id=ser0,path="$tmp/out",input-path="$tmp/in" \
-        -serial chardev:ser0 \
+        -chardev stdio,id=ser0 -serial chardev:ser0 \
         -device loader,file="$1",addr=0x80000000
-rc=$?
-cat "$tmp/out"
-exit $rc
