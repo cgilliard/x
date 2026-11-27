@@ -10,6 +10,8 @@
 #     error: TEXT      a step fails with exactly the message TEXT
 # and may name more files (relative to tests/) to build and link with it:
 #     with: FILE...
+# A source named *.test.fam is built for its `test` blocks instead
+# (fam.sh cc --test, ld --test), and the files with it likewise.
 #
 # With no arguments, a few malformed objects are also given to the linker.
 
@@ -23,7 +25,7 @@ pass=0; fail=0
 # that fails.
 object() {
         case $1 in
-        *.fam) o_msg=$(sh scripts/fam.sh cc "$1" "$2" 2>&1) ;;
+        *.fam) o_msg=$(sh scripts/fam.sh cc $tflag "$1" "$2" 2>&1) ;;
         *)     o_msg=$(sh scripts/fam.sh as "$1" "$2" 2>&1) ;;
         esac || echo "error: $o_msg"
 }
@@ -42,7 +44,7 @@ check() {
 # link_run OBJECT... -- link and run; prints the outcome.  What the program
 # wrote is left in $tmp.txt.
 link_run() {
-        l_msg=$(sh scripts/fam.sh ld "$tmp" "$@" 2>&1) ||
+        l_msg=$(sh scripts/fam.sh ld $tflag "$tmp" "$@" 2>&1) ||
                 { echo "error: $l_msg"; return; }
         timeout 60 sh scripts/fam.sh run "$tmp" > "$tmp.txt" 2>&1
         echo "exit: $?"
@@ -56,6 +58,7 @@ for t; do
         with=$(printf "%s\n" "$head3" | sed -n 's/^with: *//p')
         wout=$(printf "%s\n" "$head3" | sed -n 's/^output: //p')
         got=; objs=; i=0
+        case $t in *.test.fam) tflag=--test ;; *) tflag= ;; esac
         for f in "$t" $(for w in $with; do echo "tests/$w"; done); do
                 i=$((i + 1))
                 got=$(object "$f" "$tmp.$i.o")
@@ -73,6 +76,7 @@ done
 
 # raw NAME WANT BYTES -- give the linker BYTES (a printf format) as an object.
 raw() {
+        tflag=
         printf "$3" > "$tmp.1.o"
         check "$1" "$2" "$(link_run "$tmp.1.o")"
         rm -f "$tmp" "$tmp".*.o "$tmp.txt"

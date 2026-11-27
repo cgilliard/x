@@ -87,6 +87,39 @@ have the same precedence and group left to right.
 
 Parentheses group. A call is `NAME(EXPR, ...)`.
 
+## Tests
+
+A `test` block sits next to the code it tests:
+
+```
+fn add(a, b) { return a + b; }
+
+test "add adds" {
+    assert add(2, 3) == 5;
+    assert add(-1, 1) == 0;
+}
+```
+
+`fam.sh test` builds the files given with their tests and runs them all:
+
+```
+$ sh scripts/fam.sh test math.fam
+ok    add adds
+FAIL  add handles big numbers (math.fam:14)
+
+1 passed, 1 failed
+```
+
+- A test's body is statements, as in a function. `assert EXPR;` fails the
+  test if the expression is zero, and the test stops there. The other
+  tests still run.
+- The exit code is 0 if every test passed, else 1.
+- Tests run in the order they are written, file by file. `main` is not
+  called.
+- A normal build (`fam.sh cc` without `--test`) skips test blocks.
+- `assert` is only allowed in a test block.
+- A panic or a trap in a test ends the whole run.
+
 ## The runtime library
 
 These are in `lib/rt.fam` and available to every program. The names are
@@ -161,4 +194,4 @@ prog.fam:3: unknown variable y
 - Global variables and constants; a heap.
 - Console input.
 - Checking the number of arguments of a call.
-- Modules, tests, function pointers.
+- Modules, function pointers.

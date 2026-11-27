@@ -55,8 +55,11 @@ compile bin/fam.uncompressed bin/fam0 src/fam.fam0
 compile bin/famc bin/fam0 src/famc.fam0
 compile bin/famas bin/fam0 src/famas.fam0
 compile bin/famld bin/fam0 src/famld.fam0
-# the runtime: startup and library (fam.sh ld adds both to every link)
-fresh bin/rt0.o bin/famas lib/rt0.s ||
-        sh "$(dirname "$0")/fam.sh" as lib/rt0.s bin/rt0.o || exit 1
+# the runtime: startup, library and the last step (fam.sh ld adds them to
+# every link)
+for o in rt0 rtmain rttest; do
+        fresh bin/$o.o bin/famas lib/$o.s ||
+                sh "$(dirname "$0")/fam.sh" as lib/$o.s bin/$o.o || exit 1
+done
 fresh bin/rt.o bin/famc lib/rt.fam ||
         sh "$(dirname "$0")/fam.sh" cc lib/rt.fam bin/rt.o || exit 1

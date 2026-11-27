@@ -1,0 +1,4 @@
+// error: tests/err_assert.test.fam:4: unexpected }
+test "broken" {
+    assert 1
+}

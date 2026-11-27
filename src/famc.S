@@ -26,8 +26,9 @@
 # On an error, writes a message in place of the object and exits with 1.
 #
 # The language so far (every value is a 32-bit integer):
-#     program   = { function }
+#     program   = { function | test }
 #     function  = "fn" NAME "(" [ NAME { "," NAME } ] ")" block
+#     test      = "test" STRING block
 #     block     = "{" { statement } "}"
 #     statement = "let" NAME "=" expr ";"
 #               | NAME "=" expr ";"
@@ -35,6 +36,7 @@
 #               | "while" expr block
 #               | "return" [ expr ] ";"
 #               | "asm" "{" { HEXWORD } "}"
+#               | "assert" expr ";"             in a test
 #               | expr ";"
 #     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 #                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
@@ -65,6 +67,16 @@
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
+# Tests.  If the source starts with the byte 0x01, that and the rest of its
+# first line are not source: the line is the file's name, and the tests are
+# wanted (`fam.sh cc --test`).  Each test block then becomes an init
+# record, so it runs at startup, in order (lib/rt.fam has the functions):
+#         __test_begin(name, file)
+#         the block; a failed assert calls __test_fail(line) and jumps
+#         to the end, as `return` does
+#         __test_end()
+# Otherwise test blocks are skipped.
+#
 # Built from this file by tools/s2fam0_fam.py into src/famc.fam0, which
 # bin/fam0 turns into bin/famc.
 #
@@ -81,6 +93,10 @@
 .equ V_RET,   -28       # its last `return` jump, to patch (0: none); each
                         #   holds the address of the one before
 .equ V_PRO,   -32       # where its first three instructions are
+.equ V_TEST,  -36       # 1 while compiling a test block
+.equ V_MODE,  -40       # 1 if tests are wanted
+.equ V_FILE,  -44       # then: where the file's name starts
+.equ V_FEND,  -48       #       and ends
 # ---------------------------------------------------------------------------
 
 .altmacro
@@ -250,6 +266,23 @@ _start:
     li      t1, 0x10000
     add     sp, t0, t1                  # the compile stack: top
     sw      sp, V_LBASE(s4)             # the locals, after it
+    sw      zero, V_MODE(s4)
+    bgeu    s1, s2, 3f                  # 0x01 and the file's name first?
+    lbu     t2, 0(s1)
+    li      t3, 1
+    bne     t2, t3, 3f
+    sw      t3, V_MODE(s4)
+    addi    s1, s1, 1
+    sw      s1, V_FILE(s4)
+1:  bgeu    s1, s2, 2f
+    lbu     t2, 0(s1)
+    li      t3, 0x0A
+    beq     t2, t3, 2f
+    addi    s1, s1, 1
+    j       1b
+2:  sw      s1, V_FEND(s4)
+    addi    s1, s1, 1
+3:
 
     # function = "fn" NAME "(" [ NAME { "," NAME } ] ")" block
 .Lf_next:
@@ -258,23 +291,16 @@ _start:
     li      t2, 1
     bne     a6, t2, err_syntax
     CALL    pack_tok
+    bnez    a3, err_syntax
+    li      t2, 't' | 'e'<<8 | 's'<<16 | 't'<<24
+    beq     a2, t2, .Lt_test
     li      t2, 'f' | 'n'<<8
     bne     a2, t2, err_syntax
-    bnez    a3, err_syntax
     CALL    lex                         # the name
     CALL    chk_ident
     CALL    o_define
     beqz    a2, err_dup
-    lw      t2, V_LBASE(s4)
-    sw      t2, V_LTOP(s4)
-    sw      zero, V_CUR(s4)
-    sw      zero, V_MAX(s4)
-    sw      zero, V_OUT(s4)
-    sw      zero, V_RET(s4)
-    sw      s9, V_PRO(s4)
-    EMIT    0x13                        # three instructions that make the
-    EMIT    0x13                        # frame, filled in at the end
-    EMIT    0x13
+    CALL    fn_begin
     EXPECT  0x28                        # (
     CALL    lex
     li      t2, 3
@@ -318,7 +344,14 @@ _start:
     CALL    patch_j
     mv      a0, a4
     j       1b
-2:  EMIT    0x00040113                  # mv sp, s0
+2:  lw      t2, V_TEST(s4)
+    beqz    t2, 3f
+    li      t3, '_' | '_'<<8 | 't'<<16 | 'e'<<24
+    li      t4, 's' | 't'<<8 | '_'<<16 | 'e'<<24
+    li      t5, 'n' | 'd'<<8
+    li      a1, 10
+    CALL    call_rt                     # __test_end()
+3:  EMIT    0x00040113                  # mv sp, s0
     EMIT    0xFFC12403                  # lw s0, -4(sp)
     lw      t2, V_MAX(s4)               # the frame: the saved s0, the slots
     lw      t3, V_OUT(s4)               # and the outgoing arguments, rounded
@@ -352,6 +385,86 @@ _start:
 .Lf_done:
     CALL    o_write
     j       exit_ok
+
+    # test = "test" STRING block
+.Lt_test:
+    CALL    lex                         # the name
+    li      t2, 4
+    bne     a6, t2, err_syntax
+    lw      t2, V_MODE(s4)
+    beqz    t2, .Lt_skip
+    addi    sp, sp, -8
+    sw      a0, 0(sp)
+    sw      a1, 4(sp)
+    CALL    o_init
+    CALL    fn_begin
+    li      t2, 1
+    sw      t2, V_TEST(s4)
+    lw      a4, V_FILE(s4)              # __test_begin(name, file)
+    lw      a5, V_FEND(s4)
+    CALL    e_string
+    EMIT    0x00050593                  # mv a1, a0
+    lw      a4, 0(sp)
+    lw      a5, 4(sp)
+    addi    sp, sp, 8
+    add     a5, a4, a5
+    addi    a4, a4, 1                   # inside its quotes
+    addi    a5, a5, -1
+    CALL    e_string
+    li      t3, '_' | '_'<<8 | 't'<<16 | 'e'<<24
+    li      t4, 's' | 't'<<8 | '_'<<16 | 'b'<<24
+    li      t5, 'e' | 'g'<<8 | 'i'<<16 | 'n'<<24
+    li      a1, 12
+    CALL    call_rt
+    j       .Lf_body
+.Lt_skip:                               # tests not wanted: past its block
+    EXPECT  0x7B                        # {
+    li      a4, 1                       # how many { are open
+1:  CALL    lex
+    beqz    a6, err_syntax
+    li      t2, 3
+    bne     a6, t2, 1b
+    li      t2, 1
+    bne     a1, t2, 1b
+    lbu     t2, 0(a0)
+    li      t3, '{'
+    bne     t2, t3, 2f
+    addi    a4, a4, 1
+    j       1b
+2:  li      t3, '}'
+    bne     t2, t3, 1b
+    addi    a4, a4, -1
+    bnez    a4, 1b
+    j       .Lf_next
+
+# fn_begin -- start the code of a function or test: nothing in scope, no
+#   slots, and room for the three instructions that make the frame, filled
+#   in at the end.
+fn_begin:
+    lw      t2, V_LBASE(s4)
+    sw      t2, V_LTOP(s4)
+    sw      zero, V_CUR(s4)
+    sw      zero, V_MAX(s4)
+    sw      zero, V_OUT(s4)
+    sw      zero, V_RET(s4)
+    sw      zero, V_TEST(s4)
+    sw      s9, V_PRO(s4)
+    EMIT    0x13
+    EMIT    0x13
+    EMIT    0x13
+    RET
+
+# call_rt -- t3/t4/t5 = a runtime function's name, as up to 12 characters
+#   in three words, a1 = its length; append a call to it.
+call_rt:
+    addi    sp, sp, -12
+    sw      t3, 0(sp)
+    sw      t4, 4(sp)
+    sw      t5, 8(sp)
+    mv      a0, sp
+    CALL    o_call
+    addi    sp, sp, 12
+    RET
 
 # block -- "{" { statement } "}".  The locals and slots of its `let`s go
 #   when it ends.  Compile stack: [locals top, slots in use].
@@ -403,6 +516,10 @@ stmt:
     bne     a2, t2, 1f
     li      t2, 'r' | 'n'<<8
     beq     a3, t2, .Ls_return
+1:  li      t2, 'a' | 's'<<8 | 's'<<16 | 'e'<<24
+    bne     a2, t2, 1f
+    li      t2, 'r' | 't'<<8
+    beq     a3, t2, .Ls_assert
 1:  addi    sp, sp, -12                 # a name: `NAME = ...` or an
     sw      a0, 0(sp)                   # expression.  Look one token on.
     sw      a1, 4(sp)
@@ -532,6 +649,33 @@ stmt:
     sw      a0, V_RET(s4)
     RET
 
+.Ls_assert:                             # assert expr ;
+    lw      t2, V_TEST(s4)
+    beqz    t2, err_assert
+    addi    sp, sp, -4
+    sw      s3, 0(sp)                   # its line
+    li      a4, 1
+    CALL    expr
+    EXPECT  0x3B                        # ;
+    EMIT    0x00050463                  # beqz a0, +8
+    CALL    e_jph                       # j <past the failure>
+    lw      a3, 0(sp)
+    sw      a0, 0(sp)
+    CALL    emit_li_a0                  # __test_fail(line)
+    li      t3, '_' | '_'<<8 | 't'<<16 | 'e'<<24
+    li      t4, 's' | 't'<<8 | '_'<<16 | 'f'<<24
+    li      t5, 'a' | 'i'<<8 | 'l'<<16
+    li      a1, 11
+    CALL    call_rt
+    CALL    e_jph                       # j <the end>, as `return` does
+    lw      t2, V_RET(s4)
+    sw      t2, 0(a0)
+    sw      a0, V_RET(s4)
+    lw      a0, 0(sp)
+    addi    sp, sp, 4
+    mv      a1, s9
+    j       patch_j
+
 .Ls_asm:                                # asm { HEXWORD ... }
     EXPECT  0x7B                        # {
 1:  CALL    lex
@@ -608,8 +752,7 @@ expr:
     CALL    slot_drop
     li      a2, 10
     CALL    e_lw_slot
-    lw      t2, 4(sp)                   # the name, spelled on the stack
-    addi    sp, sp, -8
+    lw      t2, 4(sp)
     li      t3, '_' | '_'<<8 | 'm'<<16 | 'u'<<24
     li      t4, 'l'
     li      t5, 1
@@ -620,12 +763,9 @@ expr:
     beq     t2, t5, 1f
     li      t3, '_' | '_'<<8 | 'r'<<16 | 'e'<<24
     li      t4, 'm'
-1:  sw      t3, 0(sp)
-    sw      t4, 4(sp)
-    mv      a0, sp
+1:  li      t5, 0
     li      a1, 5
-    CALL    o_call
-    addi    sp, sp, 8
+    CALL    call_rt
     j       .Le_next
 .Le_done:
     mv      s1, a0                      # not ours: leave the token unread
@@ -702,63 +842,11 @@ unary:
 .Lu_num:
     CALL    parse_num
     j       emit_li_a0                  # (its RET returns for us)
-    # A string: `jal a0, <past it>`, its bytes, a zero byte, and zero
-    # bytes up to a whole word.  a4/a5 = the text left, a6 = the word being
-    # filled, a7 = how many bytes it has.
 .Lu_str:
-    addi    a4, a0, 1
+    addi    a4, a0, 1                   # inside its quotes
     add     a5, a0, a1
     addi    a5, a5, -1
-    li      a0, 0x56F                   # jal a0, 0
-    CALL    o_word
-    addi    sp, sp, -4
-    addi    t2, s9, -4
-    sw      t2, 0(sp)
-    li      a6, 0
-    li      a7, 0
-1:  li      t3, 0
-    bltu    a4, a5, 9f
-    addi    a4, a5, 1                   # the text is done: the zero byte,
-    j       4f                          # and this is the last time round
-9:  lbu     t3, 0(a4)
-    addi    a4, a4, 1
-    li      t4, 0x5C                    # a backslash: the next says what
-    bne     t3, t4, 4f
-    lbu     t3, 0(a4)
-    addi    a4, a4, 1
-    beq     t3, t4, 4f
-    li      t4, '"'
-    beq     t3, t4, 4f
-    li      t4, 'n'
-    bne     t3, t4, 2f
-    li      t3, 0x0A
-    j       4f
-2:  li      t4, 't'
-    bne     t3, t4, 3f
-    li      t3, 0x09
-    j       4f
-3:  li      t4, '0'
-    bne     t3, t4, err_escape
-    li      t3, 0
-4:  slli    t4, a7, 3                   # the byte into the word
-    sll     t4, t3, t4
-    or      a6, a6, t4
-    addi    a7, a7, 1
-    li      t4, 4
-    bltu    a7, t4, 5f
-    mv      a0, a6
-    CALL    o_word
-    li      a6, 0
-    li      a7, 0
-5:  bleu    a4, a5, 1b
-    beqz    a7, 8f
-    mv      a0, a6
-    CALL    o_word
-8:  lw      a0, 0(sp)
-    addi    sp, sp, 4
-    mv      a1, s9
-    li      a2, 0x56F
-    j       patch_jal
+    j       e_string                    # (its RET returns for us)
 .Lu_name:
     CALL    chk_ident
     addi    sp, sp, -12                 # [name start, name length, arguments]
@@ -840,6 +928,62 @@ unary:
     addi    sp, sp, 12
     j       o_call
 
+# e_string -- a4/a5 = the start and end of a string's text, as written
+#   (with its \ escapes); append `jal a0, <past it>`, its bytes, a zero
+#   byte, and zero bytes up to a whole word: code that leaves the string's
+#   address in a0.  a6 = the word being filled, a7 = how many bytes it has.
+e_string:
+    li      a0, 0x56F                   # jal a0, 0
+    CALL    o_word
+    addi    sp, sp, -4
+    addi    t2, s9, -4
+    sw      t2, 0(sp)
+    li      a6, 0
+    li      a7, 0
+1:  li      t3, 0
+    bltu    a4, a5, 9f
+    addi    a4, a5, 1                   # the text is done: the zero byte,
+    j       4f                          # and this is the last time round
+9:  lbu     t3, 0(a4)
+    addi    a4, a4, 1
+    li      t4, 0x5C                    # a backslash: the next says what
+    bne     t3, t4, 4f
+    lbu     t3, 0(a4)
+    addi    a4, a4, 1
+    beq     t3, t4, 4f
+    li      t4, '"'
+    beq     t3, t4, 4f
+    li      t4, 'n'
+    bne     t3, t4, 2f
+    li      t3, 0x0A
+    j       4f
+2:  li      t4, 't'
+    bne     t3, t4, 3f
+    li      t3, 0x09
+    j       4f
+3:  li      t4, '0'
+    bne     t3, t4, err_escape
+    li      t3, 0
+4:  slli    t4, a7, 3                   # the byte into the word
+    sll     t4, t3, t4
+    or      a6, a6, t4
+    addi    a7, a7, 1
+    li      t4, 4
+    bltu    a7, t4, 5f
+    mv      a0, a6
+    CALL    o_word
+    li      a6, 0
+    li      a7, 0
+5:  bleu    a4, a5, 1b
+    beqz    a7, 8f
+    mv      a0, a6
+    CALL    o_word
+8:  lw      a0, 0(sp)
+    addi    sp, sp, 4
+    mv      a1, s9
+    li      a2, 0x56F
+    j       patch_jal
+
 # chk_deep -- error if the compile stack or the return ids are nearly
 #   used up.  Clobbers t2.
 chk_deep:
@@ -860,6 +1004,10 @@ chk_ident:
     li      t2, 'r' | 'e'<<8 | 't'<<16 | 'u'<<24
     bne     a2, t2, 1f
     li      t2, 'r' | 'n'<<8
+    beq     a3, t2, err_syntax
+1:  li      t2, 'a' | 's'<<8 | 's'<<16 | 'e'<<24
+    bne     a2, t2, 1f
+    li      t2, 'r' | 't'<<8
     beq     a3, t2, err_syntax
 1:  li      t2, 'w' | 'h'<<8 | 'i'<<16 | 'l'<<24
     bne     a2, t2, 1f
@@ -1324,6 +1472,22 @@ err_escape:
     li      a0, 't' | 'r'<<8 | 'i'<<16 | 'n'<<24
     CALL    uput4
     li      a0, 'g'
+    CALL    uput4
+    j       err_end
+err_assert:
+    CALL    err_line
+    # say "assert outside a test"
+    li      a0, 'a' | 's'<<8 | 's'<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, 'r' | 't'<<8 | ' '<<16 | 'o'<<24
+    CALL    uput4
+    li      a0, 'u' | 't'<<8 | 's'<<16 | 'i'<<24
+    CALL    uput4
+    li      a0, 'd' | 'e'<<8 | ' '<<16 | 'a'<<24
+    CALL    uput4
+    li      a0, ' ' | 't'<<8 | 'e'<<16 | 's'<<24
+    CALL    uput4
+    li      a0, 't'
     CALL    uput4
     j       err_end
 err_locals:

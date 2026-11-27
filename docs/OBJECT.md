@@ -10,7 +10,8 @@ Parts listed under "Open questions" are the ones most likely to change.
 lib/rt0.s ───famas──▶ rt0.o ────┐
 source.fam ──famc───▶ source.o ─┤
 source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ core text ──▶ core ──▶ binary
-lib/rt.fam ──famc───▶ rt.o ─────┘
+lib/rt.fam ──famc───▶ rt.o ─────┤
+lib/rtmain.s ─famas─▶ rtmain.o ─┘
 ```
 
 - The **front end** (`famc`) compiles one source file to one object.
@@ -163,8 +164,11 @@ of four `0x04` bytes. It:
    pointing. A function calling itself needs no stub.
 5. Writes those functions, then every init record as top-level code, in
    input order. The core runs top-level code in order at startup, so the
-   startup object goes first; `fam.sh ld` sees to that, and adds the
-   runtime library after the program's objects.
+   startup object (`lib/rt0.s`) goes first and the one that calls `main`
+   (`lib/rtmain.s`) last, with the init records of the program's objects in
+   between; `fam.sh ld` sees to that, and adds the runtime library. In a
+   test build each `test` block is an init record, and `lib/rttest.s`,
+   which reports the results, takes the place of `lib/rtmain.s`.
 
 For the example above the linker writes:
 
@@ -265,4 +269,5 @@ Each of these is a new part or a new symbol kind, under a new version.
   compiles or links depending on its inputs, the way `gcc` does, comes
   later and sits on top of the tools.
 - The program starts in the startup object's init record (`lib/rt0.s`),
-  which lays out memory and calls `main`, then `exit` with its result.
+  which lays out memory. The last init record (`lib/rtmain.s`) calls
+  `main`, then `exit` with its result.

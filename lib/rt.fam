@@ -205,6 +205,66 @@ fn __rem_bits(a, b) {
     }
 }
 
+// ---- the runtime's variables -----------------------------------------------
+
+// lib/rt0.s leaves tp pointing at a zeroed page for them:
+//     +0   tests passed            +4   tests failed
+//     +8   the running test's name +12  its file
+//     +16  1 once it has failed
+fn __vars() {
+    asm {
+        13050200    // mv a0,tp
+    }
+}
+
+// ---- tests ------------------------------------------------------------------
+
+// A `test "name" { ... }` block, compiled for testing, is an init record:
+// it runs at startup, between these two calls.  A failed assert calls
+// __test_fail with its line and jumps to the end of the block.
+fn __test_begin(name, file) {
+    let v = __vars();
+    store32(v + 8, name);
+    store32(v + 12, file);
+    store32(v + 16, 0);
+}
+fn __test_fail(line) {
+    let v = __vars();
+    print("FAIL  ");
+    print(load32(v + 8));
+    print(" (");
+    print(load32(v + 12));
+    putc(58);                                   // :
+    print_int(line);
+    print(")\n");
+    store32(v + 16, 1);
+}
+fn __test_end() {
+    let v = __vars();
+    if load32(v + 16) {
+        store32(v + 4, load32(v + 4) + 1);
+    } else {
+        print("ok    ");
+        print(load32(v + 8));
+        putc(10);
+        store32(v, load32(v) + 1);
+    }
+}
+
+// __tests_done(): after the last test (lib/rttest.s).  Exit code 1 if any
+// failed.
+fn __tests_done() {
+    let v = __vars();
+    putc(10);
+    print_int(load32(v));
+    print(" passed, ");
+    print_int(load32(v + 4));
+    print(" failed\n");
+    exit(load32(v + 4) != 0);
+}
+
+// ---- traps ------------------------------------------------------------------
+
 // __trap(cause, pc, address, guard): lib/rt0.s comes here on a trap, with
 // the CPU's cause, the pc and the address it faulted on, and the address of
 // the guard page under the stack.

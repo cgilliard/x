@@ -1,0 +1,17 @@
+// exit: 1
+// output: ok    first\nFAIL  second (tests/fail.test.fam:9)\nFAIL  third (tests/fail.test.fam:14)\nok    fourth\n\n2 passed, 2 failed\n
+// Every failure is reported; a test stops at its first failed assert.
+test "first" { assert 1; }
+
+test "second" {
+    let x = 4;
+    assert x == 4;
+    assert x == 5;
+    assert x == 6;
+}
+
+test "third" {
+    assert 1 > 2;
+}
+
+test "fourth" { assert 2 > 1; }
