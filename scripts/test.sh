@@ -88,7 +88,7 @@ if [ -n "$raw" ]; then
         raw "(a call site outside the code)" "error: famld: bad object" \
                 'FAMO\001\000\000\000\074\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000x\000\000\000'
         # the packer: a packed program runs as the program does, and the
-        # packed core compiles as the core does
+        # core, packed, compiles as the core does
         tools/famc -c tests/print_int.fam -o "$tmp.1.o" &&
                 tools/famc "$tmp.1.o" -o "$tmp" &&
                 tools/famc --pack "$tmp" -o "$tmp.packed" &&
@@ -96,10 +96,11 @@ if [ -n "$raw" ]; then
                 tools/q32 "$tmp.packed" < /dev/null | cmp -s - "$tmp.txt" &&
                 [ "$(wc -c < "$tmp.packed")" -lt "$(wc -c < "$tmp")" ]
         check "(a packed program runs the same, and is smaller)" "exit: 0" "exit: $?"
-        CORE=bin/fam.uncompressed tools/famc "$tmp.1.o" -o "$tmp.2" &&
+        tools/famc --pack bin/fam -o "$tmp.core" &&
+                CORE=$tmp.core tools/famc "$tmp.1.o" -o "$tmp.2" &&
                 cmp -s "$tmp" "$tmp.2"
-        check "(the packed core links the same binary as the unpacked)" "exit: 0" "exit: $?"
-        rm -f "$tmp" "$tmp.2" "$tmp.1.o" "$tmp.packed" "$tmp.txt"
+        check "(the core, packed, links the same binary)" "exit: 0" "exit: $?"
+        rm -f "$tmp" "$tmp.2" "$tmp.1.o" "$tmp.packed" "$tmp.txt" "$tmp.core"
 fi
 
 echo

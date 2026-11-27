@@ -55,35 +55,11 @@ compile() {
         fi
 }
 
-# pack OUT IN -- pack the binary IN into OUT, which unpacks itself
-# (src/fampack.fam).  The packer reads the size of IN, as four bytes lowest
-# first, and then IN.
-pack() {
-        out=$1; in=$2
-        if fresh "$out" "$in" bin/fampack; then return 0; fi
-        echo "Packing $in → $out" >&2
-        n=$(wc -c < "$in")
-        stream="$out.in.$$"
-        { printf "$(printf '\\%03o' $((n & 255)) $(((n >> 8) & 255)) \
-                        $(((n >> 16) & 255)) $(((n >> 24) & 255)))"
-          cat "$in"
-        } > "$stream"
-        serial_qemu "$stream" "$out" -device loader,file=bin/fampack,addr=0x80000000
-        rc=$?
-        rm -f "$stream"
-        if [ $rc -ne 0 ]; then
-                echo "build.sh: $out: error: $(head -c 200 "$out" | tr -d '\0')" >&2
-                rm -f "$out"
-                exit 1
-        fi
-}
-
-# the root of trust
 compile bin/fam0 fam0.seed src/fam0.fam0
 cmp ./bin/fam0 ./fam0.seed # verify they're identical
 
 # the core of fam
-compile bin/fam.uncompressed bin/fam0 src/fam.fam0
+compile bin/fam bin/fam0 src/fam.fam0
 compile bin/famc bin/fam0 src/famc.fam0
 compile bin/famld bin/fam0 src/famld.fam0
 
@@ -93,10 +69,8 @@ compile bin/rt.o      bin/famc lib/rt.fam
 compile bin/rtmain.o  bin/famc lib/rtmain.fam
 compile bin/rttest.o  bin/famc lib/rttest.fam
 
-# the packer, a fam program: compile, link, and the core makes the binary
+# the packer (tools/famc --pack), a fam program: compile, link, and the
+# core makes the binary
 compile bin/fampack.o    bin/famc  src/fampack.fam
 compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
-compile bin/fampack      bin/fam.uncompressed bin/fampack.core
-
-# the core, packed
-pack bin/fam bin/fam.uncompressed
+compile bin/fampack      bin/fam bin/fampack.core

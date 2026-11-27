@@ -43,8 +43,7 @@
 // copy, the farthest of those: slow, simple, and enough for binaries of a
 // few thousand bytes.
 //
-// Built by scripts/build.sh, which uses it to pack bin/fam.uncompressed
-// into bin/fam.
+// Built by scripts/build.sh as bin/fampack; `tools/famc --pack` runs it.
 
 // The unpacker, as machine code with its addresses when loaded at
 // 0x80000000.  It copies the packed data up to 0x84800000, unpacks it to
