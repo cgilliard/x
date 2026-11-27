@@ -26,24 +26,27 @@
 # On an error, writes a message in place of the object and exits with 1.
 #
 # The language so far (every value is a 32-bit integer):
-#     program   = [ "module" NAME ";" ] { import | function | test }
+#     program   = [ "module" NAME ";" ] { import | function | test | init }
 #     import    = "import" NAME ";"
 #     function  = [ "pub" ] "fn" NAME "(" [ NAME { "," NAME } ] ")" block
 #     test      = "test" STRING block
+#     init      = "init" block                  run at startup, in order
+#               | "init" "asm" "{" ... "}"      the same, nothing but the code
 #     block     = "{" { statement } "}"
 #     statement = "let" NAME "=" expr ";"
 #               | NAME "=" expr ";"
 #               | "if" expr block [ "else" ( block | if-statement ) ]
 #               | "while" expr block
 #               | "return" [ expr ] ";"
-#               | "asm" "{" { HEXWORD } "}"
+#               | "asm" "{" { HEXWORD | "@" fname | "&" fname } "}"
 #               | "assert" expr ";"             in a test
 #               | expr ";"
 #     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 #                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 #                   * / %
 #     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
-#               | "&" [ NAME "." ] NAME         a function's id
+#               | "&" fname                     a function's id
+#     fname     = [ NAME "." ] NAME
 #               | "bytes" "{" { HEXBYTES } "}"  data; its value is its address
 #               | [ NAME "." ] NAME "(" [ expr { "," expr } ] ")"
 #               | "(" expr ")"
@@ -75,6 +78,10 @@
 #   - `bytes { ... }` is laid down like a string, without the zero byte.
 #   - load8, load32, store8 and store32 are not calls but one instruction
 #     each, on a0 (and a1).
+#   - In `asm`, `@f` is a call site for f and `&f` an id site.
+#   - An `init` block is an init record (docs/OBJECT.md) with a frame, like
+#     a function's.  `init asm` has no frame: it is for the startup code,
+#     which runs before there is a stack.
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
@@ -89,7 +96,7 @@
 #
 # Tests.  If the source starts with the byte 0x01, that and the rest of its
 # first line are not source: the line is the file's name, and the tests are
-# wanted (`fam.sh cc --test`).  Each test block then becomes an init
+# wanted (`tools/famc --test`).  Each test block then becomes an init
 # record, so it runs at startup, in order (lib/rt.fam has the functions):
 #         __test_begin(name, file)
 #         the block; a failed assert calls __test_fail(line) and jumps
@@ -332,6 +339,8 @@ _start:
 1:  bnez    a3, err_syntax
     li      t2, 't' | 'e'<<8 | 's'<<16 | 't'<<24
     beq     a2, t2, .Lt_test
+    li      t2, 'i' | 'n'<<8 | 'i'<<16 | 't'<<24
+    beq     a2, t2, .Li_init
     li      a7, 3                       # a7 = its kind: local unless pub
     li      t2, 'p' | 'u'<<8 | 'b'<<16
     bne     a2, t2, 1f
@@ -477,6 +486,23 @@ _start:
     EXPECT  0x3B                        # ;
     j       .Lf_next
 
+    # init = "init" block | "init" "asm" "{" ... "}"
+.Li_init:
+    CALL    o_init
+    CALL    lex
+    li      t2, 1
+    bne     a6, t2, 1f
+    CALL    pack_tok
+    li      t2, 'a' | 's'<<8 | 'm'<<16
+    bne     a2, t2, 1f
+    bnez    a3, 1f
+    CALL    asm_body                    # nothing but the code
+    CALL    o_end
+    j       .Lf_next
+1:  mv      s1, a0                      # a block, with a frame
+    CALL    fn_begin
+    j       .Lf_body
+
     # test = "test" STRING block
 .Lt_test:
     CALL    lex                         # the name
@@ -598,7 +624,7 @@ stmt:
     beqz    a3, .Ls_if
 1:  li      t2, 'a' | 's'<<8 | 'm'<<16
     bne     a2, t2, 1f
-    beqz    a3, .Ls_asm
+    beqz    a3, asm_body                # (its RET returns for us)
 1:  li      t2, 'w' | 'h'<<8 | 'i'<<16 | 'l'<<24
     bne     a2, t2, 1f
     li      t2, 'e'
@@ -767,19 +793,67 @@ stmt:
     mv      a1, s9
     j       patch_j
 
-.Ls_asm:                                # asm { HEXWORD ... }
+# asm_body -- "{" { HEXWORD | "@" fname | "&" fname } "}": the words as
+#   they are, a call site, an id site.
+asm_body:
     EXPECT  0x7B                        # {
 1:  CALL    lex
     beqz    a6, err_syntax
     li      t2, 3
-    bne     a6, t2, 2f
+    bne     a6, t2, 4f
     lbu     t2, 0(a0)
     li      t3, '}'
-    beq     t2, t3, 3f
-2:  CALL    hex_word
+    beq     t2, t3, 5f
+    li      t3, '@'
+    bne     t2, t3, 2f
+    CALL    fn_ref
+    CALL    o_site
+    j       1b
+2:  li      t3, '&'
+    bne     t2, t3, err_syntax
+    li      t3, 1
+    bne     a1, t3, err_syntax
+    CALL    fn_ref
+    CALL    o_idsite
+    j       1b
+4:  CALL    hex_word
     CALL    o_word
     j       1b
-3:  RET
+5:  RET
+
+# fn_ref -- read [ module "." ] name; a3 = the index of that function's
+#   symbol, as a call would name it.
+fn_ref:
+    CALL    lex
+    CALL    chk_ident
+    addi    sp, sp, -8
+    sw      a0, 0(sp)
+    sw      a1, 4(sp)
+    CALL    lex
+    li      t2, 3
+    bne     a6, t2, 2f
+    lbu     t2, 0(a0)
+    li      t3, '.'
+    bne     t2, t3, 2f
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    CALL    chk_module
+    CALL    lex
+    CALL    chk_ident
+    lw      a2, 0(sp)
+    lw      a3, 4(sp)
+    CALL    join
+    li      a5, 0
+    j       3f
+2:  mv      s1, a0                      # a bare name
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    li      a5, 0
+    lw      t2, V_MODLEN(s4)
+    beqz    t2, 3f
+    li      a5, 0x100
+3:  addi    sp, sp, 8
+    j       o_ref                       # (its RET returns for us)
 
 # expr -- a4 = the lowest precedence of operator to take (1: any).  Write
 #   the code that leaves the expression's value in a0.
@@ -925,38 +999,9 @@ unary:
     CALL    unary
     EMIT    0xFFF54513                  # not a0, a0
     RET
-1:  li      t3, '&'                     # & [ module . ] name: its id
+1:  li      t3, '&'                     # & fname: its id
     bne     t2, t3, err_syntax
-    CALL    lex
-    CALL    chk_ident
-    addi    sp, sp, -8
-    sw      a0, 0(sp)
-    sw      a1, 4(sp)
-    CALL    lex
-    li      t2, 3
-    bne     a6, t2, 2f
-    lbu     t2, 0(a0)
-    li      t3, '.'
-    bne     t2, t3, 2f
-    lw      a0, 0(sp)
-    lw      a1, 4(sp)
-    CALL    chk_module
-    CALL    lex
-    CALL    chk_ident
-    lw      a2, 0(sp)
-    lw      a3, 4(sp)
-    CALL    join
-    li      a5, 0
-    j       3f
-2:  mv      s1, a0                      # a bare name, as in a call
-    lw      a0, 0(sp)
-    lw      a1, 4(sp)
-    li      a5, 0
-    lw      t2, V_MODLEN(s4)
-    beqz    t2, 3f
-    li      a5, 0x100
-3:  addi    sp, sp, 8
-    CALL    o_ref
+    CALL    fn_ref
     j       o_idsite                    # (its RET returns for us)
 .Lu_paren:
     li      a4, 1

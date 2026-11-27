@@ -1,0 +1,13 @@
+// exit: 0
+// output: first second main\n
+// init blocks run at startup, before main, in the order written.
+init { print("first "); }
+fn main() {
+    print("main\n");
+    return 0;
+}
+init {
+    let word = "second ";
+    if load8(word) == 115 { print(word); return; }
+    print("never ");
+}

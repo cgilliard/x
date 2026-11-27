@@ -1,0 +1,10 @@
+// exit: 7
+// init asm is code with no frame around it.  This one leaves 7 in s9, a
+// register that compiled code never touches.
+init asm {
+    930C7000        // li s9, 7
+}
+fn s9() {
+    asm { 13850C00 }    // mv a0, s9
+}
+fn main() { return s9(); }

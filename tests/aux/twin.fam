@@ -1,0 +1,2 @@
+// A second public `twin`, for err_twice_objects.fam.
+pub fn twin() { return 2; }

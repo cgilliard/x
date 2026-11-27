@@ -1,6 +1,6 @@
-# scripts/dump.awk -- print an object in its text form (docs/OBJECT.md).
+# scripts/dump.awk -- print what is in an object as text (docs/OBJECT.md).
 # Input: the object's bytes in decimal, as `od -An -v -tu1` prints them.
-# Used by `fam.sh dump`.
+# Used by `famc --dump`.
 
 { for (i = 1; i <= NF; i++) b[n++] = $i }
 

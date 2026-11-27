@@ -2,9 +2,8 @@
 # scripts/test.sh [FILE...] -- build, then run the tests (default: all of
 # tests/).  Exit 0 if every one passes.
 #
-# A test is a source file (tests/*.fam) or the text form of an object
-# (tests/*.s).  It is compiled or assembled, linked with the runtime and
-# run.  Comments in its first five lines say what must happen:
+# A test is a source file (tests/*.fam).  It is compiled, linked with the
+# runtime and run.  Comments in its first five lines say what must happen:
 #     exit: N          the program runs and exits with code N
 #     output: TEXT     and writes exactly TEXT (\n for a newline)
 #     input: TEXT      what the program reads (\n for a newline)
@@ -12,7 +11,7 @@
 # and may name more files (relative to tests/) to build and link with it:
 #     with: FILE...
 # A source named *.test.fam is built for its `test` blocks instead
-# (fam.sh cc --test, ld --test), and the files with it likewise.
+# (famc --test), and the files with it likewise.
 #
 # With no arguments, a few malformed objects are also given to the linker.
 
@@ -22,13 +21,9 @@ sh scripts/build.sh || exit 1
 tmp="bin/test.$$"
 pass=0; fail=0
 
-# object FILE OBJECT -- compile or assemble FILE; prints "error: ..." if
-# that fails.
+# object FILE OBJECT -- compile FILE; prints "error: ..." if that fails.
 object() {
-        case $1 in
-        *.fam) o_msg=$(sh scripts/fam.sh cc $tflag "$1" "$2" 2>&1) ;;
-        *)     o_msg=$(sh scripts/fam.sh as "$1" "$2" 2>&1) ;;
-        esac || echo "error: $o_msg"
+        o_msg=$(tools/famc -c $tflag "$1" -o "$2" 2>&1) || echo "error: $o_msg"
 }
 
 # check NAME WANT GOT
@@ -45,15 +40,14 @@ check() {
 # link_run OBJECT... -- link and run; prints the outcome.  What the program
 # wrote is left in $tmp.txt.
 link_run() {
-        l_msg=$(sh scripts/fam.sh ld $tflag "$tmp" "$@" 2>&1) ||
+        l_msg=$(tools/famc $tflag "$@" -o "$tmp" 2>&1) ||
                 { echo "error: $l_msg"; return; }
-        l_in=; [ -z "$win" ] || { printf '%b' "$win" > "$tmp.inp"; l_in=$tmp.inp; }
-        timeout 60 sh scripts/fam.sh run "$tmp" $l_in > "$tmp.txt" 2>&1
+        printf '%b' "$win" | timeout 60 tools/q32 "$tmp" > "$tmp.txt" 2>&1
         echo "exit: $?"
 }
 
 raw=
-[ $# -gt 0 ] || { set -- tests/*.fam tests/*.s; raw=1; }
+[ $# -gt 0 ] || { set -- tests/*.fam; raw=1; }
 for t; do
         head3=$(head -n 5 "$t" | sed 's/^\(\/\/\|#\) *//')
         want=$(printf "%s\n" "$head3" | sed -n 's/^\(exit\|error\): */\1: /p' | head -n 1)
@@ -74,7 +68,7 @@ for t; do
                         got="$got, output: $(cat "$tmp.txt")"
         fi
         check "$t" "$want" "$got"
-        rm -f "$tmp" "$tmp".*.o "$tmp.txt" "$tmp.inp"
+        rm -f "$tmp" "$tmp".*.o "$tmp.txt"
 done
 
 # raw NAME WANT BYTES -- give the linker BYTES (a printf format) as an object.
@@ -93,23 +87,18 @@ if [ -n "$raw" ]; then
                 'FAMO\001\000\000\000\034\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000'
         raw "(a call site outside the code)" "error: famld: bad object" \
                 'FAMO\001\000\000\000\074\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000\004\000\000\000\000\000\000\000\000\000\000\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000x\000\000\000'
-        sh scripts/fam.sh dump bin/rt0.o > "$tmp.s" &&
-                sh scripts/fam.sh as "$tmp.s" "$tmp.1.o" &&
-                cmp -s bin/rt0.o "$tmp.1.o"
-        check "(dump, then as, gives the same object)" "exit: 0" "exit: $?"
-        rm -f "$tmp.s" "$tmp.1.o"
-
         # the packer: a packed program runs as the program does, and the
         # packed core compiles as the core does
-        sh scripts/fam.sh cc tests/print_int.fam "$tmp.1.o" &&
-                sh scripts/fam.sh ld "$tmp" "$tmp.1.o" &&
-                sh scripts/fam.sh pack "$tmp" "$tmp.packed" &&
-                sh scripts/fam.sh run "$tmp" > "$tmp.txt" &&
-                sh scripts/fam.sh run "$tmp.packed" | cmp -s - "$tmp.txt" &&
+        tools/famc -c tests/print_int.fam -o "$tmp.1.o" &&
+                tools/famc "$tmp.1.o" -o "$tmp" &&
+                tools/famc --pack "$tmp" -o "$tmp.packed" &&
+                tools/q32 "$tmp" < /dev/null > "$tmp.txt" &&
+                tools/q32 "$tmp.packed" < /dev/null | cmp -s - "$tmp.txt" &&
                 [ "$(wc -c < "$tmp.packed")" -lt "$(wc -c < "$tmp")" ]
         check "(a packed program runs the same, and is smaller)" "exit: 0" "exit: $?"
-        CORE=bin/fam sh scripts/fam.sh ld "$tmp.2" "$tmp.1.o" && cmp -s "$tmp" "$tmp.2"
-        check "(the packed core links the same binary)" "exit: 0" "exit: $?"
+        CORE=bin/fam.uncompressed tools/famc "$tmp.1.o" -o "$tmp.2" &&
+                cmp -s "$tmp" "$tmp.2"
+        check "(the packed core links the same binary as the unpacked)" "exit: 0" "exit: $?"
         rm -f "$tmp" "$tmp.2" "$tmp.1.o" "$tmp.packed" "$tmp.txt"
 fi
 

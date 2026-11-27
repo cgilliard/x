@@ -1,4 +1,7 @@
 #!/bin/sh
+# scripts/build.sh -- build everything in bin/ from fam0.seed.
+
+cd "$(dirname "$0")/.." || exit 1
 
 : "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
 zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
@@ -35,45 +38,65 @@ compile() {
         if [ $# -gt 0 ] && fresh "$out" "$asm" "$@"; then return 0; fi
         [ $# -gt 0 ] && echo "Building $* → $out" >&2
         stream="$out.in.$$"
-        ([ $# -gt 0 ] && cat "$@"; printf '\004') > "$stream"
+        # the input ends with 0x04; the linker wants four of them after its
+        # last object, and the others stop at the first
+        ([ $# -gt 0 ] && cat "$@"; printf '\004\004\004\004') > "$stream"
         serial_qemu "$stream" "$out" \
                 -device loader,file="$asm",addr=0x80000000 \
                 $disk_args
+        rc=$?
         rm -f "$stream"
 
-        if [ $# -gt 0 ] && [ "$out" != bin/fam0 ] &&
-		[ "$(head -c 4 "$out" | od -An -tx1 | tr -d ' \n')" != "13000000" ]; then
-                echo "build.sh: $out: compile error: $(head -c 80 "$out" | tr -d '\0')" >&2
+        # a program that fails exits with 1, its message where its output goes
+        if [ $rc -ne 0 ]; then
+                echo "build.sh: $out: error: $(head -c 200 "$out" | tr -d '\0')" >&2
                 rm -f "$out"   # (not taken for a fresh build next time)
                 exit 1
         fi
 }
 
+# pack OUT IN -- pack the binary IN into OUT, which unpacks itself
+# (src/fampack.fam).  The packer reads the size of IN, as four bytes lowest
+# first, and then IN.
+pack() {
+        out=$1; in=$2
+        if fresh "$out" "$in" bin/fampack; then return 0; fi
+        echo "Packing $in → $out" >&2
+        n=$(wc -c < "$in")
+        stream="$out.in.$$"
+        { printf "$(printf '\\%03o' $((n & 255)) $(((n >> 8) & 255)) \
+                        $(((n >> 16) & 255)) $(((n >> 24) & 255)))"
+          cat "$in"
+        } > "$stream"
+        serial_qemu "$stream" "$out" -device loader,file=bin/fampack,addr=0x80000000
+        rc=$?
+        rm -f "$stream"
+        if [ $rc -ne 0 ]; then
+                echo "build.sh: $out: error: $(head -c 200 "$out" | tr -d '\0')" >&2
+                rm -f "$out"
+                exit 1
+        fi
+}
+
+# the root of trust
 compile bin/fam0 fam0.seed src/fam0.fam0
-cmp ./bin/fam0 ./fam0.seed
+cmp ./bin/fam0 ./fam0.seed # verify they're identical
+
+# the core of fam
 compile bin/fam.uncompressed bin/fam0 src/fam.fam0
 compile bin/famc bin/fam0 src/famc.fam0
-compile bin/famas bin/fam0 src/famas.fam0
 compile bin/famld bin/fam0 src/famld.fam0
-# the runtime: startup, library and the last step (fam.sh ld adds them to
-# every link)
-for o in rt0 rtmain rttest; do
-        fresh bin/$o.o bin/famas lib/$o.s ||
-                sh "$(dirname "$0")/fam.sh" as lib/$o.s bin/$o.o || exit 1
-done
-fresh bin/rt.o bin/famc lib/rt.fam ||
-        sh "$(dirname "$0")/fam.sh" cc lib/rt.fam bin/rt.o || exit 1
 
-# the packer, a fam program, and the core packed with it
-fresh bin/fampack src/fampack.fam bin/famc bin/famld bin/fam.uncompressed \
-        bin/rt0.o bin/rt.o bin/rtmain.o || {
-        sh "$(dirname "$0")/fam.sh" cc src/fampack.fam bin/fampack.o &&
-        sh "$(dirname "$0")/fam.sh" ld bin/fampack bin/fampack.o
-        b_rc=$?
-        rm -f bin/fampack.o
-        [ $b_rc -eq 0 ] || exit 1
-}
-fresh bin/fam bin/fam.uncompressed bin/fampack || {
-        echo "Packing bin/fam.uncompressed → bin/fam" >&2
-        sh "$(dirname "$0")/fam.sh" pack bin/fam.uncompressed bin/fam || exit 1
-}
+# the runtime, which tools/famc adds to every link: startup and library,
+# and the last step (call main, or report the tests)
+compile bin/rt.o      bin/famc lib/rt.fam
+compile bin/rtmain.o  bin/famc lib/rtmain.fam
+compile bin/rttest.o  bin/famc lib/rttest.fam
+
+# the packer, a fam program: compile, link, and the core makes the binary
+compile bin/fampack.o    bin/famc  src/fampack.fam
+compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
+compile bin/fampack      bin/fam.uncompressed bin/fampack.core
+
+# the core, packed
+pack bin/fam bin/fam.uncompressed

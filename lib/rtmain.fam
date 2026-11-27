@@ -1,0 +1,3 @@
+// lib/rtmain.fam -- the last init record of a program.  tools/famc puts it
+// last in every link (lib/rt.fam is first).
+init { exit(main()); }

@@ -1,23 +1,19 @@
 # fam object format, version 1 (draft)
 
-Status: a draft, implemented by `src/famc.S` (the front end), `src/famas.S`
-(the object assembler) and `src/famld.S` (the linker) except where noted.
-Parts listed under "Open questions" are the ones most likely to change.
+Status: a draft, implemented by `src/famc.S` (the front end) and
+`src/famld.S` (the linker). Parts listed under "Open questions" are the
+ones most likely to change.
 
 ## Pipeline
 
 ```
-lib/rt0.s ───famas──▶ rt0.o ────┐
+lib/rt.fam ──famc───▶ rt.o ─────┐
 source.fam ──famc───▶ source.o ─┤
 source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ core text ──▶ core ──▶ binary
-lib/rt.fam ──famc───▶ rt.o ─────┤
-lib/rtmain.s ─famas─▶ rtmain.o ─┘
+lib/rtmain.fam ─famc▶ rtmain.o ─┘
 ```
 
 - The **front end** (`famc`) compiles one source file to one object.
-- The **object assembler** (`famas`) turns the text form of an object into
-  an object. It exists for code written by hand: the startup code and the
-  linker's tests.
 - An **object** is binary: machine code, the names it defines and calls,
   and where the calls are.
 - The **linker** (`famld`) reads the objects one after another and writes
@@ -27,7 +23,7 @@ lib/rtmain.s ─famas─▶ rtmain.o ─┘
   return ids, islands and relays are the core's, unchanged.
 
 Each of these is a program of its own, run under QEMU with its input on the
-serial port and its output redirected to a file. `scripts/fam.sh` drives
+serial port and its output redirected to a file. `tools/famc` drives
 them.
 
 ## Layout
@@ -114,44 +110,27 @@ A function's code does not include its return: the linker ends each
 function with the core's `;`. A function that returns early jumps to the
 end of its own code.
 
-## Text form
+## Looking at an object
 
-The text form says the same thing in a way a person can write. `famas`
-turns it into an object, and `fam.sh dump` prints an object in it.
-
-Tokens are separated by spaces, tabs or newlines. A token starting with `#`
-begins a comment that runs to the end of the line. A record starts with
-its keyword and runs to `end`:
-
-| Record | Meaning |
-|---|---|
-| `fn NAME` | Defines the function `NAME`. |
-| `local NAME` | Defines the local function `NAME`. |
-| `init` | Code run once at startup. |
-
-A body is a sequence of two kinds of token:
-
-| Token | Meaning |
-|---|---|
-| `XXXXXXXX` | Eight uppercase hex digits: four bytes of code, in memory order. `addi sp,sp,-4` is the word `0xFFC10113`, written `1301C1FF`. |
-| `@NAME` | A call to the function `NAME`: a call site, and its 28 bytes of code. |
-| `&NAME` | The id of the function `NAME`, loaded into `a0`: an id site, and its 8 bytes of code. |
-
-In the text form a name cannot contain whitespace or `@`, or start with
-`#`.
+`famc --dump FILE.o` prints an object as text, a record at a time:
 
 ```
-# math.answer returns 42 in a0 (addi a0,zero,42).
 fn math.answer
 1305A002
 end
-# main calls it and returns the same value.
 fn main
 @math.answer
 end
 ```
 
-As an object this is 124 bytes: the header, two symbols, one call site, 32
+| Line | Meaning |
+|---|---|
+| `fn NAME`, `local NAME`, `init` | A function, a local function or an init record starts. `end` ends it. |
+| `XXXXXXXX` | Four bytes of code, in memory order. `addi sp,sp,-4` is the word `0xFFC10113`, printed `1301C1FF`. |
+| `@NAME` | A call site for the function `NAME`. |
+| `&NAME` | An id site for the function `NAME`. |
+
+The object above is 124 bytes: the header, two symbols, one call site, 32
 bytes of code (4 for `math.answer`, 28 for the call site in `main`) and 16
 bytes of names.
 
@@ -174,11 +153,11 @@ of four `0x04` bytes. It:
    pointing. A function calling itself needs no stub.
 5. Writes those functions, then every init record as top-level code, in
    input order. The core runs top-level code in order at startup, so the
-   startup object (`lib/rt0.s`) goes first and the one that calls `main`
-   (`lib/rtmain.s`) last, with the init records of the program's objects in
-   between; `fam.sh ld` sees to that, and adds the runtime library. In a
-   test build each `test` block is an init record, and `lib/rttest.s`,
-   which reports the results, takes the place of `lib/rtmain.s`.
+   runtime (`lib/rt.fam`, which begins with the startup code) goes first
+   and the object that calls `main` (`lib/rtmain.fam`) last, with the init
+   records of the program's objects in between; `tools/famc` sees to
+   that. In a test build each `test` block is an init record, and `lib/rttest.fam`,
+   which reports the results, takes the place of `lib/rtmain.fam`.
 
 For the example above the linker writes:
 
@@ -290,11 +269,11 @@ Each of these is a new part or a new symbol kind, under a new version.
 
 ## Decided
 
-- Objects are binary. The text form is for code written by hand and for
-  looking at an object.
+- Objects are binary. Code that must be written by hand, such as the
+  startup code, is written in fam with `asm` and `init asm`.
 - The linker is its own program and its own pass. A single driver that
   compiles or links depending on its inputs, the way `gcc` does, comes
   later and sits on top of the tools.
-- The program starts in the startup object's init record (`lib/rt0.s`),
-  which lays out memory. The last init record (`lib/rtmain.s`) calls
+- The program starts in the runtime's init record (in `lib/rt.fam`),
+  which lays out memory. The last init record (`lib/rtmain.fam`) calls
   `main`, then `exit` with its result.

@@ -20,17 +20,28 @@ fn main() {
 }
 ```
 
-Build and run it with `scripts/fam.sh`:
+Compile it with `tools/famc`, which is used like `gcc`, and run it with
+`tools/q32`:
 
 ```
-sh scripts/fam.sh cc prog.fam prog.o
-sh scripts/fam.sh ld prog prog.o
-sh scripts/fam.sh run prog; echo $?
+tools/famc prog.fam -o prog
+tools/q32 prog; echo $?
 ```
 
 The program starts at `main`, and what `main` returns is the exit code.
-`ld` adds the runtime (startup and library) to every link; a binary holds
+`famc` adds the runtime (startup and library) to every link; a binary holds
 only the functions the program uses.
+
+| Command | What it does |
+|---|---|
+| `famc a.fam b.fam -o prog` | Compile and link. Without `-o` the binary is `a.out`. |
+| `famc -c a.fam` | Compile only, to `a.o`. |
+| `famc main.fam util.o -o prog` | Sources and objects together. |
+| `famc --test a.fam -o t` | Build the files' tests: see "Tests". |
+| `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
+
+Both run QEMU (`qemu-system-riscv32`), and need `scripts/build.sh` to have
+run. `MEM=256M` in the environment changes the machine's memory.
 
 ## Values
 
@@ -155,7 +166,7 @@ fn main() {
 - **Several files** may belong to one module. They call each other's `pub`
   functions by full name.
 - **`import` does not read anything.** It only allows the prefix; the
-  module's object must be given to `fam.sh ld`. Calling a function that
+  module's file or object must be given to `famc` too. Calling a function that
   does not exist, or is not `pub`, is a link error:
   `famld: undefined: shapes.twice in main`.
 
@@ -172,10 +183,11 @@ test "add adds" {
 }
 ```
 
-`fam.sh test` builds the files given with their tests and runs them all:
+`famc --test` builds the files given with their tests, and running the
+result runs them all:
 
 ```
-$ sh scripts/fam.sh test math.fam
+$ tools/famc --test math.fam -o t && tools/q32 t
 ok    add adds
 FAIL  add handles big numbers (math.fam:14)
 
@@ -188,7 +200,7 @@ FAIL  add handles big numbers (math.fam:14)
 - The exit code is 0 if every test passed, else 1.
 - Tests run in the order they are written, file by file. `main` is not
   called.
-- A normal build (`fam.sh cc` without `--test`) skips test blocks.
+- A normal build (without `--test`) skips test blocks.
 - `assert` is only allowed in a test block.
 - A panic or a trap in a test ends the whole run.
 
@@ -215,11 +227,11 @@ Names starting with `__` belong to the runtime.
 The four `load` and `store` functions compile to a single instruction each
 when called by name.
 
-`fam.sh run BINARY INPUT` gives a program the file `INPUT` to read.
+A program reads what `q32` is given: `tools/q32 prog < input`.
 
 ## When a program goes wrong
 
-The startup code (`lib/rt0.s`) gives the stack everything from the end of
+The startup code (in `lib/rt.fam`) gives the stack everything from the end of
 the program to the top of the machine's memory, less a sixteenth for the
 return ids of calls. `alloc` takes its pieces from the low end of the
 stack's space. Running out of either stack is caught and reported, with
@@ -234,8 +246,8 @@ fam: trap 5 on address 0x00000000 at 0x80000B4C
 ## Machine code
 
 `asm { ... }` puts instructions in the function as they are: each is eight
-uppercase hex digits, four bytes in memory order, as in the text form of an
-object (`docs/OBJECT.md`).
+uppercase hex digits, four bytes in memory order: `addi a0,a0,3` is the
+word `0x00350513`, written `13053500`.
 
 ```
 fn add3(x) {
@@ -243,12 +255,31 @@ fn add3(x) {
 }
 ```
 
+- `@NAME` in it is a call of that function, and `&NAME` loads the
+  function's id into `a0`. Arguments and the result are in `a0` to `a7` as
+  usual; a call does not preserve `t0` to `t6` or `a0` to `a7`.
 - If it is the first thing in a function, the arguments are still in `a0`
   to `a7`.
 - What it leaves in `a0` is the function's result if the function ends
   there.
 - It may use `a0` to `a7` and `t0` to `t6`. It must leave `sp`, `s0` to
   `s11`, `gp` and `tp` as they were.
+
+## Code that runs at startup
+
+An `init` block at the top of a file runs once when the program starts,
+before `main`:
+
+```
+init { print("starting\n"); }
+```
+
+- Init blocks run in the order written, file by file in the order the
+  files are given to `famc`.
+- Its body is statements, as in a function. `return;` ends it.
+- `init asm { ... }` is the same with nothing but the machine code given:
+  no stack frame around it. The runtime's own startup code is written this
+  way, because it runs before there is a stack.
 
 ## Comments
 
