@@ -1,0 +1,7 @@
+// exit: 3
+// main itself in a cycle.
+fn main() { return run(3); }
+fn run(n) {
+    if n == 3 { return n; }
+    return main();
+}

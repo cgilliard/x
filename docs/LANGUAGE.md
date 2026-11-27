@@ -47,8 +47,7 @@ fn NAME(PARAMETER, ...) { STATEMENTS }
   is not checked yet.
 - A function that ends without `return` returns whatever its last
   computation left behind. Use `return` when the value matters.
-- A function may call itself. Two functions calling each other are a link
-  error for now.
+- Functions may call themselves and each other.
 
 ## Statements
 
@@ -124,5 +123,4 @@ prog.fam:3: unknown variable y
 - Types other than the 32-bit integer; strings, arrays, pointers, structs.
 - Global variables and constants.
 - Checking the number of arguments of a call.
-- Mutual recursion.
 - Modules, tests, function pointers.

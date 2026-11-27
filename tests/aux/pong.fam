@@ -1,0 +1,5 @@
+// The other half of mutual_objects.fam.
+fn pong(n) {
+    if n == 0 { return 0; }
+    return ping(n - 1) + 1;
+}

@@ -39,7 +39,7 @@ stage() {
                 # "famc: line 3: what" becomes "FILE:3: what"
                 sed "s|^fam[a-z]*: line \\([0-9]*\\): |$1:\\1: |" "$s_out" >&2
                 rm -f "$s_out"
-                exit 1
+                return 1
         fi
 }
 
@@ -47,18 +47,20 @@ cmd=$1; [ $# -gt 0 ] && shift
 case $cmd in
 cc)
         [ $# -eq 2 ] || { echo "usage: fam.sh cc SOURCE OBJECT" >&2; exit 2; }
-        stage bin/famc "$2" "$1"
+        stage bin/famc "$2" "$1" || exit 1
         ;;
 as)
         [ $# -eq 2 ] || { echo "usage: fam.sh as TEXT OBJECT" >&2; exit 2; }
-        stage bin/famas "$2" "$1"
+        stage bin/famas "$2" "$1" || exit 1
         ;;
 ld)
         [ $# -ge 2 ] || { echo "usage: fam.sh ld BINARY OBJECT..." >&2; exit 2; }
         out=$1; shift
-        stage bin/famld "$out.core" "$@"
+        stage bin/famld "$out.core" "$@" || exit 1
         stage bin/fam.uncompressed "$out" "$out.core"
+        rc=$?
         rm -f "$out.core"
+        exit $rc
         ;;
 run)
         [ $# -eq 1 ] || { echo "usage: fam.sh run BINARY" >&2; exit 2; }

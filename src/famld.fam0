@@ -28,12 +28,22 @@
 # as top-level code, in input order.  On an error, writes a message in place
 # of the output and exits with 1.
 #
+# Functions that call each other in a cycle cannot all come before their
+# callers.  When a function calls one that is still being written, the call
+# goes through a stub instead, a word `>NNNNNNN` holding one jump:
+#     : >NNNNNNN iiiiiiii mark 6F000000 , ;
+# and the function it stands for starts with `iiiiiiii patch`, which points
+# that jump at it.  `mark` and `patch` run in the core as it compiles; they
+# and `allot`, which reserves the table they share, are defined at the top
+# of the output (see preamble).
+#
 # Built from this file by tools/s2fam0_fam.py into src/famld.fam0, which
 # bin/fam0 turns into bin/famld.
 #
 # Memory, from the page after the code (base):
 #   base                return ids, 64 KiB          (s10 floor, s11 pointer)
-#   base + 0x10000      the emit stack, 64 KiB      (tp floor, sp pointer)
+#   base + 0x10000      the emit stack, 64 KiB      (tp floor, sp pointer);
+#                       its top word, at -4(s3), counts the stubs
 #   base + 0x20000      the symbol table, 1 MiB     (s3 base, s4 next free)
 #   base + 0x120000     the init list, 64 KiB       (s5 base, s6 next free)
 #   base + 0x130000     the objects, 32 MiB         (s0 next free)
@@ -46,9 +56,9 @@
 #   - word 1 of each of its symbols (the name offset) holds the address of
 #     the linker's symbol for it, for functions and externals
 #
-# A linker symbol is 24 bytes: name start, name length, the object defining
+# A linker symbol is 28 bytes: name start, name length, the object defining
 #   it (0: none yet), its symbol there, state (0 not written, 1 being
-#   written, 2 written), number (from 1).
+#   written, 2 written), number (from 1), its stub's index + 1 (0: no stub).
 # An init entry is 8 bytes: the object, the init symbol there.
 #
 # Other registers:
@@ -137,7 +147,8 @@
 #   lay out its memory, from the page after the code (base), and read the
 #   source from the UART up to EOT.
 #     base                return ids, 64 KiB        (s10 floor, s11 pointer)
-#     base + 0x10000      the symbol count (one word), then
+#     base + 0x10000      16 words of variables (the last, at -4(s4),
+#                         is the symbol count), then
 #                         the symbols, 1 MiB        (s4 base, s5 next free)
 #     base + 0x110000     the call sites, 1 MiB     (s6 base, s7 next free)
 #     base + 0x210000     the names, 2 MiB          (gp base, tp next free)
@@ -153,8 +164,8 @@
 #     and     s10, s10, t0                # base: the page after the code
 #     li      t0, 0x10000
 #     add     s11, s10, t0                # return ids: top
-#     sw      zero, 0(s11)                # the symbol count
-#     addi    s4, s11, 4                  # symbols
+#     addi    s4, s11, 64                 # symbols, after the variables
+#     sw      zero, -4(s4)                # the symbol count
 #     mv      s5, s4
 #     li      t0, 0x100000
 #     add     s6, s11, t0                 # call sites
@@ -190,11 +201,11 @@
 
 # _start:
 #     LOAD_ADDRESS s10, data
-17 1D 00 00	# auipc s10,0x1
-13 0D 4D 2F	# addi s10,s10,756 # 12f4 <data>
+17 2D 00 00	# auipc s10,0x2
+13 0D CD 27	# addi s10,s10,636 # 227c <data>
 #     li      t0, 4095
 B7 12 00 00	# lui t0,0x1
-93 82 F2 FF	# addi t0,t0,-1 # fff <Lleft_76+0x3>
+93 82 F2 FF	# addi t0,t0,-1 # fff <Lret_93+0xf>
 #     add     s10, s10, t0
 33 0D 5D 00	# add s10,s10,t0
 #     li      t0, -4096
@@ -207,10 +218,12 @@ B7 02 01 00	# lui t0,0x10
 B3 0D 5D 00	# add s11,s10,t0
 #     mv      tp, s11                     # emit stack: floor
 13 82 0D 00	# mv tp,s11
-#     add     sp, s11, t0                 # emit stack: top
-33 81 5D 00	# add sp,s11,t0
-#     mv      s3, sp                      # symbol table
-93 09 01 00	# mv s3,sp
+#     add     s3, s11, t0                 # symbol table
+B3 89 5D 00	# add s3,s11,t0
+#     addi    sp, s3, -16                 # emit stack: top, under the stub count
+13 81 09 FF	# addi sp,s3,-16
+#     sw      zero, -4(s3)
+23 AE 09 FE	# sw zero,-4(s3)
 #     mv      s4, s3
 13 8A 09 00	# mv s4,s3
 #     li      t0, 0x100000
@@ -241,65 +254,74 @@ B3 81 5B 00	# add gp,s7,t0
 #     addi    t2, s0, 12
 93 03 C4 00	# addi t2,s0,12
 #     bgtu    t2, s7, err_big
-E3 EC 7B 1A	# bltu s7,t2,a1c <err_big>
+63 F4 7B 00	# bgeu s7,t2,70 <.Ll_next+0x10>
+6F 10 80 51	# j 1584 <err_big>
 #     mv      a0, s0
 13 05 04 00	# mv a0,s0
 #     addi    a1, s0, 4
 93 05 44 00	# addi a1,s0,4
 #     CALL    rd                          # the magic, or the end marker
 93 8D CD FF	# addi s11,s11,-4
-E3 E6 AD 69	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,84 <.Ll_next+0x24>
+6F 10 90 1A	# j 1a28 <__panic>
 93 02 00 00	# li t0,0
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 2D	# j 358 <rd>
+6F 00 80 3A	# j 434 <rd>
 #     lw      t2, 0(ra)
 83 A3 00 00	# lw t2,0(ra)
 #     li      t3, 0x04040404
 37 0E 04 04	# lui t3,0x4040
-13 0E 4E 40	# addi t3,t3,1028 # 4040404 <data+0x403f110>
+13 0E 4E 40	# addi t3,t3,1028 # 4040404 <data+0x403e188>
 #     beq     t2, t3, .Lp_done
-63 8E C3 23	# beq t2,t3,2cc <.Lp_done>
+63 8C C3 2B	# beq t2,t3,354 <.Lp_done>
 #     li      t3, 'F' | 'A'<<8 | 'M'<<16 | 'O'<<24
 37 4E 4D 4F	# lui t3,0x4f4d4
-13 0E 6E 14	# addi t3,t3,326 # 4f4d4146 <data+0x4f4d2e52>
+13 0E 6E 14	# addi t3,t3,326 # 4f4d4146 <data+0x4f4d1eca>
 #     bne     t2, t3, err_noobj
-63 9A C3 71	# bne t2,t3,7b0 <err_noobj>
+63 84 C3 01	# beq t2,t3,b0 <Lret_0+0x20>
+6F 10 C0 26	# j 1318 <err_noobj>
 #     addi    a1, ra, 12
 93 85 C0 00	# addi a1,ra,12
 #     CALL    rd                          # version, size
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 65	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,c0 <Lret_0+0x30>
+6F 10 D0 16	# j 1a28 <__panic>
 93 02 10 00	# li t0,1
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 2A	# j 358 <rd>
+6F 00 C0 36	# j 434 <rd>
 #     lw      t2, 4(ra)
 83 A3 40 00	# lw t2,4(ra)
 #     li      t3, 1
 13 0E 10 00	# li t3,1
 #     bne     t2, t3, err_version
-63 98 C3 7F	# bne t2,t3,8b0 <err_version>
+63 84 C3 01	# beq t2,t3,dc <Lret_1+0x10>
+6F 10 00 34	# j 1418 <err_version>
 #     lw      t2, 8(ra)
 83 A3 80 00	# lw t2,8(ra)
 #     li      t3, 28
 13 0E C0 01	# li t3,28
 #     bltu    t2, t3, err_bad
-E3 E2 C3 0D	# bltu t2,t3,990 <err_bad>
+63 F4 C3 01	# bgeu t2,t3,ec <Lret_1+0x20>
+6F 10 00 41	# j 14f8 <err_bad>
 #     andi    t3, t2, 3
 13 FE 33 00	# andi t3,t2,3
 #     bnez    t3, err_bad
-E3 1E 0E 0A	# bnez t3,990 <err_bad>
+63 04 0E 00	# beqz t3,f8 <Lret_1+0x2c>
+6F 10 40 40	# j 14f8 <err_bad>
 #     sub     t3, s7, ra
 33 8E 1B 40	# sub t3,s7,ra
 #     bgtu    t2, t3, err_big
-E3 60 7E 14	# bltu t3,t2,a1c <err_big>
+63 74 7E 00	# bgeu t3,t2,104 <Lret_1+0x38>
+6F 10 40 48	# j 1584 <err_big>
 #     add     a1, ra, t2
 B3 85 70 00	# add a1,ra,t2
 #     CALL    rd                          # the rest
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 61	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,114 <Lret_1+0x48>
+6F 10 90 11	# j 1a28 <__panic>
 93 02 20 00	# li t0,2
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 26	# j 358 <rd>
+6F 00 80 31	# j 434 <rd>
 #     mv      s0, a1
 13 84 05 00	# mv s0,a1
 
@@ -314,19 +336,24 @@ E3 EC AD 61	# bltu s11,s10,f00 <__panic>
 #     lw      t6, 8(ra)                   # size
 83 AF 80 00	# lw t6,8(ra)
 #     bgtu    t2, t6, err_bad
-E3 E0 7F 08	# bltu t6,t2,990 <err_bad>
+63 F4 7F 00	# bgeu t6,t2,140 <Lret_2+0x20>
+6F 10 C0 3B	# j 14f8 <err_bad>
 #     bgtu    t3, t6, err_bad
-E3 EE CF 07	# bltu t6,t3,990 <err_bad>
+63 F4 CF 01	# bgeu t6,t3,148 <Lret_2+0x28>
+6F 10 40 3B	# j 14f8 <err_bad>
 #     bgtu    t4, t6, err_bad
-E3 EC DF 07	# bltu t6,t4,990 <err_bad>
+63 F4 DF 01	# bgeu t6,t4,150 <Lret_2+0x30>
+6F 10 C0 3A	# j 14f8 <err_bad>
 #     bgtu    t5, t6, err_bad
-E3 EA EF 07	# bltu t6,t5,990 <err_bad>
+63 F4 EF 01	# bgeu t6,t5,158 <Lret_2+0x38>
+6F 10 40 3A	# j 14f8 <err_bad>
 #     or      a0, t4, t5
 33 E5 EE 01	# or a0,t4,t5
 #     andi    a0, a0, 3
 13 75 35 00	# andi a0,a0,3
 #     bnez    a0, err_bad
-E3 14 05 06	# bnez a0,990 <err_bad>
+63 04 05 00	# beqz a0,168 <Lret_2+0x48>
+6F 10 40 39	# j 14f8 <err_bad>
 #     slli    a0, t2, 4
 13 95 43 00	# slli a0,t2,0x4
 #     slli    a1, t2, 2
@@ -348,7 +375,8 @@ B3 06 B6 00	# add a3,a2,a1
 #     add     a0, a0, t5
 33 05 E5 01	# add a0,a0,t5
 #     bne     a0, t6, err_bad             # the parts must add up to the size
-E3 1E F5 03	# bne a0,t6,990 <err_bad>
+63 04 F5 01	# beq a0,t6,198 <Lret_2+0x78>
+6F 10 40 36	# j 14f8 <err_bad>
 #     sw      a2, 4(ra)
 23 A2 C0 00	# sw a2,4(ra)
 #     sw      a3, 8(ra)
@@ -360,33 +388,38 @@ E3 1E F5 03	# bne a0,t6,990 <err_bad>
 13 09 06 00	# mv s2,a2
 # .Ls_next:
 #     bgeu    s1, s2, .Ls_done
-63 F2 24 11	# bgeu s1,s2,26c <.Ls_done>
+63 FA 24 13	# bgeu s1,s2,2dc <.Ls_done>
 #     lw      t2, 0(s1)                   # kind
 83 A3 04 00	# lw t2,0(s1)
 #     li      t3, 2
 13 0E 20 00	# li t3,2
 #     bgtu    t2, t3, err_bad
-E3 6E 7E 00	# bltu t3,t2,990 <err_bad>
+63 74 7E 00	# bgeu t3,t2,1bc <.Ls_next+0x14>
+6F 10 00 34	# j 14f8 <err_bad>
 #     beq     t2, t3, .Ls_init
-63 8E C3 0B	# beq t2,t3,234 <.Ls_init>
+63 80 C3 0F	# beq t2,t3,29c <.Ls_init>
 #     lw      a0, 4(s1)                   # the name
 03 A5 44 00	# lw a0,4(s1)
 #     lw      a1, 8(s1)
 83 A5 84 00	# lw a1,8(s1)
 #     beqz    a1, err_bad
-E3 86 05 00	# beqz a1,990 <err_bad>
+63 94 05 00	# bnez a1,1d0 <.Ls_next+0x28>
+6F 10 C0 32	# j 14f8 <err_bad>
 #     li      t3, 255
 13 0E F0 0F	# li t3,255
 #     bgtu    a1, t3, err_bad
-E3 62 BE 00	# bltu t3,a1,990 <err_bad>
+63 74 BE 00	# bgeu t3,a1,1dc <.Ls_next+0x34>
+6F 10 00 32	# j 14f8 <err_bad>
 #     lw      t3, 24(ra)
 03 AE 80 01	# lw t3,24(ra)
 #     bgtu    a0, t3, err_bad
-63 6E AE 7E	# bltu t3,a0,990 <err_bad>
+63 74 AE 00	# bgeu t3,a0,1e8 <.Ls_next+0x40>
+6F 10 40 31	# j 14f8 <err_bad>
 #     add     t4, a0, a1
 B3 0E B5 00	# add t4,a0,a1
 #     bgtu    t4, t3, err_bad
-63 6A DE 7F	# bltu t3,t4,990 <err_bad>
+63 74 DE 01	# bgeu t3,t4,1f4 <.Ls_next+0x4c>
+6F 10 80 30	# j 14f8 <err_bad>
 #     lw      t3, 8(ra)
 03 AE 80 00	# lw t3,8(ra)
 #     add     a0, a0, t3
@@ -397,16 +430,18 @@ B3 0E B5 00	# add t4,a0,a1
 33 05 C5 01	# add a0,a0,t3
 #     CALL    find_sym
 93 8D CD FF	# addi s11,s11,-4
-E3 E6 AD 55	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,210 <.Ls_next+0x68>
+6F 10 D0 01	# j 1a28 <__panic>
 93 02 30 00	# li t0,3
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 1E	# j 3ac <find_sym>
+6F 00 00 28	# j 498 <find_sym>
 #     bnez    a2, 2f
-63 1E 06 02	# bnez a2,200 <.L2^B1>
-#     addi    t2, s4, 24                  # a new name
-93 03 8A 01	# addi t2,s4,24
+63 12 06 04	# bnez a2,260 <.L2^B1>
+#     addi    t2, s4, 28                  # a new name
+93 03 CA 01	# addi t2,s4,28
 #     bgtu    t2, s5, err_big
-E3 E8 7A 04	# bltu s5,t2,a1c <err_big>
+63 F4 7A 00	# bgeu s5,t2,22c <Lret_3+0x10>
+6F 10 C0 35	# j 1584 <err_big>
 #     mv      a2, s4
 13 06 0A 00	# mv a2,s4
 #     sw      a0, 0(a2)
@@ -419,12 +454,14 @@ E3 E8 7A 04	# bltu s5,t2,a1c <err_big>
 23 26 06 00	# sw zero,12(a2)
 #     sw      zero, 16(a2)
 23 28 06 00	# sw zero,16(a2)
+#     sw      zero, 24(a2)
+23 2C 06 00	# sw zero,24(a2)
 #     li      t3, 1                       # number: the one before's + 1
 13 0E 10 00	# li t3,1
 #     beq     s4, s3, 1f
-63 06 3A 01	# beq s4,s3,1f8 <.L1^B1>
-#     lw      t3, -4(s4)
-03 2E CA FF	# lw t3,-4(s4)
+63 06 3A 01	# beq s4,s3,258 <.L1^B1>
+#     lw      t3, -8(s4)
+03 2E 8A FF	# lw t3,-8(s4)
 #     addi    t3, t3, 1
 13 0E 1E 00	# addi t3,t3,1
 # 1:  sw      t3, 20(a2)
@@ -436,30 +473,33 @@ E3 E8 7A 04	# bltu s5,t2,a1c <err_big>
 #     lw      t2, 0(s1)
 83 A3 04 00	# lw t2,0(s1)
 #     beqz    t2, .Ls_step                # external: nothing more
-63 8E 03 04	# beqz t2,264 <.Ls_step>
+63 86 03 06	# beqz t2,2d4 <.Ls_step>
 #     lw      t2, 8(a2)
 83 23 86 00	# lw t2,8(a2)
 #     bnez    t2, err_dup
-E3 92 03 16	# bnez t2,b74 <err_dup>
+63 84 03 00	# beqz t2,278 <.L2^B1+0x18>
+6F 10 C0 59	# j 1810 <err_dup>
 #     CALL    chk_code
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 4F	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,284 <.L2^B1+0x24>
+6F 10 80 7A	# j 1a28 <__panic>
 93 02 40 00	# li t0,4
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 15	# j 380 <chk_code>
+6F 00 00 1D	# j 45c <chk_code>
 #     sw      ra, 8(a2)
 23 24 16 00	# sw ra,8(a2)
 #     sw      s1, 12(a2)
 23 26 96 00	# sw s1,12(a2)
 #     j       .Ls_step
-6F 00 40 03	# j 264 <.Ls_step>
+6F 00 C0 03	# j 2d4 <.Ls_step>
 # .Ls_init:
 #     CALL    chk_code
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 4D	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,2a8 <.Ls_init+0xc>
+6F 10 40 78	# j 1a28 <__panic>
 93 02 50 00	# li t0,5
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 13	# j 380 <chk_code>
+6F 00 C0 1A	# j 45c <chk_code>
 #     addi    t2, s6, 8
 93 03 8B 00	# addi t2,s6,8
 #     li      t3, 0x10000
@@ -467,7 +507,8 @@ E3 E4 AD 4D	# bltu s11,s10,f00 <__panic>
 #     add     t3, s5, t3
 33 8E CA 01	# add t3,s5,t3
 #     bgtu    t2, t3, err_big
-63 64 7E 7C	# bltu t3,t2,a1c <err_big>
+63 74 7E 00	# bgeu t3,t2,2c8 <Lret_5+0x14>
+6F 10 00 2C	# j 1584 <err_big>
 #     sw      ra, 0(s6)
 23 20 1B 00	# sw ra,0(s6)
 #     sw      s1, 4(s6)
@@ -478,7 +519,7 @@ E3 E4 AD 4D	# bltu s11,s10,f00 <__panic>
 #     addi    s1, s1, 20
 93 84 44 01	# addi s1,s1,20
 #     j       .Ls_next
-6F F0 1F F0	# j 168 <.Ls_next>
+6F F0 1F ED	# j 1a8 <.Ls_next>
 # .Ls_done:
 
 #     lw      s1, 4(ra)                   # each call site
@@ -493,25 +534,30 @@ E3 E4 AD 4D	# bltu s11,s10,f00 <__panic>
 93 06 00 00	# li a3,0
 # .Lc_next:
 #     bgeu    s1, s2, .Ll_next
-E3 FE 24 DD	# bgeu s1,s2,5c <.Ll_next>
+E3 F8 24 D7	# bgeu s1,s2,60 <.Ll_next>
 #     lw      t2, 0(s1)                   # its offset: after the one before,
 83 A3 04 00	# lw t2,0(s1)
 #     andi    t3, t2, 3                   # 28 bytes inside the code
 13 FE 33 00	# andi t3,t2,3
 #     bnez    t3, err_bad
-63 12 0E 70	# bnez t3,990 <err_bad>
+63 04 0E 00	# beqz t3,304 <.Lc_next+0x14>
+6F 10 80 1F	# j 14f8 <err_bad>
 #     bltu    t2, a3, err_bad
-63 E0 D3 70	# bltu t2,a3,990 <err_bad>
+63 F4 D3 00	# bgeu t2,a3,30c <.Lc_next+0x1c>
+6F 10 00 1F	# j 14f8 <err_bad>
 #     bgtu    t2, a4, err_bad
-63 6E 77 6E	# bltu a4,t2,990 <err_bad>
+63 74 77 00	# bgeu a4,t2,314 <.Lc_next+0x24>
+6F 10 80 1E	# j 14f8 <err_bad>
 #     addi    a3, t2, 28
 93 86 C3 01	# addi a3,t2,28
 #     bgtu    a3, a4, err_bad
-63 6A D7 6E	# bltu a4,a3,990 <err_bad>
+63 74 D7 00	# bgeu a4,a3,320 <.Lc_next+0x30>
+6F 10 C0 1D	# j 14f8 <err_bad>
 #     lw      t3, 4(s1)                   # its symbol: a function or external
 03 AE 44 00	# lw t3,4(s1)
 #     bgeu    t3, a5, err_bad
-63 76 FE 6E	# bgeu t3,a5,990 <err_bad>
+63 64 FE 00	# bltu t3,a5,32c <.Lc_next+0x3c>
+6F 10 00 1D	# j 14f8 <err_bad>
 #     slli    t4, t3, 4
 93 1E 4E 00	# slli t4,t3,0x4
 #     slli    t3, t3, 2
@@ -521,15 +567,16 @@ E3 FE 24 DD	# bgeu s1,s2,5c <.Ll_next>
 #     add     t3, t3, ra
 33 0E 1E 00	# add t3,t3,ra
 #     lw      t4, 28(t3)
-83 2E CE 01	# lw t4,28(t3) # 1001c <data+0xed28>
+83 2E CE 01	# lw t4,28(t3) # 1001c <data+0xdda0>
 #     li      t5, 2
 13 0F 20 00	# li t5,2
 #     beq     t4, t5, err_bad
-63 88 EE 6D	# beq t4,t5,990 <err_bad>
+63 94 EE 01	# bne t4,t5,34c <.Lc_next+0x5c>
+6F 10 00 1B	# j 14f8 <err_bad>
 #     addi    s1, s1, 8
 93 84 84 00	# addi s1,s1,8
 #     j       .Lc_next
-6F F0 9F FB	# j 280 <.Lc_next>
+6F F0 1F FA	# j 2f0 <.Lc_next>
 
     # --- pass 2: write every function (emit_fn writes its callees first),
     # --- then the init records.
@@ -537,57 +584,85 @@ E3 FE 24 DD	# bgeu s1,s2,5c <.Ll_next>
 #     mv      ra, s3
 93 80 09 00	# mv ra,s3
 # 1:  bgeu    ra, s4, 3f
-63 F6 40 03	# bgeu ra,s4,2fc <.L3^B1>
+63 F8 40 03	# bgeu ra,s4,388 <.L3^B1>
 #     lw      t2, 8(ra)
 83 A3 80 00	# lw t2,8(ra)
 #     beqz    t2, 2f                      # never defined; an error if called
-63 8E 03 00	# beqz t2,2f4 <Lret_6>
+63 80 03 02	# beqz t2,380 <Lret_6>
 #     mv      a2, ra
 13 86 00 00	# mv a2,ra
 #     CALL    emit_fn
 93 8D CD FF	# addi s11,s11,-4
-E3 EE AD 41	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,374 <.L1^B2+0x1c>
+6F 10 80 6B	# j 1a28 <__panic>
 93 02 60 00	# li t0,6
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 21	# j 50c <emit_fn>
-# 2:  addi    ra, ra, 24
-93 80 80 01	# addi ra,ra,24
+6F 00 00 29	# j 60c <emit_fn>
+# 2:  addi    ra, ra, 28
+93 80 C0 01	# addi ra,ra,28
 #     j       1b
-6F F0 9F FD	# j 2d0 <.L1^B2>
+6F F0 5F FD	# j 358 <.L1^B2>
 # 3:  mv      ra, s5
 93 80 0A 00	# mv ra,s5
 # 4:  bgeu    ra, s6, 5f
-63 F0 60 05	# bgeu ra,s6,340 <.L5^B1>
+63 F4 60 05	# bgeu ra,s6,3d4 <.L5^B1>
 #     lw      a5, 0(ra)
 83 A7 00 00	# lw a5,0(ra)
 #     lw      a1, 4(ra)
 83 A5 40 00	# lw a1,4(ra)
 #     CALL    emit_code
 93 8D CD FF	# addi s11,s11,-4
-E3 E8 AD 3F	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,3a4 <.L4^B1+0x18>
+6F 10 80 68	# j 1a28 <__panic>
 93 02 70 00	# li t0,7
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 34	# j 65c <emit_code>
+6F 00 00 59	# j 93c <emit_code>
 #     li      a0, 0x0A
 13 05 A0 00	# li a0,10
 #     CALL    out_ch
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 3D	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,3c0 <Lret_7+0x10>
+6F 10 C0 66	# j 1a28 <__panic>
 93 02 80 00	# li t0,8
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 3E	# j 714 <out_ch>
+6F 00 10 6E	# j 12a8 <out_ch>
 #     addi    ra, ra, 8
 93 80 80 00	# addi ra,ra,8
 #     j       4b
-6F F0 5F FC	# j 300 <.L4^B1>
-# 5:  CALL    flush
+6F F0 DF FB	# j 38c <.L4^B1>
+# 5:  mv      ra, s8                      # the preamble is written last and
+93 00 0C 00	# mv ra,s8
+#     CALL    preamble                    # sent first
 93 8D CD FF	# addi s11,s11,-4
-E3 EE AD 3B	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,3e4 <.L5^B1+0x10>
+6F 10 80 64	# j 1a28 <__panic>
 93 02 90 00	# li t0,9
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 3F	# j 744 <flush>
+6F 00 00 65	# j a3c <preamble>
+#     mv      a0, ra
+13 85 00 00	# mv a0,ra
+#     sub     a1, s8, ra
+B3 05 1C 40	# sub a1,s8,ra
+#     CALL    uput_tok
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,404 <Lret_9+0x14>
+6F 10 80 62	# j 1a28 <__panic>
+93 02 A0 00	# li t0,10
+23 A0 5D 00	# sw t0,0(s11)
+6F 10 C0 5A	# j 19b8 <uput_tok>
+#     mv      a0, s7
+13 85 0B 00	# mv a0,s7
+#     sub     a1, ra, s7
+B3 85 70 41	# sub a1,ra,s7
+#     CALL    uput_tok
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,424 <Lret_10+0x14>
+6F 10 80 60	# j 1a28 <__panic>
+93 02 B0 00	# li t0,11
+23 A0 5D 00	# sw t0,0(s11)
+6F 10 C0 58	# j 19b8 <uput_tok>
 #     j       exit_ok
-6F 00 D0 36	# j ec0 <exit_ok>
+6F 10 80 5B	# j 19e8 <exit_ok>
 
 # rd -- read bytes from the UART into [a0, a1); a0 = a1 after.
 #   Clobbers t2, t3.
@@ -595,13 +670,13 @@ E3 EE AD 3B	# bltu s11,s10,f00 <__panic>
 #     li      t2, 0x10000000              # UART base
 B7 03 00 10	# lui t2,0x10000
 # 1:  bgeu    a0, a1, 3f
-63 70 B5 02	# bgeu a0,a1,37c <.L3^B2>
+63 70 B5 02	# bgeu a0,a1,458 <.L3^B2>
 # 2:  lbu     t3, 5(t2)
-03 CE 53 00	# lbu t3,5(t2) # 10000005 <data+0xfffed11>
+03 CE 53 00	# lbu t3,5(t2) # 10000005 <data+0xfffdd89>
 #     andi    t3, t3, 0x01                # a byte waiting?
 13 7E 1E 00	# andi t3,t3,1
 #     beqz    t3, 2b
-E3 0C 0E FE	# beqz t3,360 <.L2^B3>
+E3 0C 0E FE	# beqz t3,43c <.L2^B3>
 #     lbu     t3, 0(t2)
 03 CE 03 00	# lbu t3,0(t2)
 #     sb      t3, 0(a0)
@@ -609,9 +684,9 @@ E3 0C 0E FE	# beqz t3,360 <.L2^B3>
 #     addi    a0, a0, 1
 13 05 15 00	# addi a0,a0,1
 #     j       1b
-6F F0 5F FE	# j 35c <.L1^B3>
+6F F0 5F FE	# j 438 <.L1^B3>
 # 3:  RET
-6F 00 10 3B	# j f2c <__dispatch>
+6F 10 C0 5F	# j 1a54 <__dispatch>
 
 # chk_code -- s1 = a symbol of the object ra; error unless its code lies
 #   inside the object's, in whole words.  Clobbers t2, t3, t4.
@@ -625,19 +700,23 @@ B3 EE C3 01	# or t4,t2,t3
 #     andi    t4, t4, 3
 93 FE 3E 00	# andi t4,t4,3
 #     bnez    t4, err_bad
-63 90 0E 60	# bnez t4,990 <err_bad>
+63 84 0E 00	# beqz t4,474 <chk_code+0x18>
+6F 10 80 08	# j 14f8 <err_bad>
 #     lw      t4, 20(ra)
 83 AE 40 01	# lw t4,20(ra)
 #     bgtu    t2, t4, err_bad
-63 EC 7E 5E	# bltu t4,t2,990 <err_bad>
+63 F4 7E 00	# bgeu t4,t2,480 <chk_code+0x24>
+6F 10 C0 07	# j 14f8 <err_bad>
 #     bgtu    t3, t4, err_bad
-63 EA CE 5F	# bltu t4,t3,990 <err_bad>
+63 F4 CE 01	# bgeu t4,t3,488 <chk_code+0x2c>
+6F 10 40 07	# j 14f8 <err_bad>
 #     add     t2, t2, t3
 B3 83 C3 01	# add t2,t2,t3
 #     bgtu    t2, t4, err_bad
-63 E6 7E 5E	# bltu t4,t2,990 <err_bad>
+63 F4 7E 00	# bgeu t4,t2,494 <chk_code+0x38>
+6F 10 80 06	# j 14f8 <err_bad>
 #     RET
-6F 00 50 38	# j f2c <__dispatch>
+6F 10 00 5C	# j 1a54 <__dispatch>
 
 # find_sym -- a0 = name start, a1 = length; a2 = its symbol, or 0.
 #   Clobbers t2-t6.
@@ -645,17 +724,17 @@ B3 83 C3 01	# add t2,t2,t3
 #     mv      a2, s3
 13 86 09 00	# mv a2,s3
 # 1:  bgeu    a2, s4, 4f
-63 7E 46 03	# bgeu a2,s4,3ec <.L4^B2>
+63 7E 46 03	# bgeu a2,s4,4d8 <.L4^B2>
 #     lw      t2, 4(a2)
 83 23 46 00	# lw t2,4(a2)
 #     bne     t2, a1, 3f
-63 96 B3 02	# bne t2,a1,3e4 <.L3^B3>
+63 96 B3 02	# bne t2,a1,4d0 <.L3^B3>
 #     lw      t3, 0(a2)
 03 2E 06 00	# lw t3,0(a2)
 #     li      t4, 0
 93 0E 00 00	# li t4,0
 # 2:  bgeu    t4, a1, 5f                  # every byte matched
-63 F6 BE 02	# bgeu t4,a1,3f0 <.L5^B2>
+63 F6 BE 02	# bgeu t4,a1,4dc <.L5^B2>
 #     add     t5, t3, t4
 33 0F DE 01	# add t5,t3,t4
 #     lbu     t5, 0(t5)
@@ -665,19 +744,19 @@ B3 0F D5 01	# add t6,a0,t4
 #     lbu     t6, 0(t6)
 83 CF 0F 00	# lbu t6,0(t6)
 #     bne     t5, t6, 3f
-63 16 FF 01	# bne t5,t6,3e4 <.L3^B3>
+63 16 FF 01	# bne t5,t6,4d0 <.L3^B3>
 #     addi    t4, t4, 1
 93 8E 1E 00	# addi t4,t4,1
 #     j       2b
-6F F0 5F FE	# j 3c4 <.L2^B4>
-# 3:  addi    a2, a2, 24
-13 06 86 01	# addi a2,a2,24
+6F F0 5F FE	# j 4b0 <.L2^B4>
+# 3:  addi    a2, a2, 28
+13 06 C6 01	# addi a2,a2,28
 #     j       1b
-6F F0 9F FC	# j 3b0 <.L1^B4>
+6F F0 9F FC	# j 49c <.L1^B4>
 # 4:  li      a2, 0
 13 06 00 00	# li a2,0
 # 5:  RET
-6F 00 D0 33	# j f2c <__dispatch>
+6F 10 80 57	# j 1a54 <__dispatch>
 
 # first_call -- a5 = object, a2 = code offset; a6 = its first call site at
 #   or after that offset (the end of the call sites if none).  The call
@@ -688,7 +767,7 @@ B3 0F D5 01	# add t6,a0,t4
 #     lw      t2, 8(a5)
 83 A3 87 00	# lw t2,8(a5)
 # 1:  bgeu    a6, t2, 3f
-63 76 78 02	# bgeu a6,t2,428 <.L3^B4>
+63 76 78 02	# bgeu a6,t2,514 <.L3^B4>
 #     sub     t3, t2, a6
 33 8E 03 41	# sub t3,t2,a6
 #     srli    t3, t3, 4
@@ -700,17 +779,17 @@ B3 0F D5 01	# add t6,a0,t4
 #     lw      t4, 0(t3)
 83 2E 0E 00	# lw t4,0(t3)
 #     bgeu    t4, a2, 2f
-63 F6 CE 00	# bgeu t4,a2,420 <.L2^B5>
+63 F6 CE 00	# bgeu t4,a2,50c <.L2^B5>
 #     addi    a6, t3, 8
 13 08 8E 00	# addi a6,t3,8
 #     j       1b
-6F F0 1F FE	# j 3fc <.L1^B5>
+6F F0 1F FE	# j 4e8 <.L1^B5>
 # 2:  mv      t2, t3
 93 03 0E 00	# mv t2,t3
 #     j       1b
-6F F0 9F FD	# j 3fc <.L1^B5>
+6F F0 9F FD	# j 4e8 <.L1^B5>
 # 3:  RET
-6F 00 50 30	# j f2c <__dispatch>
+6F 10 00 54	# j 1a54 <__dispatch>
 
 # call_sym -- a5 = object, a6 = call site; a2 = the symbol it calls.
 #   Clobbers t2, t3.
@@ -728,23 +807,30 @@ B3 83 F3 00	# add t2,t2,a5
 #     lw      a2, 32(t2)
 03 A6 03 02	# lw a2,32(t2)
 #     RET
-6F 00 90 2E	# j f2c <__dispatch>
+6F 10 40 52	# j 1a54 <__dispatch>
 
 # out_name -- a2 = symbol; append its short name: '_' and its number as
-#   seven hex digits.  Clobbers a0, t2, t3, t4.
+#   seven hex digits.  Clobbers a0, a1, t2, t3, t4.
 # out_name:
 #     li      a0, '_'
 13 05 F0 05	# li a0,95
+#     lw      a1, 20(a2)
+83 25 46 01	# lw a1,20(a2)
+#     j       out_num                     # (its RET returns for us)
+6F 00 40 00	# j 540 <out_num>
+
+# out_num -- a0 = a character, a1 = a number; append the character and the
+#   number's low 28 bits as seven hex digits.  Clobbers a0, t2, t3, t4.
+# out_num:
 #     CALL    out_ch
 93 8D CD FF	# addi s11,s11,-4
-E3 E8 AD 2B	# bltu s11,s10,f00 <__panic>
-93 02 A0 00	# li t0,10
+63 F4 AD 01	# bgeu s11,s10,54c <out_num+0xc>
+6F 10 00 4E	# j 1a28 <__panic>
+93 02 C0 00	# li t0,12
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 2B	# j 714 <out_ch>
-#     lw      t2, 20(a2)
-83 23 46 01	# lw t2,20(a2)
-#     slli    t2, t2, 4                   # the low 28 bits, top first
-93 93 43 00	# slli t2,t2,0x4
+6F 00 50 55	# j 12a8 <out_ch>
+#     slli    t2, a1, 4                   # the low 28 bits, top first
+93 93 45 00	# slli t2,a1,0x4
 #     li      t3, 7
 13 0E 70 00	# li t3,7
 # 1:  srli    a0, t2, 28
@@ -754,23 +840,24 @@ E3 E8 AD 2B	# bltu s11,s10,f00 <__panic>
 #     li      t4, 10
 93 0E A0 00	# li t4,10
 #     blt     a0, t4, 2f
-63 44 D5 01	# blt a0,t4,480 <.L2^B6>
+63 44 D5 01	# blt a0,t4,574 <.L2^B6>
 #     addi    a0, a0, 'A' - '0' - 10
 13 05 75 00	# addi a0,a0,7
 # 2:  addi    a0, a0, '0'
 13 05 05 03	# addi a0,a0,48
 #     CALL    out_ch
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 27	# bltu s11,s10,f00 <__panic>
-93 02 B0 00	# li t0,11
+63 F4 AD 01	# bgeu s11,s10,584 <.L2^B6+0x10>
+6F 10 80 4A	# j 1a28 <__panic>
+93 02 D0 00	# li t0,13
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 28	# j 714 <out_ch>
+6F 00 D0 51	# j 12a8 <out_ch>
 #     addi    t3, t3, -1
 13 0E FE FF	# addi t3,t3,-1
 #     bnez    t3, 1b
-E3 18 0E FC	# bnez t3,46c <.L1^B6>
+E3 16 0E FC	# bnez t3,560 <.L1^B6>
 #     RET
-6F 00 D0 28	# j f2c <__dispatch>
+6F 10 C0 4B	# j 1a54 <__dispatch>
 
 # out_word -- a0 = a word of code; append it as `XXXXXXXX , `, the digits
 #   in memory order (lowest byte first).  Clobbers a0, t2-t5.
@@ -785,46 +872,50 @@ E3 18 0E FC	# bnez t3,46c <.L1^B6>
 13 D5 4E 00	# srli a0,t4,0x4
 #     CALL    out_hex1
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 25	# bltu s11,s10,f00 <__panic>
-93 02 C0 00	# li t0,12
+63 F4 AD 01	# bgeu s11,s10,5b8 <.L1^B7+0x14>
+6F 10 40 47	# j 1a28 <__panic>
+93 02 E0 00	# li t0,14
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 03	# j 4f8 <out_hex1>
+6F 00 80 03	# j 5f8 <out_hex1>
 #     andi    a0, t4, 0x0F
 13 F5 FE 00	# andi a0,t4,15
 #     CALL    out_hex1
 93 8D CD FF	# addi s11,s11,-4
-E3 E8 AD 23	# bltu s11,s10,f00 <__panic>
-93 02 D0 00	# li t0,13
+63 F4 AD 01	# bgeu s11,s10,5d4 <Lret_14+0x10>
+6F 10 80 45	# j 1a28 <__panic>
+93 02 F0 00	# li t0,15
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 01	# j 4f8 <out_hex1>
+6F 00 C0 01	# j 5f8 <out_hex1>
 #     srli    t2, t2, 8
 93 D3 83 00	# srli t2,t2,0x8
 #     addi    t3, t3, -1
 13 0E FE FF	# addi t3,t3,-1
 #     bnez    t3, 1b
-E3 12 0E FC	# bnez t3,4ac <.L1^B7>
+E3 1E 0E FA	# bnez t3,5a4 <.L1^B7>
 #     li      a0, ' ' | ','<<8 | ' '<<16
 37 35 20 00	# lui a0,0x203
-13 05 05 C2	# addi a0,a0,-992 # 202c20 <data+0x20192c>
+13 05 05 C2	# addi a0,a0,-992 # 202c20 <data+0x2009a4>
 #     j       out4                        # (its RET returns for us)
-6F 00 00 23	# j 724 <out4>
+6F 00 50 4C	# j 12b8 <out4>
 
 # out_hex1 -- a0 = 0..15; append it as one hex digit.  Clobbers a0, t5.
 # out_hex1:
 #     li      t5, 10
 13 0F A0 00	# li t5,10
 #     blt     a0, t5, 1f
-63 44 E5 01	# blt a0,t5,504 <.L1^B8>
+63 44 E5 01	# blt a0,t5,604 <.L1^B8>
 #     addi    a0, a0, 'A' - '0' - 10
 13 05 75 00	# addi a0,a0,7
 # 1:  addi    a0, a0, '0'
 13 05 05 03	# addi a0,a0,48
 #     j       out_ch                      # (its RET returns for us)
-6F 00 C0 20	# j 714 <out_ch>
+6F 00 10 4A	# j 12a8 <out_ch>
 
-# emit_fn -- a2 = symbol (defined).  Write the function, after the
-#   functions it calls (recursively).  A call to itself is fine (the core
-#   defines a name before its body); a longer cycle is an error for now.
+# emit_fn -- a2 = symbol (defined, not being written).  Write the function,
+#   after the functions it calls (recursively).  A callee that is being
+#   written -- this call closes a cycle -- gets a stub instead, if it has
+#   none yet.  (A call to itself needs none: the core defines a name before
+#   its body.)
 #   Frame on the emit stack: [s1, s2, s9]; s1 = the call site to look at
 #   next, s2 = the offset where the function's code ends.
 # emit_fn:
@@ -833,9 +924,7 @@ E3 12 0E FC	# bnez t3,4ac <.L1^B7>
 #     li      t3, 2
 13 0E 20 00	# li t3,2
 #     beq     t2, t3, 3f                  # written already
-63 82 C3 15	# beq t2,t3,658 <.L3^B5>
-#     bnez    t2, err_cycle               # being written: a cycle
-63 9E 03 7C	# bnez t2,cf4 <err_cycle>
+63 82 C3 33	# beq t2,t3,938 <.L3^B5>
 #     li      t2, 1
 93 03 10 00	# li t2,1
 #     sw      t2, 16(a2)
@@ -843,7 +932,8 @@ E3 12 0E FC	# bnez t3,4ac <.L1^B7>
 #     addi    sp, sp, -12
 13 01 41 FF	# addi sp,sp,-12
 #     bltu    sp, tp, err_deep
-63 62 41 58	# bltu sp,tp,aac <err_deep>
+63 74 41 00	# bgeu sp,tp,62c <emit_fn+0x20>
+6F 10 00 12	# j 1748 <err_deep>
 #     sw      s1, 0(sp)
 23 20 91 00	# sw s1,0(sp)
 #     sw      s2, 4(sp)
@@ -864,10 +954,11 @@ E3 12 0E FC	# bnez t3,4ac <.L1^B7>
 33 09 C9 00	# add s2,s2,a2
 #     CALL    first_call
 93 8D CD FF	# addi s11,s11,-4
-E3 E6 AD 1B	# bltu s11,s10,f00 <__panic>
-93 02 E0 00	# li t0,14
+63 F4 AD 01	# bgeu s11,s10,65c <emit_fn+0x50>
+6F 10 00 3D	# j 1a28 <__panic>
+93 02 00 01	# li t0,16
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 5F E9	# j 3f4 <first_call>
+6F F0 DF E7	# j 4e0 <first_call>
 #     mv      s1, a6
 93 04 08 00	# mv s1,a6
 # 1:  lw      a5, 8(s9)
@@ -875,79 +966,244 @@ E3 E6 AD 1B	# bltu s11,s10,f00 <__panic>
 #     lw      t2, 8(a5)
 83 A3 87 00	# lw t2,8(a5)
 #     bgeu    s1, t2, 2f
-63 F6 74 04	# bgeu s1,t2,5bc <.L2^B7>
+63 F6 74 1A	# bgeu s1,t2,820 <.L2^B7>
 #     lw      t3, 0(s1)
 03 AE 04 00	# lw t3,0(s1)
 #     bgeu    t3, s2, 2f
-63 72 2E 05	# bgeu t3,s2,5bc <.L2^B7>
+63 72 2E 1B	# bgeu t3,s2,820 <.L2^B7>
 #     mv      a6, s1
 13 88 04 00	# mv a6,s1
 #     addi    s1, s1, 8
 93 84 84 00	# addi s1,s1,8
 #     CALL    call_sym
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 17	# bltu s11,s10,f00 <__panic>
-93 02 F0 00	# li t0,15
+63 F4 AD 01	# bgeu s11,s10,694 <.L1^B9+0x28>
+6F 10 80 39	# j 1a28 <__panic>
+93 02 10 01	# li t0,17
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 9F E9	# j 42c <call_sym>
+6F F0 DF E7	# j 518 <call_sym>
 #     lw      t3, 8(a2)
 03 2E 86 00	# lw t3,8(a2)
 #     beqz    t3, err_undef
-63 04 0E 6A	# beqz t3,c44 <err_undef>
+63 14 0E 00	# bnez t3,6ac <Lret_17+0xc>
+6F 10 80 23	# j 18e0 <err_undef>
 #     beq     a2, s9, 1b                  # itself
-E3 04 96 FD	# beq a2,s9,568 <.L1^B9>
+E3 00 96 FD	# beq a2,s9,66c <.L1^B9>
+#     lw      t3, 16(a2)
+03 2E 06 01	# lw t3,16(a2)
+#     li      t4, 1
+93 0E 10 00	# li t4,1
+#     beq     t3, t4, 4f
+63 00 DE 03	# beq t3,t4,6d8 <.L4^B3>
 #     CALL    emit_fn
 93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 15	# bltu s11,s10,f00 <__panic>
-93 02 00 01	# li t0,16
-23 A0 5D 00	# sw t0,0(s11)
-6F F0 9F F5	# j 50c <emit_fn>
-#     j       1b
-6F F0 1F FB	# j 568 <.L1^B9>
-# 2:  li      a0, ':' | ' '<<8            # then its text
-37 25 00 00	# lui a0,0x2
-13 05 A5 03	# addi a0,a0,58 # 203a <data+0xd46>
-#     CALL    out4
-93 8D CD FF	# addi s11,s11,-4
-E3 EC AD 13	# bltu s11,s10,f00 <__panic>
-93 02 10 01	# li t0,17
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 15	# j 724 <out4>
-#     mv      a2, s9
-13 86 0C 00	# mv a2,s9
-#     CALL    out_name
-93 8D CD FF	# addi s11,s11,-4
-E3 E0 AD 13	# bltu s11,s10,f00 <__panic>
+63 F4 AD 01	# bgeu s11,s10,6c8 <Lret_17+0x28>
+6F 10 40 36	# j 1a28 <__panic>
 93 02 20 01	# li t0,18
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 DF E5	# j 448 <out_name>
+6F F0 DF F3	# j 60c <emit_fn>
+#     j       1b
+6F F0 9F F9	# j 66c <.L1^B9>
+# 4:  lw      t3, 24(a2)                  # being written: through its stub
+03 2E 86 01	# lw t3,24(a2)
+#     bnez    t3, 1b
+E3 18 0E F8	# bnez t3,66c <.L1^B9>
+#     lw      t3, -4(s3)                  # a new stub, the next index
+03 AE C9 FF	# lw t3,-4(s3)
+#     addi    t3, t3, 1
+13 0E 1E 00	# addi t3,t3,1
+#     li      t4, 0xE000                  # (the core has room for these many)
+B7 EE 00 00	# lui t4,0xe
+#     bgtu    t3, t4, err_stubs
+E3 E4 CE 73	# bltu t4,t3,1614 <err_stubs>
+#     sw      t3, -4(s3)
+23 AE C9 FF	# sw t3,-4(s3)
+#     sw      t3, 24(a2)
+23 2C C6 01	# sw t3,24(a2)
+#     mv      a4, a2
+13 07 06 00	# mv a4,a2
+#     li      a0, ':' | ' '<<8
+37 25 00 00	# lui a0,0x2
+13 05 A5 03	# addi a0,a0,58 # 203a <Lleft_49+0x22>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,710 <.L4^B3+0x38>
+6F 10 C0 31	# j 1a28 <__panic>
+93 02 30 01	# li t0,19
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 3A	# j 12b8 <out4>
+#     li      a0, '>'
+13 05 E0 03	# li a0,62
+#     lw      a1, 20(a4)
+83 25 47 01	# lw a1,20(a4)
+#     CALL    out_num
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,730 <Lret_19+0x14>
+6F 10 C0 2F	# j 1a28 <__panic>
+93 02 40 01	# li t0,20
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F E0	# j 540 <out_num>
 #     li      a0, ' '
 13 05 00 02	# li a0,32
 #     CALL    out_ch
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 11	# bltu s11,s10,f00 <__panic>
-93 02 30 01	# li t0,19
+63 F4 AD 01	# bgeu s11,s10,74c <Lret_20+0x10>
+6F 10 00 2E	# j 1a28 <__panic>
+93 02 50 01	# li t0,21
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 11	# j 714 <out_ch>
+6F 00 50 35	# j 12a8 <out_ch>
+#     li      a0, '0'
+13 05 00 03	# li a0,48
+#     lw      a1, 24(a4)
+83 25 87 01	# lw a1,24(a4)
+#     addi    a1, a1, -1
+93 85 F5 FF	# addi a1,a1,-1
+#     CALL    out_num
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,770 <Lret_21+0x18>
+6F 10 C0 2B	# j 1a28 <__panic>
+93 02 60 01	# li t0,22
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F DC	# j 540 <out_num>
+    # append " mark 6F000000 , ;\n"
+#     li      a0, ' ' | 'm'<<8 | 'a'<<16 | 'r'<<24
+37 75 61 72	# lui a0,0x72617
+13 05 05 D2	# addi a0,a0,-736 # 72616d20 <data+0x72614aa4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,790 <Lret_22+0x14>
+6F 10 C0 29	# j 1a28 <__panic>
+93 02 70 01	# li t0,23
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 32	# j 12b8 <out4>
+#     li      a0, 'k' | ' '<<8 | '6'<<16 | 'F'<<24
+37 25 36 46	# lui a0,0x46362
+13 05 B5 06	# addi a0,a0,107 # 4636206b <data+0x4635fdef>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,7b0 <Lret_23+0x14>
+6F 10 C0 27	# j 1a28 <__panic>
+93 02 80 01	# li t0,24
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 30	# j 12b8 <out4>
+#     li      a0, '0' | '0'<<8 | '0'<<16 | '0'<<24
+37 35 30 30	# lui a0,0x30303
+13 05 05 03	# addi a0,a0,48 # 30303030 <data+0x30300db4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,7d0 <Lret_24+0x14>
+6F 10 C0 25	# j 1a28 <__panic>
+93 02 90 01	# li t0,25
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 2E	# j 12b8 <out4>
+#     li      a0, '0' | '0'<<8 | ' '<<16 | ','<<24
+37 35 20 2C	# lui a0,0x2c203
+13 05 05 03	# addi a0,a0,48 # 2c203030 <data+0x2c200db4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,7f0 <Lret_25+0x14>
+6F 10 C0 23	# j 1a28 <__panic>
+93 02 A0 01	# li t0,26
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 2C	# j 12b8 <out4>
+#     li      a0, ' ' | ';'<<8 | 0x0A<<16
+37 45 0A 00	# lui a0,0xa4
+13 05 05 B2	# addi a0,a0,-1248 # a3b20 <data+0xa18a4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,810 <Lret_26+0x14>
+6F 10 C0 21	# j 1a28 <__panic>
+93 02 B0 01	# li t0,27
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 2A	# j 12b8 <out4>
+#     j       1b
+6F F0 1F E5	# j 66c <.L1^B9>
+# 2:  li      a0, ':' | ' '<<8            # then its text
+37 25 00 00	# lui a0,0x2
+13 05 A5 03	# addi a0,a0,58 # 203a <Lleft_49+0x22>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,834 <.L2^B7+0x14>
+6F 10 80 1F	# j 1a28 <__panic>
+93 02 C0 01	# li t0,28
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 D0 27	# j 12b8 <out4>
+#     mv      a2, s9
+13 86 0C 00	# mv a2,s9
+#     CALL    out_name
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,850 <Lret_28+0x10>
+6F 10 C0 1D	# j 1a28 <__panic>
+93 02 D0 01	# li t0,29
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 DF CD	# j 534 <out_name>
+#     li      a0, ' '
+13 05 00 02	# li a0,32
+#     CALL    out_ch
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,86c <Lret_29+0x10>
+6F 10 00 1C	# j 1a28 <__panic>
+93 02 E0 01	# li t0,30
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 50 23	# j 12a8 <out_ch>
+#     lw      a1, 24(s9)                  # its stub, if it has one, jumps here
+83 A5 8C 01	# lw a1,24(s9)
+#     beqz    a1, 5f
+63 82 05 06	# beqz a1,8e0 <Lret_33>
+#     addi    a1, a1, -1
+93 85 F5 FF	# addi a1,a1,-1
+#     li      a0, '0'
+13 05 00 03	# li a0,48
+#     CALL    out_num
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,894 <Lret_30+0x1c>
+6F 10 80 19	# j 1a28 <__panic>
+93 02 F0 01	# li t0,31
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F CA	# j 540 <out_num>
+    # append " patch "
+#     li      a0, ' ' | 'p'<<8 | 'a'<<16 | 't'<<24
+37 75 61 74	# lui a0,0x74617
+13 05 05 02	# addi a0,a0,32 # 74617020 <data+0x74614da4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,8b4 <Lret_31+0x14>
+6F 10 80 17	# j 1a28 <__panic>
+93 02 00 02	# li t0,32
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 D0 1F	# j 12b8 <out4>
+#     li      a0, 'c' | 'h'<<8 | ' '<<16
+37 75 20 00	# lui a0,0x207
+13 05 35 86	# addi a0,a0,-1949 # 206863 <data+0x2045e7>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,8d4 <Lret_32+0x14>
+6F 10 80 15	# j 1a28 <__panic>
+93 02 10 02	# li t0,33
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 D0 1D	# j 12b8 <out4>
+# 5:
 #     lw      a5, 8(s9)
 83 A7 8C 00	# lw a5,8(s9)
 #     lw      a1, 12(s9)
 83 A5 CC 00	# lw a1,12(s9)
 #     CALL    emit_code
 93 8D CD FF	# addi s11,s11,-4
-E3 E6 AD 0F	# bltu s11,s10,f00 <__panic>
-93 02 40 01	# li t0,20
+63 F4 AD 01	# bgeu s11,s10,8f4 <Lret_33+0x14>
+6F 10 80 13	# j 1a28 <__panic>
+93 02 20 02	# li t0,34
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 03	# j 65c <emit_code>
+6F 00 00 04	# j 93c <emit_code>
 #     li      a0, ';' | 0x0A<<8
 37 15 00 00	# lui a0,0x1
-13 05 B5 A3	# addi a0,a0,-1477 # a3b <Lret_51+0x3>
+13 05 B5 A3	# addi a0,a0,-1477 # a3b <.L3^B6+0x3>
 #     CALL    out4
 93 8D CD FF	# addi s11,s11,-4
-E3 E8 AD 0D	# bltu s11,s10,f00 <__panic>
-93 02 50 01	# li t0,21
+63 F4 AD 01	# bgeu s11,s10,914 <Lret_34+0x14>
+6F 10 80 11	# j 1a28 <__panic>
+93 02 30 02	# li t0,35
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 0E	# j 724 <out4>
+6F 00 D0 19	# j 12b8 <out4>
 #     li      t2, 2
 93 03 20 00	# li t2,2
 #     sw      t2, 16(s9)
@@ -961,7 +1217,7 @@ E3 E8 AD 0D	# bltu s11,s10,f00 <__panic>
 #     addi    sp, sp, 12
 13 01 C1 00	# addi sp,sp,12
 # 3:  RET
-6F 00 50 0D	# j f2c <__dispatch>
+6F 10 C0 11	# j 1a54 <__dispatch>
 
 # emit_code -- a5 = object, a1 = one of its symbols; write that record's
 #   code in the core's language: a word as `XXXXXXXX ,`, a call site as the
@@ -978,79 +1234,871 @@ E3 E8 AD 0D	# bltu s11,s10,f00 <__panic>
 13 86 06 00	# mv a2,a3
 #     CALL    first_call
 93 8D CD FF	# addi s11,s11,-4
-E3 E8 AD 09	# bltu s11,s10,f00 <__panic>
-93 02 60 01	# li t0,22
+63 F4 AD 01	# bgeu s11,s10,958 <emit_code+0x1c>
+6F 10 40 0D	# j 1a28 <__panic>
+93 02 40 02	# li t0,36
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 9F D7	# j 3f4 <first_call>
+6F F0 1F B8	# j 4e0 <first_call>
 #     lw      a7, 8(a5)
 83 A8 87 00	# lw a7,8(a5)
 # 1:  bgeu    a3, a4, 3f
-63 F6 E6 08	# bgeu a3,a4,710 <.L3^B6>
+63 F8 E6 0C	# bgeu a3,a4,a38 <.L3^B6>
 #     bgeu    a6, a7, 2f
-63 72 18 07	# bgeu a6,a7,6ec <.L2^B8>
+63 72 18 0B	# bgeu a6,a7,a10 <.L2^B8>
 #     lw      t2, 0(a6)
 83 23 08 00	# lw t2,0(a6)
 #     bne     t2, a3, 2f
-63 9E D3 04	# bne t2,a3,6ec <.L2^B8>
+63 9E D3 08	# bne t2,a3,a10 <.L2^B8>
 #     addi    a3, a3, 28                  # a call site
 93 86 C6 01	# addi a3,a3,28
 #     bgtu    a3, a4, err_bad
-63 6C D7 2E	# bltu a4,a3,990 <err_bad>
+E3 6E D7 36	# bltu a4,a3,14f8 <err_bad>
 #     CALL    call_sym
 93 8D CD FF	# addi s11,s11,-4
-E3 E0 AD 07	# bltu s11,s10,f00 <__panic>
-93 02 70 01	# li t0,23
+63 F4 AD 01	# bgeu s11,s10,98c <.L1^B10+0x24>
+6F 10 00 0A	# j 1a28 <__panic>
+93 02 50 02	# li t0,37
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 1F D8	# j 42c <call_sym>
+6F F0 5F B8	# j 518 <call_sym>
 #     lw      t2, 8(a2)
 83 23 86 00	# lw t2,8(a2)
 #     beqz    t2, err_undef
-63 88 03 58	# beqz t2,c44 <err_undef>
+E3 82 03 74	# beqz t2,18e0 <err_undef>
 #     addi    a6, a6, 8
 13 08 88 00	# addi a6,a6,8
-#     CALL    out_name
+#     lw      t2, 16(a2)                  # one being written (not the one
+83 23 06 01	# lw t2,16(a2)
+#     li      t3, 1                       # this code is in): its stub
+13 0E 10 00	# li t3,1
+#     bne     t2, t3, 4f
+63 96 C3 03	# bne t2,t3,9d8 <.L4^B4>
+#     beq     a2, s9, 4f
+63 04 96 03	# beq a2,s9,9d8 <.L4^B4>
+#     li      a0, '>'
+13 05 E0 03	# li a0,62
+#     lw      a1, 20(a2)
+83 25 46 01	# lw a1,20(a2)
+#     CALL    out_num
 93 8D CD FF	# addi s11,s11,-4
-E3 E0 AD 05	# bltu s11,s10,f00 <__panic>
-93 02 80 01	# li t0,24
+63 F4 AD 01	# bgeu s11,s10,9c8 <Lret_37+0x30>
+6F 10 40 06	# j 1a28 <__panic>
+93 02 60 02	# li t0,38
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 DF D7	# j 448 <out_name>
-#     li      a0, ' '
+6F F0 1F B7	# j 540 <out_num>
+#     j       5f
+6F 00 C0 01	# j 9f0 <Lret_39>
+# 4:  CALL    out_name
+93 8D CD FF	# addi s11,s11,-4
+63 F4 AD 01	# bgeu s11,s10,9e4 <.L4^B4+0xc>
+6F 10 80 04	# j 1a28 <__panic>
+93 02 70 02	# li t0,39
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F B4	# j 534 <out_name>
+# 5:  li      a0, ' '
 13 05 00 02	# li a0,32
 #     CALL    out_ch
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 03	# bltu s11,s10,f00 <__panic>
-93 02 90 01	# li t0,25
+63 F4 AD 01	# bgeu s11,s10,a00 <Lret_39+0x10>
+6F 10 C0 02	# j 1a28 <__panic>
+93 02 80 02	# li t0,40
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 03	# j 714 <out_ch>
+6F 00 10 0A	# j 12a8 <out_ch>
 #     j       1b
-6F F0 DF F9	# j 684 <.L1^B10>
+6F F0 DF F5	# j 968 <.L1^B10>
 # 2:  add     t2, a7, a3                  # a word
 B3 83 D8 00	# add t2,a7,a3
 #     lw      a0, 0(t2)
 03 A5 03 00	# lw a0,0(t2)
 #     CALL    out_word
 93 8D CD FF	# addi s11,s11,-4
-E3 E4 AD 01	# bltu s11,s10,f00 <__panic>
-93 02 A0 01	# li t0,26
+63 F4 AD 01	# bgeu s11,s10,a24 <.L2^B8+0x14>
+6F 10 80 00	# j 1a28 <__panic>
+93 02 90 02	# li t0,41
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 1F DA	# j 4a4 <out_word>
+6F F0 1F B7	# j 59c <out_word>
 #     addi    a3, a3, 4
 93 86 46 00	# addi a3,a3,4
 #     j       1b
-6F F0 9F F7	# j 684 <.L1^B10>
+6F F0 5F F3	# j 968 <.L1^B10>
 # 3:  RET
-6F 00 D0 01	# j f2c <__dispatch>
+6F 10 C0 01	# j 1a54 <__dispatch>
+
+# preamble -- if there are stubs, append the definitions of the words they
+#   use, which run in the core as it compiles (there: tp = its stack of
+#   numbers, gp = where the next word of output goes, s8 = the start of its
+#   region for such words: the region's next free address, a spare word,
+#   then the words' code).  `allot` must be the first of them: its code is
+#   6 instructions and the core's return, 28 bytes, so the table it reserves
+#   is at 36(s8).
+# preamble:
+#     lw      t2, -4(s3)
+83 A3 C9 FF	# lw t2,-4(s3)
+#     beqz    t2, 1f
+E3 82 03 06	# beqz t2,12a4 <Lret_118>
+    # append ":I allot "
+#     li      a0, ':' | 'I'<<8 | ' '<<16 | 'a'<<24
+37 55 20 61	# lui a0,0x61205
+13 05 A5 93	# addi a0,a0,-1734 # 6120493a <data+0x612026be>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 7D	# bltu s11,s10,1a28 <__panic>
+93 02 A0 02	# li t0,42
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 D0 05	# j 12b8 <out4>
+#     li      a0, 'l' | 'l'<<8 | 'o'<<16 | 't'<<24
+37 75 6F 74	# lui a0,0x746f7
+13 05 C5 C6	# addi a0,a0,-916 # 746f6c6c <data+0x746f49f0>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 7B	# bltu s11,s10,1a28 <__panic>
+93 02 B0 02	# li t0,43
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 10 04	# j 12b8 <out4>
+#     li      a0, ' '
+13 05 00 02	# li a0,32
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 7B	# bltu s11,s10,1a28 <__panic>
+93 02 C0 02	# li t0,44
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 90 02	# j 12b8 <out4>
+    # allot ( n -- ): reserve a table of n words in the region
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       lw      t3, 0(s8)
+    #       add     t3, t3, t2
+    #       sw      t3, 0(s8)
+#     li      a0, 0x00022383
+37 25 02 00	# lui a0,0x22
+13 05 35 38	# addi a0,a0,899 # 22383 <data+0x20107>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 79	# bltu s11,s10,1a28 <__panic>
+93 02 D0 02	# li t0,45
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F AF	# j 59c <out_word>
+#     li      a0, 0x00420213
+37 05 42 00	# lui a0,0x420
+13 05 35 21	# addi a0,a0,531 # 420213 <data+0x41df97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 77	# bltu s11,s10,1a28 <__panic>
+93 02 E0 02	# li t0,46
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F AD	# j 59c <out_word>
+#     li      a0, 0x00239393
+37 95 23 00	# lui a0,0x239
+13 05 35 39	# addi a0,a0,915 # 239393 <data+0x237117>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 75	# bltu s11,s10,1a28 <__panic>
+93 02 F0 02	# li t0,47
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F AB	# j 59c <out_word>
+#     li      a0, 0x000C2E03
+37 35 0C 00	# lui a0,0xc3
+13 05 35 E0	# addi a0,a0,-509 # c2e03 <data+0xc0b87>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 73	# bltu s11,s10,1a28 <__panic>
+93 02 00 03	# li t0,48
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 DF A9	# j 59c <out_word>
+#     li      a0, 0x007E0E33
+37 15 7E 00	# lui a0,0x7e1
+13 05 35 E3	# addi a0,a0,-461 # 7e0e33 <data+0x7debb7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 71	# bltu s11,s10,1a28 <__panic>
+93 02 10 03	# li t0,49
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F A8	# j 59c <out_word>
+#     li      a0, 0x01CC2023
+37 25 CC 01	# lui a0,0x1cc2
+13 05 35 02	# addi a0,a0,35 # 1cc2023 <data+0x1cbfda7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 6F	# bltu s11,s10,1a28 <__panic>
+93 02 20 03	# li t0,50
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F A6	# j 59c <out_word>
+    # append ";\n"
+#     li      a0, ';' | 0x0A<<8
+37 15 00 00	# lui a0,0x1
+13 05 B5 A3	# addi a0,a0,-1477 # a3b <.L3^B6+0x3>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 6F	# bltu s11,s10,1a28 <__panic>
+93 02 30 03	# li t0,51
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 76	# j 12b8 <out4>
+#     li      a0, '0'
+13 05 00 03	# li a0,48
+#     lw      a1, -4(s3)
+83 A5 C9 FF	# lw a1,-4(s3)
+#     CALL    out_num
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 6D	# bltu s11,s10,1a28 <__panic>
+93 02 40 03	# li t0,52
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F 9D	# j 540 <out_num>
+    # append " allot\n:I mark "
+#     li      a0, ' ' | 'a'<<8 | 'l'<<16 | 'l'<<24
+37 65 6C 6C	# lui a0,0x6c6c6
+13 05 05 12	# addi a0,a0,288 # 6c6c6120 <data+0x6c6c3ea4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 6B	# bltu s11,s10,1a28 <__panic>
+93 02 50 03	# li t0,53
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 C0 72	# j 12b8 <out4>
+#     li      a0, 'o' | 't'<<8 | 0x0A<<16 | ':'<<24
+37 75 0A 3A	# lui a0,0x3a0a7
+13 05 F5 46	# addi a0,a0,1135 # 3a0a746f <data+0x3a0a51f3>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 69	# bltu s11,s10,1a28 <__panic>
+93 02 60 03	# li t0,54
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 00 71	# j 12b8 <out4>
+#     li      a0, 'I' | ' '<<8 | 'm'<<16 | 'a'<<24
+37 25 6D 61	# lui a0,0x616d2
+13 05 95 04	# addi a0,a0,73 # 616d2049 <data+0x616cfdcd>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 67	# bltu s11,s10,1a28 <__panic>
+93 02 70 03	# li t0,55
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 6F	# j 12b8 <out4>
+#     li      a0, 'r' | 'k'<<8 | ' '<<16
+37 75 20 00	# lui a0,0x207
+13 05 25 B7	# addi a0,a0,-1166 # 206b72 <data+0x2048f6>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 65	# bltu s11,s10,1a28 <__panic>
+93 02 80 03	# li t0,56
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 6D	# j 12b8 <out4>
+    # mark ( i -- ): table[i] = where the next word goes, the stub's jump
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       add     t2, t2, s8
+    #       sw      gp, 36(t2)
+#     li      a0, 0x00022383
+37 25 02 00	# lui a0,0x22
+13 05 35 38	# addi a0,a0,899 # 22383 <data+0x20107>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 63	# bltu s11,s10,1a28 <__panic>
+93 02 90 03	# li t0,57
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F 9A	# j 59c <out_word>
+#     li      a0, 0x00420213
+37 05 42 00	# lui a0,0x420
+13 05 35 21	# addi a0,a0,531 # 420213 <data+0x41df97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 61	# bltu s11,s10,1a28 <__panic>
+93 02 A0 03	# li t0,58
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F 98	# j 59c <out_word>
+#     li      a0, 0x00239393
+37 95 23 00	# lui a0,0x239
+13 05 35 39	# addi a0,a0,915 # 239393 <data+0x237117>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 61	# bltu s11,s10,1a28 <__panic>
+93 02 B0 03	# li t0,59
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F 96	# j 59c <out_word>
+#     li      a0, 0x018383B3
+37 85 83 01	# lui a0,0x1838
+13 05 35 3B	# addi a0,a0,947 # 18383b3 <data+0x1836137>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 5F	# bltu s11,s10,1a28 <__panic>
+93 02 C0 03	# li t0,60
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 DF 94	# j 59c <out_word>
+#     li      a0, 0x0233A223
+37 A5 33 02	# lui a0,0x233a
+13 05 35 22	# addi a0,a0,547 # 233a223 <data+0x2337fa7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 5D	# bltu s11,s10,1a28 <__panic>
+93 02 D0 03	# li t0,61
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F 93	# j 59c <out_word>
+    # append ";\n:I patch "
+#     li      a0, ';' | 0x0A<<8 | ':'<<16 | 'I'<<24
+37 15 3A 49	# lui a0,0x493a1
+13 05 B5 A3	# addi a0,a0,-1477 # 493a0a3b <data+0x4939e7bf>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 5B	# bltu s11,s10,1a28 <__panic>
+93 02 E0 03	# li t0,62
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 00 63	# j 12b8 <out4>
+#     li      a0, ' ' | 'p'<<8 | 'a'<<16 | 't'<<24
+37 75 61 74	# lui a0,0x74617
+13 05 05 02	# addi a0,a0,32 # 74617020 <data+0x74614da4>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 59	# bltu s11,s10,1a28 <__panic>
+93 02 F0 03	# li t0,63
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 61	# j 12b8 <out4>
+#     li      a0, 'c' | 'h'<<8 | ' '<<16
+37 75 20 00	# lui a0,0x207
+13 05 35 86	# addi a0,a0,-1949 # 206863 <data+0x2045e7>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 57	# bltu s11,s10,1a28 <__panic>
+93 02 00 04	# li t0,64
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 5F	# j 12b8 <out4>
+    # patch ( i -- ): make the jump at table[i] come here.  If that is over
+    # 1 MiB, write a message to the UART and leave QEMU with exit code 1.
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       add     t2, t2, s8
+    #       lw      t3, 36(t2)
+    #       sub     t2, gp, t3
+    #       srli    t4, t2, 20
+    #       bnez    t4, far
+    #       srli    t4, t2, 1
+    #       andi    t4, t4, 0x3FF
+    #       slli    t4, t4, 21
+    #       srli    t5, t2, 11
+    #       andi    t5, t5, 1
+    #       slli    t5, t5, 20
+    #       or      t4, t4, t5
+    #       srli    t5, t2, 12
+    #       andi    t5, t5, 0xFF
+    #       slli    t5, t5, 12
+    #       or      t4, t4, t5
+    #       ori     t4, t4, 0x6F
+    #       sw      t4, 0(t3)
+    #       j       done
+    #   msg:
+    #       .ascii  "famld: functions that call each other are over 1 MiB apart\n\0"
+    #       .balign 4
+    #   far:
+    #       lla     t2, msg
+    #       li      t3, 0x10000000
+    #   1:  lbu     t4, 0(t2)
+    #       beqz    t4, 3f
+    #   2:  lbu     t5, 5(t3)
+    #       andi    t5, t5, 0x20
+    #       beqz    t5, 2b
+    #       sb      t4, 0(t3)
+    #       addi    t2, t2, 1
+    #       j       1b
+    #   3:  li      t3, 0x100000
+    #       li      t4, 0x13333
+    #       sw      t4, 0(t3)
+    #   4:  j       4b
+#     li      a0, 0x00022383
+37 25 02 00	# lui a0,0x22
+13 05 35 38	# addi a0,a0,899 # 22383 <data+0x20107>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 55	# bltu s11,s10,1a28 <__panic>
+93 02 10 04	# li t0,65
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F 8C	# j 59c <out_word>
+#     li      a0, 0x00420213
+37 05 42 00	# lui a0,0x420
+13 05 35 21	# addi a0,a0,531 # 420213 <data+0x41df97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 53	# bltu s11,s10,1a28 <__panic>
+93 02 20 04	# li t0,66
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F 8A	# j 59c <out_word>
+#     li      a0, 0x00239393
+37 95 23 00	# lui a0,0x239
+13 05 35 39	# addi a0,a0,915 # 239393 <data+0x237117>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 53	# bltu s11,s10,1a28 <__panic>
+93 02 30 04	# li t0,67
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F 88	# j 59c <out_word>
+#     li      a0, 0x018383B3
+37 85 83 01	# lui a0,0x1838
+13 05 35 3B	# addi a0,a0,947 # 18383b3 <data+0x1836137>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 51	# bltu s11,s10,1a28 <__panic>
+93 02 40 04	# li t0,68
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 DF 86	# j 59c <out_word>
+#     li      a0, 0x0243AE03
+37 B5 43 02	# lui a0,0x243b
+13 05 35 E0	# addi a0,a0,-509 # 243ae03 <data+0x2438b87>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 4F	# bltu s11,s10,1a28 <__panic>
+93 02 50 04	# li t0,69
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 1F 85	# j 59c <out_word>
+#     li      a0, 0x41C183B3
+37 85 C1 41	# lui a0,0x41c18
+13 05 35 3B	# addi a0,a0,947 # 41c183b3 <data+0x41c16137>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 4D	# bltu s11,s10,1a28 <__panic>
+93 02 60 04	# li t0,70
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 5F 83	# j 59c <out_word>
+#     li      a0, 0x0143DE93
+37 E5 43 01	# lui a0,0x143e
+13 05 35 E9	# addi a0,a0,-365 # 143de93 <data+0x143bc17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 4B	# bltu s11,s10,1a28 <__panic>
+93 02 70 04	# li t0,71
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 9F 81	# j 59c <out_word>
+#     li      a0, 0x060E9C63
+37 A5 0E 06	# lui a0,0x60ea
+13 05 35 C6	# addi a0,a0,-925 # 60e9c63 <data+0x60e79e7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 49	# bltu s11,s10,1a28 <__panic>
+93 02 80 04	# li t0,72
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF FF	# j 59c <out_word>
+#     li      a0, 0x0013DE93
+37 E5 13 00	# lui a0,0x13e
+13 05 35 E9	# addi a0,a0,-365 # 13de93 <data+0x13bc17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 47	# bltu s11,s10,1a28 <__panic>
+93 02 90 04	# li t0,73
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F FE	# j 59c <out_word>
+#     li      a0, 0x3FFEFE93
+37 05 FF 3F	# lui a0,0x3fff0
+13 05 35 E9	# addi a0,a0,-365 # 3ffefe93 <data+0x3ffedc17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 45	# bltu s11,s10,1a28 <__panic>
+93 02 A0 04	# li t0,74
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F FC	# j 59c <out_word>
+#     li      a0, 0x015E9E93
+37 A5 5E 01	# lui a0,0x15ea
+13 05 35 E9	# addi a0,a0,-365 # 15e9e93 <data+0x15e7c17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 45	# bltu s11,s10,1a28 <__panic>
+93 02 B0 04	# li t0,75
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F FA	# j 59c <out_word>
+#     li      a0, 0x00B3DF13
+37 E5 B3 00	# lui a0,0xb3e
+13 05 35 F1	# addi a0,a0,-237 # b3df13 <data+0xb3bc97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 43	# bltu s11,s10,1a28 <__panic>
+93 02 C0 04	# li t0,76
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF F8	# j 59c <out_word>
+#     li      a0, 0x001F7F13
+37 85 1F 00	# lui a0,0x1f8
+13 05 35 F1	# addi a0,a0,-237 # 1f7f13 <data+0x1f5c97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 41	# bltu s11,s10,1a28 <__panic>
+93 02 D0 04	# li t0,77
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F F7	# j 59c <out_word>
+#     li      a0, 0x014F1F13
+37 25 4F 01	# lui a0,0x14f2
+13 05 35 F1	# addi a0,a0,-237 # 14f1f13 <data+0x14efc97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 3F	# bltu s11,s10,1a28 <__panic>
+93 02 E0 04	# li t0,78
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F F5	# j 59c <out_word>
+#     li      a0, 0x01EEEEB3
+37 F5 EE 01	# lui a0,0x1eef
+13 05 35 EB	# addi a0,a0,-333 # 1eeeeb3 <data+0x1eecc37>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 3D	# bltu s11,s10,1a28 <__panic>
+93 02 F0 04	# li t0,79
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F F3	# j 59c <out_word>
+#     li      a0, 0x00C3DF13
+37 E5 C3 00	# lui a0,0xc3e
+13 05 35 F1	# addi a0,a0,-237 # c3df13 <data+0xc3bc97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 3B	# bltu s11,s10,1a28 <__panic>
+93 02 00 05	# li t0,80
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF F1	# j 59c <out_word>
+#     li      a0, 0x0FFF7F13
+37 85 FF 0F	# lui a0,0xfff8
+13 05 35 F1	# addi a0,a0,-237 # fff7f13 <data+0xfff5c97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 39	# bltu s11,s10,1a28 <__panic>
+93 02 10 05	# li t0,81
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F F0	# j 59c <out_word>
+#     li      a0, 0x00CF1F13
+37 25 CF 00	# lui a0,0xcf2
+13 05 35 F1	# addi a0,a0,-237 # cf1f13 <data+0xcefc97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 37	# bltu s11,s10,1a28 <__panic>
+93 02 20 05	# li t0,82
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F EE	# j 59c <out_word>
+#     li      a0, 0x01EEEEB3
+37 F5 EE 01	# lui a0,0x1eef
+13 05 35 EB	# addi a0,a0,-333 # 1eeeeb3 <data+0x1eecc37>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 37	# bltu s11,s10,1a28 <__panic>
+93 02 30 05	# li t0,83
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F EC	# j 59c <out_word>
+#     li      a0, 0x06FEEE93
+37 F5 FE 06	# lui a0,0x6fef
+13 05 35 E9	# addi a0,a0,-365 # 6feee93 <data+0x6fecc17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 35	# bltu s11,s10,1a28 <__panic>
+93 02 40 05	# li t0,84
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF EA	# j 59c <out_word>
+#     li      a0, 0x01DE2023
+37 25 DE 01	# lui a0,0x1de2
+13 05 35 02	# addi a0,a0,35 # 1de2023 <data+0x1ddfda7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 33	# bltu s11,s10,1a28 <__panic>
+93 02 50 05	# li t0,85
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F E9	# j 59c <out_word>
+#     li      a0, 0x0800006F
+37 05 00 08	# lui a0,0x8000
+13 05 F5 06	# addi a0,a0,111 # 800006f <data+0x7ffddf3>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 31	# bltu s11,s10,1a28 <__panic>
+93 02 60 05	# li t0,86
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F E7	# j 59c <out_word>
+#     li      a0, 0x6C6D6166
+37 65 6D 6C	# lui a0,0x6c6d6
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 2F	# bltu s11,s10,1a28 <__panic>
+93 02 70 05	# li t0,87
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F E5	# j 59c <out_word>
+#     li      a0, 0x66203A64
+37 45 20 66	# lui a0,0x66204
+13 05 45 A6	# addi a0,a0,-1436 # 66203a64 <data+0x662017e8>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 2D	# bltu s11,s10,1a28 <__panic>
+93 02 80 05	# li t0,88
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF E3	# j 59c <out_word>
+#     li      a0, 0x74636E75
+37 75 63 74	# lui a0,0x74637
+13 05 55 E7	# addi a0,a0,-395 # 74636e75 <data+0x74634bf9>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 2B	# bltu s11,s10,1a28 <__panic>
+93 02 90 05	# li t0,89
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F E2	# j 59c <out_word>
+#     li      a0, 0x736E6F69
+37 75 6E 73	# lui a0,0x736e7
+13 05 95 F6	# addi a0,a0,-151 # 736e6f69 <data+0x736e4ced>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 29	# bltu s11,s10,1a28 <__panic>
+93 02 A0 05	# li t0,90
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F E0	# j 59c <out_word>
+#     li      a0, 0x61687420
+37 75 68 61	# lui a0,0x61687
+13 05 05 42	# addi a0,a0,1056 # 61687420 <data+0x616851a4>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 29	# bltu s11,s10,1a28 <__panic>
+93 02 B0 05	# li t0,91
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F DE	# j 59c <out_word>
+#     li      a0, 0x61632074
+37 25 63 61	# lui a0,0x61632
+13 05 45 07	# addi a0,a0,116 # 61632074 <data+0x6162fdf8>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 27	# bltu s11,s10,1a28 <__panic>
+93 02 C0 05	# li t0,92
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF DC	# j 59c <out_word>
+#     li      a0, 0x65206C6C
+37 75 20 65	# lui a0,0x65207
+13 05 C5 C6	# addi a0,a0,-916 # 65206c6c <data+0x652049f0>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 25	# bltu s11,s10,1a28 <__panic>
+93 02 D0 05	# li t0,93
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F DB	# j 59c <out_word>
+#     li      a0, 0x20686361
+37 65 68 20	# lui a0,0x20686
+13 05 15 36	# addi a0,a0,865 # 20686361 <data+0x206840e5>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 23	# bltu s11,s10,1a28 <__panic>
+93 02 E0 05	# li t0,94
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F D9	# j 59c <out_word>
+#     li      a0, 0x6568746F
+37 75 68 65	# lui a0,0x65687
+13 05 F5 46	# addi a0,a0,1135 # 6568746f <data+0x656851f3>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 21	# bltu s11,s10,1a28 <__panic>
+93 02 F0 05	# li t0,95
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F D7	# j 59c <out_word>
+#     li      a0, 0x72612072
+37 25 61 72	# lui a0,0x72612
+13 05 25 07	# addi a0,a0,114 # 72612072 <data+0x7260fdf6>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 1F	# bltu s11,s10,1a28 <__panic>
+93 02 00 06	# li t0,96
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF D5	# j 59c <out_word>
+#     li      a0, 0x766F2065
+37 25 6F 76	# lui a0,0x766f2
+13 05 55 06	# addi a0,a0,101 # 766f2065 <data+0x766efde9>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 1D	# bltu s11,s10,1a28 <__panic>
+93 02 10 06	# li t0,97
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F D4	# j 59c <out_word>
+#     li      a0, 0x31207265
+37 75 20 31	# lui a0,0x31207
+13 05 55 26	# addi a0,a0,613 # 31207265 <data+0x31204fe9>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 1B	# bltu s11,s10,1a28 <__panic>
+93 02 20 06	# li t0,98
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F D2	# j 59c <out_word>
+#     li      a0, 0x42694D20
+37 55 69 42	# lui a0,0x42695
+13 05 05 D2	# addi a0,a0,-736 # 42694d20 <data+0x42692aa4>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 1B	# bltu s11,s10,1a28 <__panic>
+93 02 30 06	# li t0,99
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F D0	# j 59c <out_word>
+#     li      a0, 0x61706120
+37 65 70 61	# lui a0,0x61706
+13 05 05 12	# addi a0,a0,288 # 61706120 <data+0x61703ea4>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 19	# bltu s11,s10,1a28 <__panic>
+93 02 40 06	# li t0,100
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF CE	# j 59c <out_word>
+#     li      a0, 0x000A7472
+37 75 0A 00	# lui a0,0xa7
+13 05 25 47	# addi a0,a0,1138 # a7472 <data+0xa51f6>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 17	# bltu s11,s10,1a28 <__panic>
+93 02 50 06	# li t0,101
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F CD	# j 59c <out_word>
+#     li      a0, 0x00000397
+13 05 70 39	# li a0,919
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 15	# bltu s11,s10,1a28 <__panic>
+93 02 60 06	# li t0,102
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F CB	# j 59c <out_word>
+#     li      a0, 0xFC438393
+37 85 43 FC	# lui a0,0xfc438
+13 05 35 39	# addi a0,a0,915 # fc438393 <data+0xfc436117>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 13	# bltu s11,s10,1a28 <__panic>
+93 02 70 06	# li t0,103
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF C9	# j 59c <out_word>
+#     li      a0, 0x10000E37
+37 15 00 10	# lui a0,0x10001
+13 05 75 E3	# addi a0,a0,-457 # 10000e37 <data+0xfffebbb>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 11	# bltu s11,s10,1a28 <__panic>
+93 02 80 06	# li t0,104
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F C8	# j 59c <out_word>
+#     li      a0, 0x0003CE83
+37 D5 03 00	# lui a0,0x3d
+13 05 35 E8	# addi a0,a0,-381 # 3ce83 <data+0x3ac07>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 0F	# bltu s11,s10,1a28 <__panic>
+93 02 90 06	# li t0,105
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F C6	# j 59c <out_word>
+#     li      a0, 0x000E8E63
+37 95 0E 00	# lui a0,0xe9
+13 05 35 E6	# addi a0,a0,-413 # e8e63 <data+0xe6be7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 0F	# bltu s11,s10,1a28 <__panic>
+93 02 A0 06	# li t0,106
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F C4	# j 59c <out_word>
+#     li      a0, 0x005E4F03
+37 55 5E 00	# lui a0,0x5e5
+13 05 35 F0	# addi a0,a0,-253 # 5e4f03 <data+0x5e2c87>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E2 AD 0D	# bltu s11,s10,1a28 <__panic>
+93 02 B0 06	# li t0,107
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF C2	# j 59c <out_word>
+#     li      a0, 0x020F7F13
+37 85 0F 02	# lui a0,0x20f8
+13 05 35 F1	# addi a0,a0,-237 # 20f7f13 <data+0x20f5c97>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E4 AD 0B	# bltu s11,s10,1a28 <__panic>
+93 02 C0 06	# li t0,108
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F C1	# j 59c <out_word>
+#     li      a0, 0xFE0F0CE3
+37 15 0F FE	# lui a0,0xfe0f1
+13 05 35 CE	# addi a0,a0,-797 # fe0f0ce3 <data+0xfe0eea67>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E6 AD 09	# bltu s11,s10,1a28 <__panic>
+93 02 D0 06	# li t0,109
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F BF	# j 59c <out_word>
+#     li      a0, 0x01DE0023
+37 05 DE 01	# lui a0,0x1de0
+13 05 35 02	# addi a0,a0,35 # 1de0023 <data+0x1dddda7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E8 AD 07	# bltu s11,s10,1a28 <__panic>
+93 02 E0 06	# li t0,110
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F BD	# j 59c <out_word>
+#     li      a0, 0x00138393
+37 85 13 00	# lui a0,0x138
+13 05 35 39	# addi a0,a0,915 # 138393 <data+0x136117>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EA AD 05	# bltu s11,s10,1a28 <__panic>
+93 02 F0 06	# li t0,111
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF BB	# j 59c <out_word>
+#     li      a0, 0xFE5FF06F
+37 F5 5F FE	# lui a0,0xfe5ff
+13 05 F5 06	# addi a0,a0,111 # fe5ff06f <data+0xfe5fcdf3>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EC AD 03	# bltu s11,s10,1a28 <__panic>
+93 02 00 07	# li t0,112
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F BA	# j 59c <out_word>
+#     li      a0, 0x00100E37
+37 15 10 00	# lui a0,0x101
+13 05 75 E3	# addi a0,a0,-457 # 100e37 <data+0xfebbb>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 EE AD 01	# bltu s11,s10,1a28 <__panic>
+93 02 10 07	# li t0,113
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 4F B8	# j 59c <out_word>
+#     li      a0, 0x00013EB7
+37 45 01 00	# lui a0,0x14
+13 05 75 EB	# addi a0,a0,-329 # 13eb7 <data+0x11c3b>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+E3 E0 AD 01	# bltu s11,s10,1a28 <__panic>
+93 02 20 07	# li t0,114
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F B6	# j 59c <out_word>
+#     li      a0, 0x333E8E93
+37 95 3E 33	# lui a0,0x333e9
+13 05 35 E9	# addi a0,a0,-365 # 333e8e93 <data+0x333e6c17>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+63 E2 AD 7F	# bltu s11,s10,1a28 <__panic>
+93 02 30 07	# li t0,115
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 CF B4	# j 59c <out_word>
+#     li      a0, 0x01DE2023
+37 25 DE 01	# lui a0,0x1de2
+13 05 35 02	# addi a0,a0,35 # 1de2023 <data+0x1ddfda7>
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+63 E4 AD 7D	# bltu s11,s10,1a28 <__panic>
+93 02 40 07	# li t0,116
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 0F B3	# j 59c <out_word>
+#     li      a0, 0x0000006F
+13 05 F0 06	# li a0,111
+#     CALL    out_word
+93 8D CD FF	# addi s11,s11,-4
+63 E8 AD 7B	# bltu s11,s10,1a28 <__panic>
+93 02 50 07	# li t0,117
+23 A0 5D 00	# sw t0,0(s11)
+6F F0 8F B1	# j 59c <out_word>
+    # append ";\n"
+#     li      a0, ';' | 0x0A<<8
+37 15 00 00	# lui a0,0x1
+13 05 B5 A3	# addi a0,a0,-1477 # a3b <.L3^B6+0x3>
+#     CALL    out4
+93 8D CD FF	# addi s11,s11,-4
+63 EA AD 79	# bltu s11,s10,1a28 <__panic>
+93 02 60 07	# li t0,118
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 01	# j 12b8 <out4>
+# 1:  RET
+6F 00 00 7B	# j 1a54 <__dispatch>
 
 # out_ch -- a0 = character; append it to the output buffer [s7, gp).
 # out_ch:
 #     bgeu    s8, gp, err_big
-63 74 3C 30	# bgeu s8,gp,a1c <err_big>
+63 7E 3C 2C	# bgeu s8,gp,1584 <err_big>
 #     sb      a0, 0(s8)
 23 00 AC 00	# sb a0,0(s8)
 #     addi    s8, s8, 1
 13 0C 1C 00	# addi s8,s8,1
 #     RET
-6F 00 D0 00	# j f2c <__dispatch>
+6F 00 00 7A	# j 1a54 <__dispatch>
 
 # out4 -- a0 = up to four characters, the first in the low byte, ended early
 #   by a zero byte; append them to the output buffer.  Clobbers a0, t2.
@@ -1058,9 +2106,9 @@ E3 E4 AD 01	# bltu s11,s10,f00 <__panic>
 # 1:  andi    t2, a0, 0xFF
 93 73 F5 0F	# zext.b t2,a0
 #     beqz    t2, 2f
-63 8C 03 00	# beqz t2,740 <.L2^B9>
+63 8C 03 00	# beqz t2,12d4 <.L2^B9>
 #     bgeu    s8, gp, err_big
-63 78 3C 2E	# bgeu s8,gp,a1c <err_big>
+63 72 3C 2C	# bgeu s8,gp,1584 <err_big>
 #     sb      t2, 0(s8)
 23 00 7C 00	# sb t2,0(s8)
 #     addi    s8, s8, 1
@@ -1068,34 +2116,9 @@ E3 E4 AD 01	# bltu s11,s10,f00 <__panic>
 #     srli    a0, a0, 8
 13 55 85 00	# srli a0,a0,0x8
 #     j       1b
-6F F0 9F FE	# j 724 <out4>
+6F F0 9F FE	# j 12b8 <out4>
 # 2:  RET
-6F 00 C0 7E	# j f2c <__dispatch>
-
-# flush -- write the output buffer [s7, s8) to the UART.
-# flush:
-#     li      t2, 0x10000000
-B7 03 00 10	# lui t2,0x10000
-#     mv      t3, s7
-13 8E 0B 00	# mv t3,s7
-# 1:  bgeu    t3, s8, 3f
-63 70 8E 03	# bgeu t3,s8,76c <.L3^B7>
-# 2:  lbu     t4, 5(t2)
-83 CE 53 00	# lbu t4,5(t2) # 10000005 <data+0xfffed11>
-#     andi    t4, t4, 0x20
-93 FE 0E 02	# andi t4,t4,32
-#     beqz    t4, 2b
-E3 8C 0E FE	# beqz t4,750 <.L2^B10>
-#     lbu     t4, 0(t3)
-83 4E 0E 00	# lbu t4,0(t3)
-#     sb      t4, 0(t2)
-23 80 D3 01	# sb t4,0(t2)
-#     addi    t3, t3, 1
-13 0E 1E 00	# addi t3,t3,1
-#     j       1b
-6F F0 5F FE	# j 74c <.L1^B12>
-# 3:  RET
-6F 00 00 7C	# j f2c <__dispatch>
+6F 00 00 78	# j 1a54 <__dispatch>
 
 # --- errors: "famld: <what>[: <name>][ in <function>]", then exit 1 --------
 
@@ -1103,354 +2126,456 @@ E3 8C 0E FE	# beqz t4,750 <.L2^B10>
 #   (s9), then leave.
 # err_in:
 #     beqz    s9, err_end
-63 82 0C 76	# beqz s9,ed4 <err_end>
+63 82 0C 72	# beqz s9,19fc <err_end>
     # say " in "
 #     li      a0, ' ' | 'i'<<8 | 'n'<<16 | ' '<<24
 37 75 6E 20	# lui a0,0x206e7
-13 05 05 92	# addi a0,a0,-1760 # 206e6920 <data+0x206e562c>
+13 05 05 92	# addi a0,a0,-1760 # 206e6920 <data+0x206e46a4>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 79	# bltu s11,s10,f00 <__panic>
-93 02 B0 01	# li t0,27
+63 E0 AD 75	# bltu s11,s10,1a28 <__panic>
+93 02 70 07	# li t0,119
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 6D	# j e68 <uput4>
+6F 00 C0 69	# j 1990 <uput4>
 #     lw      a0, 0(s9)
 03 A5 0C 00	# lw a0,0(s9)
 #     lw      a1, 4(s9)
 83 A5 4C 00	# lw a1,4(s9)
 #     CALL    uput_tok
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 77	# bltu s11,s10,f00 <__panic>
-93 02 C0 01	# li t0,28
+63 E2 AD 73	# bltu s11,s10,1a28 <__panic>
+93 02 80 07	# li t0,120
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 6E	# j e90 <uput_tok>
+6F 00 80 6A	# j 19b8 <uput_tok>
 #     j       err_end
-6F 00 80 72	# j ed4 <err_end>
+6F 00 80 6E	# j 19fc <err_end>
 
 # err_noobj:
     # say "famld: the input is not a fam object"
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 75	# bltu s11,s10,f00 <__panic>
-93 02 D0 01	# li t0,29
+63 E2 AD 71	# bltu s11,s10,1a28 <__panic>
+93 02 90 07	# li t0,121
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 6A	# j e68 <uput4>
+6F 00 00 66	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 't'<<24
 37 45 20 74	# lui a0,0x74204
-13 05 45 A6	# addi a0,a0,-1436 # 74203a64 <data+0x74202770>
+13 05 45 A6	# addi a0,a0,-1436 # 74203a64 <data+0x742017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 73	# bltu s11,s10,f00 <__panic>
-93 02 E0 01	# li t0,30
+63 E4 AD 6F	# bltu s11,s10,1a28 <__panic>
+93 02 A0 07	# li t0,122
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 68	# j e68 <uput4>
+6F 00 40 64	# j 1990 <uput4>
 #     li      a0, 'h' | 'e'<<8 | ' '<<16 | 'i'<<24
 37 65 20 69	# lui a0,0x69206
-13 05 85 56	# addi a0,a0,1384 # 69206568 <data+0x69205274>
+13 05 85 56	# addi a0,a0,1384 # 69206568 <data+0x692042ec>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 71	# bltu s11,s10,f00 <__panic>
-93 02 F0 01	# li t0,31
+63 E6 AD 6D	# bltu s11,s10,1a28 <__panic>
+93 02 B0 07	# li t0,123
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 66	# j e68 <uput4>
+6F 00 80 62	# j 1990 <uput4>
 #     li      a0, 'n' | 'p'<<8 | 'u'<<16 | 't'<<24
 37 75 75 74	# lui a0,0x74757
-13 05 E5 06	# addi a0,a0,110 # 7475706e <data+0x74755d7a>
+13 05 E5 06	# addi a0,a0,110 # 7475706e <data+0x74754df2>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 6F	# bltu s11,s10,f00 <__panic>
-93 02 00 02	# li t0,32
+63 E8 AD 6B	# bltu s11,s10,1a28 <__panic>
+93 02 C0 07	# li t0,124
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 64	# j e68 <uput4>
+6F 00 C0 60	# j 1990 <uput4>
 #     li      a0, ' ' | 'i'<<8 | 's'<<16 | ' '<<24
 37 75 73 20	# lui a0,0x20737
-13 05 05 92	# addi a0,a0,-1760 # 20736920 <data+0x2073562c>
+13 05 05 92	# addi a0,a0,-1760 # 20736920 <data+0x207346a4>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EA AD 6D	# bltu s11,s10,f00 <__panic>
-93 02 10 02	# li t0,33
+63 EA AD 69	# bltu s11,s10,1a28 <__panic>
+93 02 D0 07	# li t0,125
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 63	# j e68 <uput4>
+6F 00 00 5F	# j 1990 <uput4>
 #     li      a0, 'n' | 'o'<<8 | 't'<<16 | ' '<<24
 37 75 74 20	# lui a0,0x20747
-13 05 E5 F6	# addi a0,a0,-146 # 20746f6e <data+0x20745c7a>
+13 05 E5 F6	# addi a0,a0,-146 # 20746f6e <data+0x20744cf2>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 6B	# bltu s11,s10,f00 <__panic>
-93 02 20 02	# li t0,34
+63 EC AD 67	# bltu s11,s10,1a28 <__panic>
+93 02 E0 07	# li t0,126
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 61	# j e68 <uput4>
+6F 00 40 5D	# j 1990 <uput4>
 #     li      a0, 'a' | ' '<<8 | 'f'<<16 | 'a'<<24
 37 25 66 61	# lui a0,0x61662
-13 05 15 06	# addi a0,a0,97 # 61662061 <data+0x61660d6d>
+13 05 15 06	# addi a0,a0,97 # 61662061 <data+0x6165fde5>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 69	# bltu s11,s10,f00 <__panic>
-93 02 30 02	# li t0,35
+63 EE AD 65	# bltu s11,s10,1a28 <__panic>
+93 02 F0 07	# li t0,127
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 5F	# j e68 <uput4>
+6F 00 80 5B	# j 1990 <uput4>
 #     li      a0, 'm' | ' '<<8 | 'o'<<16 | 'b'<<24
 37 25 6F 62	# lui a0,0x626f2
-13 05 D5 06	# addi a0,a0,109 # 626f206d <data+0x626f0d79>
+13 05 D5 06	# addi a0,a0,109 # 626f206d <data+0x626efdf1>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 69	# bltu s11,s10,f00 <__panic>
-93 02 40 02	# li t0,36
+63 E0 AD 65	# bltu s11,s10,1a28 <__panic>
+93 02 00 08	# li t0,128
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 5D	# j e68 <uput4>
+6F 00 C0 59	# j 1990 <uput4>
 #     li      a0, 'j' | 'e'<<8 | 'c'<<16 | 't'<<24
 37 65 63 74	# lui a0,0x74636
-13 05 A5 56	# addi a0,a0,1386 # 7463656a <data+0x74635276>
+13 05 A5 56	# addi a0,a0,1386 # 7463656a <data+0x746342ee>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 67	# bltu s11,s10,f00 <__panic>
-93 02 50 02	# li t0,37
+63 E2 AD 63	# bltu s11,s10,1a28 <__panic>
+93 02 10 08	# li t0,129
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 5C	# j e68 <uput4>
+6F 00 00 58	# j 1990 <uput4>
 #     j       err_end
-6F 00 80 62	# j ed4 <err_end>
+6F 00 80 5E	# j 19fc <err_end>
 # err_version:
     # say "famld: unknown object version"
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 65	# bltu s11,s10,f00 <__panic>
-93 02 60 02	# li t0,38
+63 E2 AD 61	# bltu s11,s10,1a28 <__panic>
+93 02 20 08	# li t0,130
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 5A	# j e68 <uput4>
+6F 00 00 56	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'u'<<24
 37 45 20 75	# lui a0,0x75204
-13 05 45 A6	# addi a0,a0,-1436 # 75203a64 <data+0x75202770>
+13 05 45 A6	# addi a0,a0,-1436 # 75203a64 <data+0x752017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 63	# bltu s11,s10,f00 <__panic>
-93 02 70 02	# li t0,39
+63 E4 AD 5F	# bltu s11,s10,1a28 <__panic>
+93 02 30 08	# li t0,131
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 58	# j e68 <uput4>
+6F 00 40 54	# j 1990 <uput4>
 #     li      a0, 'n' | 'k'<<8 | 'n'<<16 | 'o'<<24
 37 75 6E 6F	# lui a0,0x6f6e7
-13 05 E5 B6	# addi a0,a0,-1170 # 6f6e6b6e <data+0x6f6e587a>
+13 05 E5 B6	# addi a0,a0,-1170 # 6f6e6b6e <data+0x6f6e48f2>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 61	# bltu s11,s10,f00 <__panic>
-93 02 80 02	# li t0,40
+63 E6 AD 5D	# bltu s11,s10,1a28 <__panic>
+93 02 40 08	# li t0,132
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 56	# j e68 <uput4>
+6F 00 80 52	# j 1990 <uput4>
 #     li      a0, 'w' | 'n'<<8 | ' '<<16 | 'o'<<24
 37 75 20 6F	# lui a0,0x6f207
-13 05 75 E7	# addi a0,a0,-393 # 6f206e77 <data+0x6f205b83>
+13 05 75 E7	# addi a0,a0,-393 # 6f206e77 <data+0x6f204bfb>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 5F	# bltu s11,s10,f00 <__panic>
-93 02 90 02	# li t0,41
+63 E8 AD 5B	# bltu s11,s10,1a28 <__panic>
+93 02 50 08	# li t0,133
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 54	# j e68 <uput4>
+6F 00 C0 50	# j 1990 <uput4>
 #     li      a0, 'b' | 'j'<<8 | 'e'<<16 | 'c'<<24
 37 75 65 63	# lui a0,0x63657
-13 05 25 A6	# addi a0,a0,-1438 # 63656a62 <data+0x6365576e>
+13 05 25 A6	# addi a0,a0,-1438 # 63656a62 <data+0x636547e6>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EA AD 5D	# bltu s11,s10,f00 <__panic>
-93 02 A0 02	# li t0,42
+63 EA AD 59	# bltu s11,s10,1a28 <__panic>
+93 02 60 08	# li t0,134
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 53	# j e68 <uput4>
+6F 00 00 4F	# j 1990 <uput4>
 #     li      a0, 't' | ' '<<8 | 'v'<<16 | 'e'<<24
 37 25 76 65	# lui a0,0x65762
-13 05 45 07	# addi a0,a0,116 # 65762074 <data+0x65760d80>
+13 05 45 07	# addi a0,a0,116 # 65762074 <data+0x6575fdf8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 5B	# bltu s11,s10,f00 <__panic>
-93 02 B0 02	# li t0,43
+63 EC AD 57	# bltu s11,s10,1a28 <__panic>
+93 02 70 08	# li t0,135
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 51	# j e68 <uput4>
+6F 00 40 4D	# j 1990 <uput4>
 #     li      a0, 'r' | 's'<<8 | 'i'<<16 | 'o'<<24
 37 75 69 6F	# lui a0,0x6f697
-13 05 25 37	# addi a0,a0,882 # 6f697372 <data+0x6f69607e>
+13 05 25 37	# addi a0,a0,882 # 6f697372 <data+0x6f6950f6>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 59	# bltu s11,s10,f00 <__panic>
-93 02 C0 02	# li t0,44
+63 EE AD 55	# bltu s11,s10,1a28 <__panic>
+93 02 80 08	# li t0,136
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 4F	# j e68 <uput4>
+6F 00 80 4B	# j 1990 <uput4>
 #     li      a0, 'n'
 13 05 E0 06	# li a0,110
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 59	# bltu s11,s10,f00 <__panic>
-93 02 D0 02	# li t0,45
+63 E2 AD 55	# bltu s11,s10,1a28 <__panic>
+93 02 90 08	# li t0,137
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 4E	# j e68 <uput4>
+6F 00 00 4A	# j 1990 <uput4>
 #     j       err_end
-6F 00 80 54	# j ed4 <err_end>
+6F 00 80 50	# j 19fc <err_end>
 # err_bad:
     # say "famld: bad object"
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 57	# bltu s11,s10,f00 <__panic>
-93 02 E0 02	# li t0,46
+63 E2 AD 53	# bltu s11,s10,1a28 <__panic>
+93 02 A0 08	# li t0,138
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 4C	# j e68 <uput4>
+6F 00 00 48	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'b'<<24
 37 45 20 62	# lui a0,0x62204
-13 05 45 A6	# addi a0,a0,-1436 # 62203a64 <data+0x62202770>
+13 05 45 A6	# addi a0,a0,-1436 # 62203a64 <data+0x622017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 55	# bltu s11,s10,f00 <__panic>
-93 02 F0 02	# li t0,47
+63 E4 AD 51	# bltu s11,s10,1a28 <__panic>
+93 02 B0 08	# li t0,139
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 4A	# j e68 <uput4>
+6F 00 40 46	# j 1990 <uput4>
 #     li      a0, 'a' | 'd'<<8 | ' '<<16 | 'o'<<24
 37 65 20 6F	# lui a0,0x6f206
-13 05 15 46	# addi a0,a0,1121 # 6f206461 <data+0x6f20516d>
+13 05 15 46	# addi a0,a0,1121 # 6f206461 <data+0x6f2041e5>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 53	# bltu s11,s10,f00 <__panic>
-93 02 00 03	# li t0,48
+63 E6 AD 4F	# bltu s11,s10,1a28 <__panic>
+93 02 C0 08	# li t0,140
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 48	# j e68 <uput4>
+6F 00 80 44	# j 1990 <uput4>
 #     li      a0, 'b' | 'j'<<8 | 'e'<<16 | 'c'<<24
 37 75 65 63	# lui a0,0x63657
-13 05 25 A6	# addi a0,a0,-1438 # 63656a62 <data+0x6365576e>
+13 05 25 A6	# addi a0,a0,-1438 # 63656a62 <data+0x636547e6>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 51	# bltu s11,s10,f00 <__panic>
-93 02 10 03	# li t0,49
+63 E8 AD 4D	# bltu s11,s10,1a28 <__panic>
+93 02 D0 08	# li t0,141
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 46	# j e68 <uput4>
+6F 00 C0 42	# j 1990 <uput4>
 #     li      a0, 't'
 13 05 40 07	# li a0,116
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 4F	# bltu s11,s10,f00 <__panic>
-93 02 20 03	# li t0,50
+63 EC AD 4B	# bltu s11,s10,1a28 <__panic>
+93 02 E0 08	# li t0,142
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 45	# j e68 <uput4>
+6F 00 40 41	# j 1990 <uput4>
 #     j       err_end
-6F 00 C0 4B	# j ed4 <err_end>
+6F 00 C0 47	# j 19fc <err_end>
 # err_big:
     # say "famld: out of memory"
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 4D	# bltu s11,s10,f00 <__panic>
-93 02 30 03	# li t0,51
+63 EC AD 49	# bltu s11,s10,1a28 <__panic>
+93 02 F0 08	# li t0,143
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 43	# j e68 <uput4>
+6F 00 40 3F	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'o'<<24
 37 45 20 6F	# lui a0,0x6f204
-13 05 45 A6	# addi a0,a0,-1436 # 6f203a64 <data+0x6f202770>
+13 05 45 A6	# addi a0,a0,-1436 # 6f203a64 <data+0x6f2017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 4B	# bltu s11,s10,f00 <__panic>
-93 02 40 03	# li t0,52
+63 EE AD 47	# bltu s11,s10,1a28 <__panic>
+93 02 00 09	# li t0,144
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 41	# j e68 <uput4>
+6F 00 80 3D	# j 1990 <uput4>
 #     li      a0, 'u' | 't'<<8 | ' '<<16 | 'o'<<24
 37 75 20 6F	# lui a0,0x6f207
-13 05 55 47	# addi a0,a0,1141 # 6f207475 <data+0x6f206181>
+13 05 55 47	# addi a0,a0,1141 # 6f207475 <data+0x6f2051f9>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 4B	# bltu s11,s10,f00 <__panic>
-93 02 50 03	# li t0,53
+63 E0 AD 47	# bltu s11,s10,1a28 <__panic>
+93 02 10 09	# li t0,145
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 3F	# j e68 <uput4>
+6F 00 C0 3B	# j 1990 <uput4>
 #     li      a0, 'f' | ' '<<8 | 'm'<<16 | 'e'<<24
 37 25 6D 65	# lui a0,0x656d2
-13 05 65 06	# addi a0,a0,102 # 656d2066 <data+0x656d0d72>
+13 05 65 06	# addi a0,a0,102 # 656d2066 <data+0x656cfdea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 49	# bltu s11,s10,f00 <__panic>
-93 02 60 03	# li t0,54
+63 E2 AD 45	# bltu s11,s10,1a28 <__panic>
+93 02 20 09	# li t0,146
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 3E	# j e68 <uput4>
+6F 00 00 3A	# j 1990 <uput4>
 #     li      a0, 'm' | 'o'<<8 | 'r'<<16 | 'y'<<24
 37 75 72 79	# lui a0,0x79727
-13 05 D5 F6	# addi a0,a0,-147 # 79726f6d <data+0x79725c79>
+13 05 D5 F6	# addi a0,a0,-147 # 79726f6d <data+0x79724cf1>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 47	# bltu s11,s10,f00 <__panic>
-93 02 70 03	# li t0,55
+63 E4 AD 43	# bltu s11,s10,1a28 <__panic>
+93 02 30 09	# li t0,147
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 3C	# j e68 <uput4>
+6F 00 40 38	# j 1990 <uput4>
 #     j       err_end
-6F 00 C0 42	# j ed4 <err_end>
+6F 00 C0 3E	# j 19fc <err_end>
+# err_stubs:
+    # say "famld: too many functions call each other"
+#     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
+37 65 6D 6C	# lui a0,0x6c6d6
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E4 AD 41	# bltu s11,s10,1a28 <__panic>
+93 02 40 09	# li t0,148
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 36	# j 1990 <uput4>
+#     li      a0, 'd' | ':'<<8 | ' '<<16 | 't'<<24
+37 45 20 74	# lui a0,0x74204
+13 05 45 A6	# addi a0,a0,-1436 # 74203a64 <data+0x742017e8>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E6 AD 3F	# bltu s11,s10,1a28 <__panic>
+93 02 50 09	# li t0,149
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 34	# j 1990 <uput4>
+#     li      a0, 'o' | 'o'<<8 | ' '<<16 | 'm'<<24
+37 75 20 6D	# lui a0,0x6d207
+13 05 F5 F6	# addi a0,a0,-145 # 6d206f6f <data+0x6d204cf3>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E8 AD 3D	# bltu s11,s10,1a28 <__panic>
+93 02 60 09	# li t0,150
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 C0 32	# j 1990 <uput4>
+#     li      a0, 'a' | 'n'<<8 | 'y'<<16 | ' '<<24
+37 75 79 20	# lui a0,0x20797
+13 05 15 E6	# addi a0,a0,-415 # 20796e61 <data+0x20794be5>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 EA AD 3B	# bltu s11,s10,1a28 <__panic>
+93 02 70 09	# li t0,151
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 00 31	# j 1990 <uput4>
+#     li      a0, 'f' | 'u'<<8 | 'n'<<16 | 'c'<<24
+37 75 6E 63	# lui a0,0x636e7
+13 05 65 56	# addi a0,a0,1382 # 636e7566 <data+0x636e52ea>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 EC AD 39	# bltu s11,s10,1a28 <__panic>
+93 02 80 09	# li t0,152
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 2F	# j 1990 <uput4>
+#     li      a0, 't' | 'i'<<8 | 'o'<<16 | 'n'<<24
+37 75 6F 6E	# lui a0,0x6e6f7
+13 05 45 97	# addi a0,a0,-1676 # 6e6f6974 <data+0x6e6f46f8>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 EE AD 37	# bltu s11,s10,1a28 <__panic>
+93 02 90 09	# li t0,153
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 2D	# j 1990 <uput4>
+#     li      a0, 's' | ' '<<8 | 'c'<<16 | 'a'<<24
+37 25 63 61	# lui a0,0x61632
+13 05 35 07	# addi a0,a0,115 # 61632073 <data+0x6162fdf7>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E0 AD 37	# bltu s11,s10,1a28 <__panic>
+93 02 A0 09	# li t0,154
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 C0 2B	# j 1990 <uput4>
+#     li      a0, 'l' | 'l'<<8 | ' '<<16 | 'e'<<24
+37 75 20 65	# lui a0,0x65207
+13 05 C5 C6	# addi a0,a0,-916 # 65206c6c <data+0x652049f0>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E2 AD 35	# bltu s11,s10,1a28 <__panic>
+93 02 B0 09	# li t0,155
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 00 2A	# j 1990 <uput4>
+#     li      a0, 'a' | 'c'<<8 | 'h'<<16 | ' '<<24
+37 65 68 20	# lui a0,0x20686
+13 05 15 36	# addi a0,a0,865 # 20686361 <data+0x206840e5>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E4 AD 33	# bltu s11,s10,1a28 <__panic>
+93 02 C0 09	# li t0,156
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 40 28	# j 1990 <uput4>
+#     li      a0, 'o' | 't'<<8 | 'h'<<16 | 'e'<<24
+37 75 68 65	# lui a0,0x65687
+13 05 F5 46	# addi a0,a0,1135 # 6568746f <data+0x656851f3>
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 E6 AD 31	# bltu s11,s10,1a28 <__panic>
+93 02 D0 09	# li t0,157
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 80 26	# j 1990 <uput4>
+#     li      a0, 'r'
+13 05 20 07	# li a0,114
+#     CALL    uput4
+93 8D CD FF	# addi s11,s11,-4
+63 EA AD 2F	# bltu s11,s10,1a28 <__panic>
+93 02 E0 09	# li t0,158
+23 A0 5D 00	# sw t0,0(s11)
+6F 00 00 25	# j 1990 <uput4>
+#     j       err_end
+6F 00 80 2B	# j 19fc <err_end>
 # err_deep:
     # say "famld: calls nested too deep"
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 45	# bltu s11,s10,f00 <__panic>
-93 02 80 03	# li t0,56
+63 EA AD 2D	# bltu s11,s10,1a28 <__panic>
+93 02 F0 09	# li t0,159
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 3A	# j e68 <uput4>
+6F 00 00 23	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'c'<<24
 37 45 20 63	# lui a0,0x63204
-13 05 45 A6	# addi a0,a0,-1436 # 63203a64 <data+0x63202770>
+13 05 45 A6	# addi a0,a0,-1436 # 63203a64 <data+0x632017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 43	# bltu s11,s10,f00 <__panic>
-93 02 90 03	# li t0,57
+63 EC AD 2B	# bltu s11,s10,1a28 <__panic>
+93 02 00 0A	# li t0,160
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 38	# j e68 <uput4>
+6F 00 40 21	# j 1990 <uput4>
 #     li      a0, 'a' | 'l'<<8 | 'l'<<16 | 's'<<24
 37 75 6C 73	# lui a0,0x736c7
-13 05 15 C6	# addi a0,a0,-927 # 736c6c61 <data+0x736c596d>
+13 05 15 C6	# addi a0,a0,-927 # 736c6c61 <data+0x736c49e5>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 41	# bltu s11,s10,f00 <__panic>
-93 02 A0 03	# li t0,58
+63 EE AD 29	# bltu s11,s10,1a28 <__panic>
+93 02 10 0A	# li t0,161
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 36	# j e68 <uput4>
+6F 00 80 1F	# j 1990 <uput4>
 #     li      a0, ' ' | 'n'<<8 | 'e'<<16 | 's'<<24
 37 75 65 73	# lui a0,0x73657
-13 05 05 E2	# addi a0,a0,-480 # 73656e20 <data+0x73655b2c>
+13 05 05 E2	# addi a0,a0,-480 # 73656e20 <data+0x73654ba4>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EA AD 3F	# bltu s11,s10,f00 <__panic>
-93 02 B0 03	# li t0,59
+63 E0 AD 29	# bltu s11,s10,1a28 <__panic>
+93 02 20 0A	# li t0,162
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 35	# j e68 <uput4>
+6F 00 C0 1D	# j 1990 <uput4>
 #     li      a0, 't' | 'e'<<8 | 'd'<<16 | ' '<<24
 37 65 64 20	# lui a0,0x20646
-13 05 45 57	# addi a0,a0,1396 # 20646574 <data+0x20645280>
+13 05 45 57	# addi a0,a0,1396 # 20646574 <data+0x206442f8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 3D	# bltu s11,s10,f00 <__panic>
-93 02 C0 03	# li t0,60
+63 E2 AD 27	# bltu s11,s10,1a28 <__panic>
+93 02 30 0A	# li t0,163
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 33	# j e68 <uput4>
+6F 00 00 1C	# j 1990 <uput4>
 #     li      a0, 't' | 'o'<<8 | 'o'<<16 | ' '<<24
 37 75 6F 20	# lui a0,0x206f7
-13 05 45 F7	# addi a0,a0,-140 # 206f6f74 <data+0x206f5c80>
+13 05 45 F7	# addi a0,a0,-140 # 206f6f74 <data+0x206f4cf8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 3B	# bltu s11,s10,f00 <__panic>
-93 02 D0 03	# li t0,61
+63 E4 AD 25	# bltu s11,s10,1a28 <__panic>
+93 02 40 0A	# li t0,164
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 31	# j e68 <uput4>
+6F 00 40 1A	# j 1990 <uput4>
 #     li      a0, 'd' | 'e'<<8 | 'e'<<16 | 'p'<<24
 37 65 65 70	# lui a0,0x70656
-13 05 45 56	# addi a0,a0,1380 # 70656564 <data+0x70655270>
+13 05 45 56	# addi a0,a0,1380 # 70656564 <data+0x706542e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 3B	# bltu s11,s10,f00 <__panic>
-93 02 E0 03	# li t0,62
+63 E6 AD 23	# bltu s11,s10,1a28 <__panic>
+93 02 50 0A	# li t0,165
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 2F	# j e68 <uput4>
+6F 00 80 18	# j 1990 <uput4>
 #     j       err_end
-6F 00 40 36	# j ed4 <err_end>
+6F 00 00 1F	# j 19fc <err_end>
 # err_dup:                                # a0/a1 = the name
 #     mv      a4, a0
 13 07 05 00	# mv a4,a0
@@ -1459,255 +2584,131 @@ E3 8C 0E FE	# beqz t4,750 <.L2^B10>
     # say "famld: defined twice: "
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 37	# bltu s11,s10,f00 <__panic>
-93 02 F0 03	# li t0,63
+63 E2 AD 21	# bltu s11,s10,1a28 <__panic>
+93 02 60 0A	# li t0,166
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 2D	# j e68 <uput4>
+6F 00 00 16	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'd'<<24
 37 45 20 64	# lui a0,0x64204
-13 05 45 A6	# addi a0,a0,-1436 # 64203a64 <data+0x64202770>
+13 05 45 A6	# addi a0,a0,-1436 # 64203a64 <data+0x642017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 35	# bltu s11,s10,f00 <__panic>
-93 02 00 04	# li t0,64
+63 E4 AD 1F	# bltu s11,s10,1a28 <__panic>
+93 02 70 0A	# li t0,167
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 2B	# j e68 <uput4>
+6F 00 40 14	# j 1990 <uput4>
 #     li      a0, 'e' | 'f'<<8 | 'i'<<16 | 'n'<<24
 37 65 69 6E	# lui a0,0x6e696
-13 05 55 66	# addi a0,a0,1637 # 6e696665 <data+0x6e695371>
+13 05 55 66	# addi a0,a0,1637 # 6e696665 <data+0x6e6943e9>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 35	# bltu s11,s10,f00 <__panic>
-93 02 10 04	# li t0,65
+63 E6 AD 1D	# bltu s11,s10,1a28 <__panic>
+93 02 80 0A	# li t0,168
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 29	# j e68 <uput4>
+6F 00 80 12	# j 1990 <uput4>
 #     li      a0, 'e' | 'd'<<8 | ' '<<16 | 't'<<24
 37 65 20 74	# lui a0,0x74206
-13 05 55 46	# addi a0,a0,1125 # 74206465 <data+0x74205171>
+13 05 55 46	# addi a0,a0,1125 # 74206465 <data+0x742041e9>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 33	# bltu s11,s10,f00 <__panic>
-93 02 20 04	# li t0,66
+63 E8 AD 1B	# bltu s11,s10,1a28 <__panic>
+93 02 90 0A	# li t0,169
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 28	# j e68 <uput4>
+6F 00 C0 10	# j 1990 <uput4>
 #     li      a0, 'w' | 'i'<<8 | 'c'<<16 | 'e'<<24
 37 75 63 65	# lui a0,0x65637
-13 05 75 97	# addi a0,a0,-1673 # 65636977 <data+0x65635683>
+13 05 75 97	# addi a0,a0,-1673 # 65636977 <data+0x656346fb>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 31	# bltu s11,s10,f00 <__panic>
-93 02 30 04	# li t0,67
+63 EA AD 19	# bltu s11,s10,1a28 <__panic>
+93 02 A0 0A	# li t0,170
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 26	# j e68 <uput4>
+6F 00 00 0F	# j 1990 <uput4>
 #     li      a0, ':' | ' '<<8
 37 25 00 00	# lui a0,0x2
-13 05 A5 03	# addi a0,a0,58 # 203a <data+0xd46>
+13 05 A5 03	# addi a0,a0,58 # 203a <Lleft_49+0x22>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 2F	# bltu s11,s10,f00 <__panic>
-93 02 40 04	# li t0,68
+63 EC AD 17	# bltu s11,s10,1a28 <__panic>
+93 02 B0 0A	# li t0,171
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 24	# j e68 <uput4>
+6F 00 40 0D	# j 1990 <uput4>
 #     mv      a0, a4
 13 05 07 00	# mv a0,a4
 #     mv      a1, a5
 93 85 07 00	# mv a1,a5
 #     CALL    uput_tok
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 2D	# bltu s11,s10,f00 <__panic>
-93 02 50 04	# li t0,69
+63 EE AD 15	# bltu s11,s10,1a28 <__panic>
+93 02 C0 0A	# li t0,172
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 25	# j e90 <uput_tok>
+6F 00 00 0E	# j 19b8 <uput_tok>
 #     j       err_end
-6F 00 40 29	# j ed4 <err_end>
+6F 00 00 12	# j 19fc <err_end>
 # err_undef:                              # a2 = the symbol
 #     mv      a4, a2
 13 07 06 00	# mv a4,a2
     # say "famld: undefined: "
 #     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
 37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
+13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d3eea>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 2B	# bltu s11,s10,f00 <__panic>
-93 02 60 04	# li t0,70
+63 EC AD 13	# bltu s11,s10,1a28 <__panic>
+93 02 D0 0A	# li t0,173
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 20	# j e68 <uput4>
+6F 00 40 09	# j 1990 <uput4>
 #     li      a0, 'd' | ':'<<8 | ' '<<16 | 'u'<<24
 37 45 20 75	# lui a0,0x75204
-13 05 45 A6	# addi a0,a0,-1436 # 75203a64 <data+0x75202770>
+13 05 45 A6	# addi a0,a0,-1436 # 75203a64 <data+0x752017e8>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 29	# bltu s11,s10,f00 <__panic>
-93 02 70 04	# li t0,71
+63 EE AD 11	# bltu s11,s10,1a28 <__panic>
+93 02 E0 0A	# li t0,174
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 1E	# j e68 <uput4>
+6F 00 80 07	# j 1990 <uput4>
 #     li      a0, 'n' | 'd'<<8 | 'e'<<16 | 'f'<<24
 37 65 65 66	# lui a0,0x66656
-13 05 E5 46	# addi a0,a0,1134 # 6665646e <data+0x6665517a>
+13 05 E5 46	# addi a0,a0,1134 # 6665646e <data+0x666541f2>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EA AD 27	# bltu s11,s10,f00 <__panic>
-93 02 80 04	# li t0,72
+63 E0 AD 11	# bltu s11,s10,1a28 <__panic>
+93 02 F0 0A	# li t0,175
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 1D	# j e68 <uput4>
+6F 00 C0 05	# j 1990 <uput4>
 #     li      a0, 'i' | 'n'<<8 | 'e'<<16 | 'd'<<24
 37 75 65 64	# lui a0,0x64657
-13 05 95 E6	# addi a0,a0,-407 # 64656e69 <data+0x64655b75>
+13 05 95 E6	# addi a0,a0,-407 # 64656e69 <data+0x64654bed>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EC AD 25	# bltu s11,s10,f00 <__panic>
-93 02 90 04	# li t0,73
+63 E2 AD 0F	# bltu s11,s10,1a28 <__panic>
+93 02 00 0B	# li t0,176
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 1B	# j e68 <uput4>
+6F 00 00 04	# j 1990 <uput4>
 #     li      a0, ':' | ' '<<8
 37 25 00 00	# lui a0,0x2
-13 05 A5 03	# addi a0,a0,58 # 203a <data+0xd46>
+13 05 A5 03	# addi a0,a0,58 # 203a <Lleft_49+0x22>
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 EE AD 23	# bltu s11,s10,f00 <__panic>
-93 02 A0 04	# li t0,74
+63 E4 AD 0D	# bltu s11,s10,1a28 <__panic>
+93 02 10 0B	# li t0,177
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 19	# j e68 <uput4>
+6F 00 40 02	# j 1990 <uput4>
 #     lw      a0, 0(a4)
 03 25 07 00	# lw a0,0(a4)
 #     lw      a1, 4(a4)
 83 25 47 00	# lw a1,4(a4)
 #     CALL    uput_tok
 93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 23	# bltu s11,s10,f00 <__panic>
-93 02 B0 04	# li t0,75
+63 E6 AD 0B	# bltu s11,s10,1a28 <__panic>
+93 02 20 0B	# li t0,178
 23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 1A	# j e90 <uput_tok>
+6F 00 00 03	# j 19b8 <uput_tok>
 #     j       err_in
-6F F0 1F A8	# j 770 <err_in>
-# err_cycle:                              # a2 = the function called
-#     mv      a4, a2
-13 07 06 00	# mv a4,a2
-    # say "famld: mutual recursion is not supported yet: "
-#     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
-37 65 6D 6C	# lui a0,0x6c6d6
-13 05 65 16	# addi a0,a0,358 # 6c6d6166 <data+0x6c6d4e72>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 EE AD 1F	# bltu s11,s10,f00 <__panic>
-93 02 C0 04	# li t0,76
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 15	# j e68 <uput4>
-#     li      a0, 'd' | ':'<<8 | ' '<<16 | 'm'<<24
-37 45 20 6D	# lui a0,0x6d204
-13 05 45 A6	# addi a0,a0,-1436 # 6d203a64 <data+0x6d202770>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 1F	# bltu s11,s10,f00 <__panic>
-93 02 D0 04	# li t0,77
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 13	# j e68 <uput4>
-#     li      a0, 'u' | 't'<<8 | 'u'<<16 | 'a'<<24
-37 75 75 61	# lui a0,0x61757
-13 05 55 47	# addi a0,a0,1141 # 61757475 <data+0x61756181>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 1D	# bltu s11,s10,f00 <__panic>
-93 02 E0 04	# li t0,78
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 12	# j e68 <uput4>
-#     li      a0, 'l' | ' '<<8 | 'r'<<16 | 'e'<<24
-37 25 72 65	# lui a0,0x65722
-13 05 C5 06	# addi a0,a0,108 # 6572206c <data+0x65720d78>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 1B	# bltu s11,s10,f00 <__panic>
-93 02 F0 04	# li t0,79
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 10	# j e68 <uput4>
-#     li      a0, 'c' | 'u'<<8 | 'r'<<16 | 's'<<24
-37 75 72 73	# lui a0,0x73727
-13 05 35 56	# addi a0,a0,1379 # 73727563 <data+0x7372626f>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 19	# bltu s11,s10,f00 <__panic>
-93 02 00 05	# li t0,80
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 0E	# j e68 <uput4>
-#     li      a0, 'i' | 'o'<<8 | 'n'<<16 | ' '<<24
-37 75 6E 20	# lui a0,0x206e7
-13 05 95 F6	# addi a0,a0,-151 # 206e6f69 <data+0x206e5c75>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E8 AD 17	# bltu s11,s10,f00 <__panic>
-93 02 10 05	# li t0,81
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 0C	# j e68 <uput4>
-#     li      a0, 'i' | 's'<<8 | ' '<<16 | 'n'<<24
-37 75 20 6E	# lui a0,0x6e207
-13 05 95 36	# addi a0,a0,873 # 6e207369 <data+0x6e206075>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 EA AD 15	# bltu s11,s10,f00 <__panic>
-93 02 20 05	# li t0,82
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 0B	# j e68 <uput4>
-#     li      a0, 'o' | 't'<<8 | ' '<<16 | 's'<<24
-37 75 20 73	# lui a0,0x73207
-13 05 F5 46	# addi a0,a0,1135 # 7320746f <data+0x7320617b>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 EC AD 13	# bltu s11,s10,f00 <__panic>
-93 02 30 05	# li t0,83
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 09	# j e68 <uput4>
-#     li      a0, 'u' | 'p'<<8 | 'p'<<16 | 'o'<<24
-37 75 70 6F	# lui a0,0x6f707
-13 05 55 07	# addi a0,a0,117 # 6f707075 <data+0x6f705d81>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 EE AD 11	# bltu s11,s10,f00 <__panic>
-93 02 40 05	# li t0,84
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 80 07	# j e68 <uput4>
-#     li      a0, 'r' | 't'<<8 | 'e'<<16 | 'd'<<24
-37 75 65 64	# lui a0,0x64657
-13 05 25 47	# addi a0,a0,1138 # 64657472 <data+0x6465617e>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E0 AD 11	# bltu s11,s10,f00 <__panic>
-93 02 50 05	# li t0,85
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 C0 05	# j e68 <uput4>
-#     li      a0, ' ' | 'y'<<8 | 'e'<<16 | 't'<<24
-37 85 65 74	# lui a0,0x74658
-13 05 05 92	# addi a0,a0,-1760 # 74657920 <data+0x7465662c>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 0F	# bltu s11,s10,f00 <__panic>
-93 02 60 05	# li t0,86
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 04	# j e68 <uput4>
-#     li      a0, ':' | ' '<<8
-37 25 00 00	# lui a0,0x2
-13 05 A5 03	# addi a0,a0,58 # 203a <data+0xd46>
-#     CALL    uput4
-93 8D CD FF	# addi s11,s11,-4
-63 E4 AD 0D	# bltu s11,s10,f00 <__panic>
-93 02 70 05	# li t0,87
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 40 02	# j e68 <uput4>
-#     lw      a0, 0(a4)
-03 25 07 00	# lw a0,0(a4)
-#     lw      a1, 4(a4)
-83 25 47 00	# lw a1,4(a4)
-#     CALL    uput_tok
-93 8D CD FF	# addi s11,s11,-4
-63 E6 AD 0B	# bltu s11,s10,f00 <__panic>
-93 02 80 05	# li t0,88
-23 A0 5D 00	# sw t0,0(s11)
-6F 00 00 03	# j e90 <uput_tok>
-#     j       err_in
-6F F0 DF 90	# j 770 <err_in>
+6F F0 DF 94	# j 12d8 <err_in>
 
 # --- shared routines ------------------------------------------------------
 
@@ -1719,21 +2720,21 @@ B7 03 00 10	# lui t2,0x10000
 # 1:  andi    t3, a0, 0xFF
 13 7E F5 0F	# zext.b t3,a0
 #     beqz    t3, 3f
-63 0E 0E 00	# beqz t3,e8c <.L3^B8>
+63 0E 0E 00	# beqz t3,19b4 <.L3^B7>
 # 2:  lbu     t4, 5(t2)
-83 CE 53 00	# lbu t4,5(t2) # 10000005 <data+0xfffed11>
+83 CE 53 00	# lbu t4,5(t2) # 10000005 <data+0xfffdd89>
 #     andi    t4, t4, 0x20                # LSR THR-empty
 93 FE 0E 02	# andi t4,t4,32
 #     beqz    t4, 2b
-E3 8C 0E FE	# beqz t4,e74 <.L2^B11>
+E3 8C 0E FE	# beqz t4,199c <.L2^B10>
 #     sb      t3, 0(t2)
 23 80 C3 01	# sb t3,0(t2)
 #     srli    a0, a0, 8
 13 55 85 00	# srli a0,a0,0x8
 #     j       1b
-6F F0 5F FE	# j e6c <.L1^B13>
+6F F0 5F FE	# j 1994 <.L1^B13>
 # 3:  RET
-6F 00 00 0A	# j f2c <__dispatch>
+6F 00 00 0A	# j 1a54 <__dispatch>
 
 # uput_tok -- a0 = start, a1 = length; write those bytes to the UART.
 #   Clobbers t2, t3, t4, t5.
@@ -1743,25 +2744,25 @@ B7 03 00 10	# lui t2,0x10000
 #     li      t5, 0
 13 0F 00 00	# li t5,0
 # 1:  bgeu    t5, a1, 3f
-63 72 BF 02	# bgeu t5,a1,ebc <.L3^B9>
+63 72 BF 02	# bgeu t5,a1,19e4 <.L3^B8>
 #     add     t3, a0, t5
 33 0E E5 01	# add t3,a0,t5
 #     lbu     t3, 0(t3)
 03 4E 0E 00	# lbu t3,0(t3)
 # 2:  lbu     t4, 5(t2)
-83 CE 53 00	# lbu t4,5(t2) # 10000005 <data+0xfffed11>
+83 CE 53 00	# lbu t4,5(t2) # 10000005 <data+0xfffdd89>
 #     andi    t4, t4, 0x20
 93 FE 0E 02	# andi t4,t4,32
 #     beqz    t4, 2b
-E3 8C 0E FE	# beqz t4,ea4 <.L2^B12>
+E3 8C 0E FE	# beqz t4,19cc <.L2^B11>
 #     sb      t3, 0(t2)
 23 80 C3 01	# sb t3,0(t2)
 #     addi    t5, t5, 1
 13 0F 1F 00	# addi t5,t5,1
 #     j       1b
-6F F0 1F FE	# j e98 <.L1^B14>
+6F F0 1F FE	# j 19c0 <.L1^B14>
 # 3:  RET
-6F 00 00 07	# j f2c <__dispatch>
+6F 00 00 07	# j 1a54 <__dispatch>
 
 # exit_ok / err_end -- leave QEMU through the SiFive test finisher: exit
 #   code 0, or a newline and exit code 1.
@@ -1770,30 +2771,30 @@ E3 8C 0E FE	# beqz t4,ea4 <.L2^B12>
 B7 02 10 00	# lui t0,0x100
 #     li      t1, 0x5555
 37 53 00 00	# lui t1,0x5
-13 03 53 55	# addi t1,t1,1365 # 5555 <data+0x4261>
+13 03 53 55	# addi t1,t1,1365 # 5555 <data+0x32d9>
 #     sw      t1, 0(t0)
-23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfed0c>
+23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfdd84>
 # 1:  j       1b
-6F 00 00 00	# j ed0 <.L1^B15>
+6F 00 00 00	# j 19f8 <.L1^B15>
 
 # err_end:
 #     li      a0, 0x0A
 13 05 A0 00	# li a0,10
 #     CALL    uput4
 93 8D CD FF	# addi s11,s11,-4
-63 E2 AD 03	# bltu s11,s10,f00 <__panic>
-93 02 90 05	# li t0,89
+63 E2 AD 03	# bltu s11,s10,1a28 <__panic>
+93 02 30 0B	# li t0,179
 23 A0 5D 00	# sw t0,0(s11)
-6F F0 1F F8	# j e68 <uput4>
+6F F0 1F F8	# j 1990 <uput4>
 #     li      t0, 0x100000
 B7 02 10 00	# lui t0,0x100
 #     li      t1, 0x00013333
 37 33 01 00	# lui t1,0x13
-13 03 33 33	# addi t1,t1,819 # 13333 <data+0x1203f>
+13 03 33 33	# addi t1,t1,819 # 13333 <data+0x110b7>
 #     sw      t1, 0(t0)
-23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfed0c>
+23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfdd84>
 # 1:  j       1b
-6F 00 00 00	# j efc <.L1^B16>
+6F 00 00 00	# j 1a24 <.L1^B16>
 
 # __panic -- the return-id stack overflowed.  No CALL here.
 # __panic:
@@ -1802,22 +2803,22 @@ B7 02 00 10	# lui t0,0x10000
 #     li      t1, 0x3F                    # '?'
 13 03 F0 03	# li t1,63
 # 1:  lbu     t2, 5(t0)
-83 C3 52 00	# lbu t2,5(t0) # 10000005 <data+0xfffed11>
+83 C3 52 00	# lbu t2,5(t0) # 10000005 <data+0xfffdd89>
 #     andi    t2, t2, 0x20
 93 F3 03 02	# andi t2,t2,32
 #     beqz    t2, 1b
-E3 8C 03 FE	# beqz t2,f08 <.L1^B17>
+E3 8C 03 FE	# beqz t2,1a30 <.L1^B17>
 #     sb      t1, 0(t0)
 23 80 62 00	# sb t1,0(t0)
 #     li      t0, 0x100000
 B7 02 10 00	# lui t0,0x100
 #     li      t1, 0x00013333
 37 33 01 00	# lui t1,0x13
-13 03 33 33	# addi t1,t1,819 # 13333 <data+0x1203f>
+13 03 33 33	# addi t1,t1,819 # 13333 <data+0x110b7>
 #     sw      t1, 0(t0)
-23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfed0c>
+23 A0 62 00	# sw t1,0(t0) # 100000 <data+0xfdd84>
 # 2:  j       2b
-6F 00 00 00	# j f28 <.L2^B13>
+6F 00 00 00	# j 1a50 <.L2^B12>
 
 # __dispatch:
 #     lw      t0, 0(s11)                  # pop return id
@@ -1825,247 +2826,527 @@ B7 02 10 00	# lui t0,0x100
 #     addi    s11, s11, 4
 93 8D 4D 00	# addi s11,s11,4
 #     li      t1, N_CALLS
-13 03 A0 05	# li t1,90
+13 03 40 0B	# li t1,180
 #     bgeu    t0, t1, __dispatch_trap     # out-of-range id -> trap
-63 FC 62 3A	# bgeu t0,t1,12f0 <__dispatch_trap>
+E3 FC 62 00	# bgeu t0,t1,2278 <__dispatch_trap>
 #     BST     0, %(N_CALLS - 1)
+13 03 90 05	# li t1,89
+63 8C 62 D0	# beq t0,t1,f80 <Lret_89>
+63 C4 62 3A	# blt t0,t1,1e14 <Lleft_89>
+13 03 60 08	# li t1,134
+E3 88 62 A2	# beq t0,t1,14a4 <Lret_134>
+63 CC 62 1C	# blt t0,t1,1c50 <Lleft_134>
+13 03 D0 09	# li t1,157
+E3 86 62 CA	# beq t0,t1,172c <Lret_157>
+63 C4 62 0E	# blt t0,t1,1b6c <Lleft_157>
+13 03 80 0A	# li t1,168
+E3 80 62 DE	# beq t0,t1,186c <Lret_168>
+63 CC 62 06	# blt t0,t1,1b08 <Lleft_168>
+13 03 E0 0A	# li t1,174
+E3 82 62 E8	# beq t0,t1,191c <Lret_174>
+63 CC 62 02	# blt t0,t1,1ad4 <Lleft_174>
+13 03 10 0B	# li t1,177
+E3 86 62 EC	# beq t0,t1,1970 <Lret_177>
+63 CC 62 00	# blt t0,t1,1ac0 <Lleft_177>
+13 03 20 0B	# li t1,178
+E3 8E 62 EC	# beq t0,t1,198c <Lret_178>
+63 C4 62 00	# blt t0,t1,1abc <Lleft_178>
+6F F0 DF F5	# j 1a14 <Lret_179>
+6F 00 C0 7B	# j 2278 <__dispatch_trap>
+13 03 F0 0A	# li t1,175
+E3 8A 62 E6	# beq t0,t1,1938 <Lret_175>
+63 C4 62 00	# blt t0,t1,1ad0 <Lleft_175>
+6F F0 9F E8	# j 1954 <Lret_176>
+6F 00 80 7A	# j 2278 <__dispatch_trap>
+13 03 B0 0A	# li t1,171
+E3 84 62 DE	# beq t0,t1,18c0 <Lret_171>
+63 CC 62 00	# blt t0,t1,1af4 <Lleft_171>
+13 03 C0 0A	# li t1,172
+E3 8C 62 DE	# beq t0,t1,18dc <Lret_172>
+63 C4 62 00	# blt t0,t1,1af0 <Lleft_172>
+6F F0 5F E1	# j 1900 <Lret_173>
+6F 00 80 78	# j 2278 <__dispatch_trap>
+13 03 90 0A	# li t1,169
+E3 88 62 D8	# beq t0,t1,1888 <Lret_169>
+63 C4 62 00	# blt t0,t1,1b04 <Lleft_169>
+6F F0 5F DA	# j 18a4 <Lret_170>
+6F 00 40 77	# j 2278 <__dispatch_trap>
+13 03 20 0A	# li t1,162
+E3 86 62 CA	# beq t0,t1,17b8 <Lret_162>
+63 CC 62 02	# blt t0,t1,1b48 <Lleft_162>
+13 03 50 0A	# li t1,165
+E3 8A 62 CE	# beq t0,t1,180c <Lret_165>
+63 CC 62 00	# blt t0,t1,1b34 <Lleft_165>
+13 03 60 0A	# li t1,166
+E3 88 62 D0	# beq t0,t1,1834 <Lret_166>
+63 C4 62 00	# blt t0,t1,1b30 <Lleft_166>
+6F F0 5F D2	# j 1850 <Lret_167>
+6F 00 80 74	# j 2278 <__dispatch_trap>
+13 03 30 0A	# li t1,163
+E3 8E 62 C8	# beq t0,t1,17d4 <Lret_163>
+63 C4 62 00	# blt t0,t1,1b44 <Lleft_163>
+6F F0 1F CB	# j 17f0 <Lret_164>
+6F 00 40 73	# j 2278 <__dispatch_trap>
+13 03 F0 09	# li t1,159
+E3 8C 62 C0	# beq t0,t1,1764 <Lret_159>
+63 CC 62 00	# blt t0,t1,1b68 <Lleft_159>
+13 03 00 0A	# li t1,160
+E3 84 62 C2	# beq t0,t1,1780 <Lret_160>
+63 C4 62 00	# blt t0,t1,1b64 <Lleft_160>
+6F F0 DF C3	# j 179c <Lret_161>
+6F 00 40 71	# j 2278 <__dispatch_trap>
+6F F0 DF BD	# j 1744 <Lret_158>
+13 03 10 09	# li t1,145
+E3 84 62 A6	# beq t0,t1,15d8 <Lret_145>
+63 CC 62 06	# blt t0,t1,1bec <Lleft_145>
+13 03 70 09	# li t1,151
+E3 84 62 B0	# beq t0,t1,1684 <Lret_151>
+63 CC 62 02	# blt t0,t1,1bb8 <Lleft_151>
+13 03 A0 09	# li t1,154
+E3 88 62 B4	# beq t0,t1,16d8 <Lret_154>
+63 CC 62 00	# blt t0,t1,1ba4 <Lleft_154>
+13 03 B0 09	# li t1,155
+E3 80 62 B6	# beq t0,t1,16f4 <Lret_155>
+63 C4 62 00	# blt t0,t1,1ba0 <Lleft_155>
+6F F0 5F B7	# j 1710 <Lret_156>
+6F 00 80 6D	# j 2278 <__dispatch_trap>
+13 03 80 09	# li t1,152
+E3 8C 62 AE	# beq t0,t1,16a0 <Lret_152>
+63 C4 62 00	# blt t0,t1,1bb4 <Lleft_152>
+6F F0 DF B0	# j 16bc <Lret_153>
+6F 00 40 6C	# j 2278 <__dispatch_trap>
+13 03 40 09	# li t1,148
+E3 8A 62 A6	# beq t0,t1,1630 <Lret_148>
+63 CC 62 00	# blt t0,t1,1bd8 <Lleft_148>
+13 03 50 09	# li t1,149
+E3 82 62 A8	# beq t0,t1,164c <Lret_149>
+63 C4 62 00	# blt t0,t1,1bd4 <Lleft_149>
+6F F0 9F A9	# j 1668 <Lret_150>
+6F 00 40 6A	# j 2278 <__dispatch_trap>
+13 03 20 09	# li t1,146
+E3 8C 62 A0	# beq t0,t1,15f4 <Lret_146>
+63 C4 62 00	# blt t0,t1,1be8 <Lleft_146>
+6F F0 DF A2	# j 1610 <Lret_147>
+6F 00 00 69	# j 2278 <__dispatch_trap>
+13 03 B0 08	# li t1,139
+E3 80 62 94	# beq t0,t1,1530 <Lret_139>
+63 CC 62 02	# blt t0,t1,1c2c <Lleft_139>
+13 03 E0 08	# li t1,142
+E3 82 62 98	# beq t0,t1,1580 <Lret_142>
+63 CC 62 00	# blt t0,t1,1c18 <Lleft_142>
+13 03 F0 08	# li t1,143
+E3 8C 62 98	# beq t0,t1,15a0 <Lret_143>
+63 C4 62 00	# blt t0,t1,1c14 <Lleft_143>
+6F F0 DF 9A	# j 15bc <Lret_144>
+6F 00 40 66	# j 2278 <__dispatch_trap>
+13 03 C0 08	# li t1,140
+E3 88 62 92	# beq t0,t1,154c <Lret_140>
+63 C4 62 00	# blt t0,t1,1c28 <Lleft_140>
+6F F0 5F 94	# j 1568 <Lret_141>
+6F 00 00 65	# j 2278 <__dispatch_trap>
+13 03 80 08	# li t1,136
+E3 86 62 8A	# beq t0,t1,14dc <Lret_136>
+63 CC 62 00	# blt t0,t1,1c4c <Lleft_136>
+13 03 90 08	# li t1,137
+E3 8C 62 8A	# beq t0,t1,14f4 <Lret_137>
+63 C4 62 00	# blt t0,t1,1c48 <Lleft_137>
+6F F0 1F 8D	# j 1514 <Lret_138>
+6F 00 00 63	# j 2278 <__dispatch_trap>
+6F F0 5F 87	# j 14c0 <Lret_135>
+13 03 F0 06	# li t1,111
+63 88 62 D8	# beq t0,t1,11e4 <Lret_111>
+63 C4 62 0E	# blt t0,t1,1d40 <Lleft_111>
+13 03 A0 07	# li t1,122
+63 88 62 EE	# beq t0,t1,1350 <Lret_122>
+63 CC 62 06	# blt t0,t1,1cdc <Lleft_122>
+13 03 00 08	# li t1,128
+63 86 62 F8	# beq t0,t1,13f8 <Lret_128>
+63 CC 62 02	# blt t0,t1,1ca8 <Lleft_128>
+13 03 30 08	# li t1,131
+63 8C 62 FC	# beq t0,t1,1450 <Lret_131>
+63 CC 62 00	# blt t0,t1,1c94 <Lleft_131>
+13 03 40 08	# li t1,132
+63 84 62 FE	# beq t0,t1,146c <Lret_132>
+63 C4 62 00	# blt t0,t1,1c90 <Lleft_132>
+6F F0 CF FF	# j 1488 <Lret_133>
+6F 00 80 5E	# j 2278 <__dispatch_trap>
+13 03 10 08	# li t1,129
+63 8E 62 F6	# beq t0,t1,1414 <Lret_129>
+63 C4 62 00	# blt t0,t1,1ca4 <Lleft_129>
+6F F0 4F F9	# j 1434 <Lret_130>
+6F 00 40 5D	# j 2278 <__dispatch_trap>
+13 03 D0 07	# li t1,125
+63 8C 62 EE	# beq t0,t1,13a4 <Lret_125>
+63 CC 62 00	# blt t0,t1,1cc8 <Lleft_125>
+13 03 E0 07	# li t1,126
+63 84 62 F0	# beq t0,t1,13c0 <Lret_126>
+63 C4 62 00	# blt t0,t1,1cc4 <Lleft_126>
+6F F0 CF F1	# j 13dc <Lret_127>
+6F 00 40 5B	# j 2278 <__dispatch_trap>
+13 03 B0 07	# li t1,123
+63 80 62 EA	# beq t0,t1,136c <Lret_123>
+63 C4 62 00	# blt t0,t1,1cd8 <Lleft_123>
+6F F0 4F EB	# j 1388 <Lret_124>
+6F 00 00 5A	# j 2278 <__dispatch_trap>
+13 03 40 07	# li t1,116
+63 88 62 D8	# beq t0,t1,1270 <Lret_116>
+63 CC 62 02	# blt t0,t1,1d1c <Lleft_116>
+13 03 70 07	# li t1,119
+63 86 62 E0	# beq t0,t1,12f8 <Lret_119>
+63 CC 62 00	# blt t0,t1,1d08 <Lleft_119>
+13 03 80 07	# li t1,120
+63 8E 62 E0	# beq t0,t1,1314 <Lret_120>
+63 C4 62 00	# blt t0,t1,1d04 <Lleft_120>
+6F F0 4F E3	# j 1334 <Lret_121>
+6F 00 40 57	# j 2278 <__dispatch_trap>
+13 03 50 07	# li t1,117
+63 8E 62 D6	# beq t0,t1,1288 <Lret_117>
+63 C4 62 00	# blt t0,t1,1d18 <Lleft_117>
+6F F0 0F D9	# j 12a4 <Lret_118>
+6F 00 00 56	# j 2278 <__dispatch_trap>
+13 03 10 07	# li t1,113
+63 8E 62 CE	# beq t0,t1,121c <Lret_113>
+63 CC 62 00	# blt t0,t1,1d3c <Lleft_113>
+13 03 20 07	# li t1,114
+63 86 62 D0	# beq t0,t1,1238 <Lret_114>
+63 C4 62 00	# blt t0,t1,1d38 <Lleft_114>
+6F F0 0F D2	# j 1254 <Lret_115>
+6F 00 00 54	# j 2278 <__dispatch_trap>
+6F F0 4F CC	# j 1200 <Lret_112>
+13 03 40 06	# li t1,100
+63 88 62 B6	# beq t0,t1,10b4 <Lret_100>
+63 C4 62 06	# blt t0,t1,1db0 <Lleft_100>
+13 03 90 06	# li t1,105
+63 86 62 BE	# beq t0,t1,113c <Lret_105>
+63 CC 62 02	# blt t0,t1,1d8c <Lleft_105>
+13 03 C0 06	# li t1,108
+63 8A 62 C2	# beq t0,t1,1190 <Lret_108>
+63 CC 62 00	# blt t0,t1,1d78 <Lleft_108>
+13 03 D0 06	# li t1,109
+63 82 62 C4	# beq t0,t1,11ac <Lret_109>
+63 C4 62 00	# blt t0,t1,1d74 <Lleft_109>
+6F F0 8F C5	# j 11c8 <Lret_110>
+6F 00 40 50	# j 2278 <__dispatch_trap>
+13 03 A0 06	# li t1,106
+63 8E 62 BC	# beq t0,t1,1158 <Lret_106>
+63 C4 62 00	# blt t0,t1,1d88 <Lleft_106>
+6F F0 0F BF	# j 1174 <Lret_107>
+6F 00 00 4F	# j 2278 <__dispatch_trap>
+13 03 60 06	# li t1,102
+63 8C 62 B4	# beq t0,t1,10e8 <Lret_102>
+63 CC 62 00	# blt t0,t1,1dac <Lleft_102>
+13 03 70 06	# li t1,103
+63 84 62 B6	# beq t0,t1,1104 <Lret_103>
+63 C4 62 00	# blt t0,t1,1da8 <Lleft_103>
+6F F0 CF B7	# j 1120 <Lret_104>
+6F 00 00 4D	# j 2278 <__dispatch_trap>
+6F F0 4F B2	# j 10d0 <Lret_101>
+13 03 E0 05	# li t1,94
+63 8C 62 A4	# beq t0,t1,100c <Lret_94>
+63 CC 62 02	# blt t0,t1,1df0 <Lleft_94>
+13 03 10 06	# li t1,97
+63 80 62 AA	# beq t0,t1,1060 <Lret_97>
+63 CC 62 00	# blt t0,t1,1ddc <Lleft_97>
+13 03 20 06	# li t1,98
+63 88 62 AA	# beq t0,t1,107c <Lret_98>
+63 C4 62 00	# blt t0,t1,1dd8 <Lleft_98>
+6F F0 4F AC	# j 1098 <Lret_99>
+6F 00 00 4A	# j 2278 <__dispatch_trap>
+13 03 F0 05	# li t1,95
+63 84 62 A4	# beq t0,t1,1028 <Lret_95>
+63 C4 62 00	# blt t0,t1,1dec <Lleft_95>
+6F F0 CF A5	# j 1044 <Lret_96>
+6F 00 C0 48	# j 2278 <__dispatch_trap>
+13 03 B0 05	# li t1,91
+63 82 62 9C	# beq t0,t1,fb8 <Lret_91>
+63 CC 62 00	# blt t0,t1,1e10 <Lleft_91>
+13 03 C0 05	# li t1,92
+63 8A 62 9C	# beq t0,t1,fd4 <Lret_92>
+63 C4 62 00	# blt t0,t1,1e0c <Lleft_92>
+6F F0 8F 9E	# j ff0 <Lret_93>
+6F 00 C0 46	# j 2278 <__dispatch_trap>
+6F F0 CF 98	# j f9c <Lret_90>
 13 03 C0 02	# li t1,44
-E3 8A 62 A2	# beq t0,t1,974 <Lret_44>
-63 CC 62 1C	# blt t0,t1,111c <Lleft_44>
-13 03 30 04	# li t1,67
-E3 8E 62 CA	# beq t0,t1,c08 <Lret_67>
-63 C4 62 0E	# blt t0,t1,1038 <Lleft_67>
-13 03 E0 04	# li t1,78
-E3 8A 62 DE	# beq t0,t1,d4c <Lret_78>
-63 CC 62 06	# blt t0,t1,fd4 <Lleft_78>
-13 03 40 05	# li t1,84
-E3 88 62 E8	# beq t0,t1,df4 <Lret_84>
-63 CC 62 02	# blt t0,t1,fa0 <Lleft_84>
+63 94 62 00	# bne t0,t1,1e20 <Lleft_89+0xc>
+6F E0 9F C7	# j a94 <Lret_44>
+63 C2 62 22	# blt t0,t1,2044 <Lleft_44>
+13 03 20 04	# li t1,66
+63 94 62 00	# bne t0,t1,1e30 <Lleft_89+0x1c>
+6F E0 1F ED	# j cfc <Lret_66>
+63 C6 62 10	# blt t0,t1,1f3c <Lleft_66>
+13 03 D0 04	# li t1,77
+63 94 62 00	# bne t0,t1,1e40 <Lleft_89+0x2c>
+6F E0 5F FF	# j e30 <Lret_77>
+63 C0 62 08	# blt t0,t1,1ec0 <Lleft_77>
+13 03 30 05	# li t1,83
+63 88 62 88	# beq t0,t1,ed8 <Lret_83>
+63 CC 62 02	# blt t0,t1,1e84 <Lleft_83>
+13 03 60 05	# li t1,86
+63 8C 62 8C	# beq t0,t1,f2c <Lret_86>
+63 CC 62 00	# blt t0,t1,1e70 <Lleft_86>
 13 03 70 05	# li t1,87
-E3 8C 62 EC	# beq t0,t1,e48 <Lret_87>
-63 CC 62 00	# blt t0,t1,f8c <Lleft_87>
-13 03 80 05	# li t1,88
-E3 84 62 EE	# beq t0,t1,e64 <Lret_88>
-63 C4 62 00	# blt t0,t1,f88 <Lleft_88>
-6F F0 9F F6	# j eec <Lret_89>
-6F 00 80 36	# j 12f0 <__dispatch_trap>
-13 03 50 05	# li t1,85
-E3 80 62 E8	# beq t0,t1,e10 <Lret_85>
-63 C4 62 00	# blt t0,t1,f9c <Lleft_85>
-6F F0 5F E9	# j e2c <Lret_86>
-6F 00 40 35	# j 12f0 <__dispatch_trap>
+63 84 62 8E	# beq t0,t1,f48 <Lret_87>
+63 C4 62 00	# blt t0,t1,1e6c <Lleft_87>
+6F F0 CF 8F	# j f64 <Lret_88>
+6F 00 C0 40	# j 2278 <__dispatch_trap>
+13 03 40 05	# li t1,84
+63 80 62 88	# beq t0,t1,ef4 <Lret_84>
+63 C4 62 00	# blt t0,t1,1e80 <Lleft_84>
+6F F0 4F 89	# j f10 <Lret_85>
+6F 00 80 3F	# j 2278 <__dispatch_trap>
+13 03 00 05	# li t1,80
+63 94 62 00	# bne t0,t1,1e90 <Lleft_83+0xc>
+6F E0 9F FF	# j e84 <Lret_80>
+63 CC 62 00	# blt t0,t1,1ea8 <Lleft_80>
 13 03 10 05	# li t1,81
-E3 8E 62 DE	# beq t0,t1,da0 <Lret_81>
-63 CC 62 00	# blt t0,t1,fc0 <Lleft_81>
-13 03 20 05	# li t1,82
-E3 86 62 E0	# beq t0,t1,dbc <Lret_82>
-63 C4 62 00	# blt t0,t1,fbc <Lleft_82>
-6F F0 1F E2	# j dd8 <Lret_83>
-6F 00 40 33	# j 12f0 <__dispatch_trap>
-13 03 F0 04	# li t1,79
-E3 82 62 DA	# beq t0,t1,d68 <Lret_79>
-63 C4 62 00	# blt t0,t1,fd0 <Lleft_79>
-6F F0 9F DB	# j d84 <Lret_80>
-6F 00 00 32	# j 12f0 <__dispatch_trap>
-13 03 80 04	# li t1,72
-E3 82 62 CC	# beq t0,t1,c9c <Lret_72>
-63 CC 62 02	# blt t0,t1,1014 <Lleft_72>
+63 84 62 80	# beq t0,t1,ea0 <Lret_81>
+63 C4 62 00	# blt t0,t1,1ea4 <Lleft_81>
+6F F0 CF 81	# j ebc <Lret_82>
+6F 00 40 3D	# j 2278 <__dispatch_trap>
+13 03 E0 04	# li t1,78
+63 94 62 00	# bne t0,t1,1eb4 <Lleft_80+0xc>
+6F E0 DF F9	# j e4c <Lret_78>
+63 C4 62 00	# blt t0,t1,1ebc <Lleft_78>
+6F E0 1F FB	# j e68 <Lret_79>
+6F 00 C0 3B	# j 2278 <__dispatch_trap>
+13 03 70 04	# li t1,71
+63 94 62 00	# bne t0,t1,1ecc <Lleft_77+0xc>
+6F E0 1F EC	# j d88 <Lret_71>
+63 C2 62 04	# blt t0,t1,1f10 <Lleft_71>
+13 03 A0 04	# li t1,74
+63 94 62 00	# bne t0,t1,1edc <Lleft_77+0x1c>
+6F E0 5F F0	# j ddc <Lret_74>
+63 CE 62 00	# blt t0,t1,1ef8 <Lleft_74>
 13 03 B0 04	# li t1,75
-E3 86 62 D0	# beq t0,t1,cf0 <Lret_75>
-63 CC 62 00	# blt t0,t1,1000 <Lleft_75>
-13 03 C0 04	# li t1,76
-E3 82 62 D2	# beq t0,t1,d14 <Lret_76>
-63 C4 62 00	# blt t0,t1,ffc <Lleft_76>
-6F F0 9F D3	# j d30 <Lret_77>
-6F 00 40 2F	# j 12f0 <__dispatch_trap>
-13 03 90 04	# li t1,73
-E3 8A 62 CA	# beq t0,t1,cb8 <Lret_73>
-63 C4 62 00	# blt t0,t1,1010 <Lleft_73>
-6F F0 9F CC	# j cd4 <Lret_74>
-6F 00 00 2E	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,1eec <Lleft_77+0x2c>
+6F E0 1F F1	# j df8 <Lret_75>
+63 C4 62 00	# blt t0,t1,1ef4 <Lleft_75>
+6F E0 5F F2	# j e14 <Lret_76>
+6F 00 40 38	# j 2278 <__dispatch_trap>
+13 03 80 04	# li t1,72
+63 94 62 00	# bne t0,t1,1f04 <Lleft_74+0xc>
+6F E0 5F EA	# j da4 <Lret_72>
+63 C4 62 00	# blt t0,t1,1f0c <Lleft_72>
+6F E0 9F EB	# j dc0 <Lret_73>
+6F 00 C0 36	# j 2278 <__dispatch_trap>
+13 03 40 04	# li t1,68
+63 94 62 00	# bne t0,t1,1f1c <Lleft_71+0xc>
+6F E0 DF E1	# j d34 <Lret_68>
+63 CE 62 00	# blt t0,t1,1f38 <Lleft_68>
 13 03 50 04	# li t1,69
-E3 84 62 C2	# beq t0,t1,c40 <Lret_69>
-63 CC 62 00	# blt t0,t1,1034 <Lleft_69>
-13 03 60 04	# li t1,70
-E3 80 62 C4	# beq t0,t1,c64 <Lret_70>
-63 C4 62 00	# blt t0,t1,1030 <Lleft_70>
-6F F0 5F C5	# j c80 <Lret_71>
-6F 00 00 2C	# j 12f0 <__dispatch_trap>
-6F F0 1F BF	# j c24 <Lret_68>
+63 94 62 00	# bne t0,t1,1f2c <Lleft_71+0x1c>
+6F E0 9F E2	# j d50 <Lret_69>
+63 C4 62 00	# blt t0,t1,1f34 <Lleft_69>
+6F E0 DF E3	# j d6c <Lret_70>
+6F 00 40 34	# j 2278 <__dispatch_trap>
+6F E0 1F DE	# j d18 <Lret_67>
 13 03 70 03	# li t1,55
-E3 86 62 A6	# beq t0,t1,aa8 <Lret_55>
-63 CC 62 06	# blt t0,t1,10b8 <Lleft_55>
-13 03 D0 03	# li t1,61
-E3 86 62 B0	# beq t0,t1,b54 <Lret_61>
-63 CC 62 02	# blt t0,t1,1084 <Lleft_61>
+63 94 62 00	# bne t0,t1,1f48 <Lleft_66+0xc>
+6F E0 5F C8	# j bc8 <Lret_55>
+63 C0 62 08	# blt t0,t1,1fc8 <Lleft_55>
+13 03 C0 03	# li t1,60
+63 94 62 00	# bne t0,t1,1f58 <Lleft_66+0x1c>
+6F E0 1F D0	# j c54 <Lret_60>
+63 C2 62 04	# blt t0,t1,1f9c <Lleft_60>
+13 03 F0 03	# li t1,63
+63 94 62 00	# bne t0,t1,1f68 <Lleft_66+0x2c>
+6F E0 5F D4	# j ca8 <Lret_63>
+63 CE 62 00	# blt t0,t1,1f84 <Lleft_63>
 13 03 00 04	# li t1,64
-E3 80 62 B6	# beq t0,t1,bb4 <Lret_64>
-63 CC 62 00	# blt t0,t1,1070 <Lleft_64>
-13 03 10 04	# li t1,65
-E3 88 62 B6	# beq t0,t1,bd0 <Lret_65>
-63 C4 62 00	# blt t0,t1,106c <Lleft_65>
-6F F0 5F B8	# j bec <Lret_66>
-6F 00 40 28	# j 12f0 <__dispatch_trap>
-13 03 E0 03	# li t1,62
-E3 8E 62 AE	# beq t0,t1,b70 <Lret_62>
-63 C4 62 00	# blt t0,t1,1080 <Lleft_62>
-6F F0 DF B1	# j b98 <Lret_63>
-6F 00 00 27	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,1f78 <Lleft_66+0x3c>
+6F E0 1F D5	# j cc4 <Lret_64>
+63 C4 62 00	# blt t0,t1,1f80 <Lleft_64>
+6F E0 5F D6	# j ce0 <Lret_65>
+6F 00 80 2F	# j 2278 <__dispatch_trap>
+13 03 D0 03	# li t1,61
+63 94 62 00	# bne t0,t1,1f90 <Lleft_63+0xc>
+6F E0 5F CE	# j c70 <Lret_61>
+63 C4 62 00	# blt t0,t1,1f98 <Lleft_61>
+6F E0 9F CF	# j c8c <Lret_62>
+6F 00 00 2E	# j 2278 <__dispatch_trap>
+13 03 90 03	# li t1,57
+63 94 62 00	# bne t0,t1,1fa8 <Lleft_60+0xc>
+6F E0 DF C5	# j c00 <Lret_57>
+63 CE 62 00	# blt t0,t1,1fc4 <Lleft_57>
 13 03 A0 03	# li t1,58
-E3 8C 62 A6	# beq t0,t1,b00 <Lret_58>
-63 CC 62 00	# blt t0,t1,10a4 <Lleft_58>
-13 03 B0 03	# li t1,59
-E3 84 62 A8	# beq t0,t1,b1c <Lret_59>
-63 C4 62 00	# blt t0,t1,10a0 <Lleft_59>
-6F F0 DF A9	# j b38 <Lret_60>
-6F 00 00 25	# j 12f0 <__dispatch_trap>
-13 03 80 03	# li t1,56
-E3 80 62 A2	# beq t0,t1,ac8 <Lret_56>
-63 C4 62 00	# blt t0,t1,10b4 <Lleft_56>
-6F F0 5F A3	# j ae4 <Lret_57>
-6F 00 C0 23	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,1fb8 <Lleft_60+0x1c>
+6F E0 9F C6	# j c1c <Lret_58>
+63 C4 62 00	# blt t0,t1,1fc0 <Lleft_58>
+6F E0 DF C7	# j c38 <Lret_59>
+6F 00 80 2B	# j 2278 <__dispatch_trap>
+6F E0 1F C2	# j be4 <Lret_56>
 13 03 10 03	# li t1,49
-E3 82 62 94	# beq t0,t1,a00 <Lret_49>
-63 CC 62 02	# blt t0,t1,10f8 <Lleft_49>
+63 94 62 00	# bne t0,t1,1fd4 <Lleft_55+0xc>
+6F E0 1F B5	# j b20 <Lret_49>
+63 C2 62 04	# blt t0,t1,2018 <Lleft_49>
 13 03 40 03	# li t1,52
-E3 86 62 98	# beq t0,t1,a54 <Lret_52>
-63 CC 62 00	# blt t0,t1,10e4 <Lleft_52>
+63 94 62 00	# bne t0,t1,1fe4 <Lleft_55+0x1c>
+6F E0 5F B9	# j b74 <Lret_52>
+63 CE 62 00	# blt t0,t1,2000 <Lleft_52>
 13 03 50 03	# li t1,53
-E3 8E 62 98	# beq t0,t1,a70 <Lret_53>
-63 C4 62 00	# blt t0,t1,10e0 <Lleft_53>
-6F F0 1F 9B	# j a8c <Lret_54>
-6F 00 00 21	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,1ff4 <Lleft_55+0x2c>
+6F E0 1F BA	# j b90 <Lret_53>
+63 C4 62 00	# blt t0,t1,1ffc <Lleft_53>
+6F E0 5F BB	# j bac <Lret_54>
+6F 00 C0 27	# j 2278 <__dispatch_trap>
 13 03 20 03	# li t1,50
-E3 88 62 92	# beq t0,t1,a18 <Lret_50>
-63 C4 62 00	# blt t0,t1,10f4 <Lleft_50>
-6F F0 9F 94	# j a38 <Lret_51>
-6F 00 C0 1F	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,200c <Lleft_52+0xc>
+6F E0 5F B3	# j b3c <Lret_50>
+63 C4 62 00	# blt t0,t1,2014 <Lleft_50>
+6F E0 9F B4	# j b58 <Lret_51>
+6F 00 40 26	# j 2278 <__dispatch_trap>
 13 03 E0 02	# li t1,46
-E3 88 62 8A	# beq t0,t1,9ac <Lret_46>
-63 CC 62 00	# blt t0,t1,1118 <Lleft_46>
+63 94 62 00	# bne t0,t1,2024 <Lleft_49+0xc>
+6F E0 DF AA	# j acc <Lret_46>
+63 CE 62 00	# blt t0,t1,2040 <Lleft_46>
 13 03 F0 02	# li t1,47
-E3 80 62 8C	# beq t0,t1,9c8 <Lret_47>
-63 C4 62 00	# blt t0,t1,1114 <Lleft_47>
-6F F0 5F 8D	# j 9e4 <Lret_48>
-6F 00 C0 1D	# j 12f0 <__dispatch_trap>
-6F F0 5F 87	# j 98c <Lret_45>
+63 94 62 00	# bne t0,t1,2034 <Lleft_49+0x1c>
+6F E0 9F AB	# j ae8 <Lret_47>
+63 C4 62 00	# blt t0,t1,203c <Lleft_47>
+6F E0 DF AC	# j b04 <Lret_48>
+6F 00 C0 23	# j 2278 <__dispatch_trap>
+6F E0 1F A7	# j ab0 <Lret_45>
 13 03 50 01	# li t1,21
-63 80 62 D2	# beq t0,t1,640 <Lret_21>
-63 C4 62 0E	# blt t0,t1,120c <Lleft_21>
+63 94 62 00	# bne t0,t1,2050 <Lleft_44+0xc>
+6F E0 CF F0	# j 758 <Lret_21>
+63 C0 62 12	# blt t0,t1,2170 <Lleft_21>
 13 03 00 02	# li t1,32
-63 8A 62 EE	# beq t0,t1,820 <Lret_32>
-63 CC 62 06	# blt t0,t1,11a8 <Lleft_32>
+63 94 62 00	# bne t0,t1,2060 <Lleft_44+0x1c>
+6F E0 5F 86	# j 8c0 <Lret_32>
+63 CA 62 08	# blt t0,t1,20f4 <Lleft_32>
 13 03 60 02	# li t1,38
-63 8A 62 F8	# beq t0,t1,8cc <Lret_38>
-63 CC 62 02	# blt t0,t1,1174 <Lleft_38>
+63 94 62 00	# bne t0,t1,2070 <Lleft_44+0x2c>
+6F E0 9F 96	# j 9d4 <Lret_38>
+63 C2 62 04	# blt t0,t1,20b4 <Lleft_38>
 13 03 90 02	# li t1,41
-63 8E 62 FC	# beq t0,t1,920 <Lret_41>
-63 CC 62 00	# blt t0,t1,1160 <Lleft_41>
+63 94 62 00	# bne t0,t1,2080 <Lleft_44+0x3c>
+6F E0 5F 9B	# j a30 <Lret_41>
+63 CE 62 00	# blt t0,t1,209c <Lleft_41>
 13 03 A0 02	# li t1,42
-63 86 62 FE	# beq t0,t1,93c <Lret_42>
-63 C4 62 00	# blt t0,t1,115c <Lleft_42>
-6F F0 1F 80	# j 958 <Lret_43>
-6F 00 40 19	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,2090 <Lleft_44+0x4c>
+6F E0 5F 9D	# j a60 <Lret_42>
+63 C4 62 00	# blt t0,t1,2098 <Lleft_42>
+6F E0 9F 9E	# j a7c <Lret_43>
+6F 00 00 1E	# j 2278 <__dispatch_trap>
 13 03 70 02	# li t1,39
-63 82 62 F8	# beq t0,t1,8e8 <Lret_39>
-63 C4 62 00	# blt t0,t1,1170 <Lleft_39>
-6F F0 8F F9	# j 904 <Lret_40>
-6F 00 00 18	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,20a8 <Lleft_41+0xc>
+6F E0 DF 94	# j 9f0 <Lret_39>
+63 C4 62 00	# blt t0,t1,20b0 <Lleft_39>
+6F E0 1F 96	# j a0c <Lret_40>
+6F 00 80 1C	# j 2278 <__dispatch_trap>
 13 03 30 02	# li t1,35
-63 8E 62 EE	# beq t0,t1,874 <Lret_35>
-63 CC 62 00	# blt t0,t1,1194 <Lleft_35>
+63 94 62 00	# bne t0,t1,20c0 <Lleft_38+0xc>
+6F E0 5F 86	# j 920 <Lret_35>
+63 CE 62 00	# blt t0,t1,20dc <Lleft_35>
 13 03 40 02	# li t1,36
-63 86 62 F0	# beq t0,t1,890 <Lret_36>
-63 C4 62 00	# blt t0,t1,1190 <Lleft_36>
-6F F0 0F F2	# j 8ac <Lret_37>
-6F 00 00 16	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,20d0 <Lleft_38+0x1c>
+6F E0 9F 89	# j 964 <Lret_36>
+63 C4 62 00	# blt t0,t1,20d8 <Lleft_36>
+6F E0 5F 8C	# j 998 <Lret_37>
+6F 00 00 1A	# j 2278 <__dispatch_trap>
 13 03 10 02	# li t1,33
-63 82 62 EA	# beq t0,t1,83c <Lret_33>
-63 C4 62 00	# blt t0,t1,11a4 <Lleft_33>
-6F F0 8F EB	# j 858 <Lret_34>
-6F 00 C0 14	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,20e8 <Lleft_35+0xc>
+6F E0 CF FF	# j 8e0 <Lret_33>
+63 C4 62 00	# blt t0,t1,20f0 <Lleft_33>
+6F E0 5F 81	# j 900 <Lret_34>
+6F 00 80 18	# j 2278 <__dispatch_trap>
 13 03 A0 01	# li t1,26
-63 8E 62 D4	# beq t0,t1,708 <Lret_26>
-63 CC 62 02	# blt t0,t1,11e8 <Lleft_26>
+63 94 62 00	# bne t0,t1,2100 <Lleft_32+0xc>
+6F E0 0F F0	# j 7fc <Lret_26>
+63 C2 62 04	# blt t0,t1,2144 <Lleft_26>
 13 03 D0 01	# li t1,29
-63 8A 62 E0	# beq t0,t1,7cc <Lret_29>
-63 CC 62 00	# blt t0,t1,11d4 <Lleft_29>
+63 94 62 00	# bne t0,t1,2110 <Lleft_32+0x1c>
+6F E0 0F F5	# j 85c <Lret_29>
+63 CE 62 00	# blt t0,t1,212c <Lleft_29>
 13 03 E0 01	# li t1,30
-63 82 62 E2	# beq t0,t1,7e8 <Lret_30>
-63 C4 62 00	# blt t0,t1,11d0 <Lleft_30>
-6F F0 8F E3	# j 804 <Lret_31>
-6F 00 00 12	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,2120 <Lleft_32+0x2c>
+6F E0 CF F5	# j 878 <Lret_30>
+63 C4 62 00	# blt t0,t1,2128 <Lleft_30>
+6F E0 CF F7	# j 8a0 <Lret_31>
+6F 00 00 15	# j 2278 <__dispatch_trap>
 13 03 B0 01	# li t1,27
-63 8C 62 DA	# beq t0,t1,790 <Lret_27>
-63 C4 62 00	# blt t0,t1,11e4 <Lleft_27>
-6F F0 CF DC	# j 7ac <Lret_28>
-6F 00 C0 10	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,2138 <Lleft_29+0xc>
+6F E0 8F EE	# j 81c <Lret_27>
+63 C4 62 00	# blt t0,t1,2140 <Lleft_27>
+6F E0 4F F0	# j 840 <Lret_28>
+6F 00 80 13	# j 2278 <__dispatch_trap>
 13 03 70 01	# li t1,23
-63 82 62 CC	# beq t0,t1,6b0 <Lret_23>
-63 CC 62 00	# blt t0,t1,1208 <Lleft_23>
+63 94 62 00	# bne t0,t1,2150 <Lleft_26+0xc>
+6F E0 0F E5	# j 79c <Lret_23>
+63 CE 62 00	# blt t0,t1,216c <Lleft_23>
 13 03 80 01	# li t1,24
-63 8C 62 CC	# beq t0,t1,6d0 <Lret_24>
-63 C4 62 00	# blt t0,t1,1204 <Lleft_24>
-6F F0 8F CE	# j 6e8 <Lret_25>
-6F 00 C0 0E	# j 12f0 <__dispatch_trap>
-6F F0 8F C7	# j 680 <Lret_22>
+63 94 62 00	# bne t0,t1,2160 <Lleft_26+0x1c>
+6F E0 0F E6	# j 7bc <Lret_24>
+63 C4 62 00	# blt t0,t1,2168 <Lleft_24>
+6F E0 8F E7	# j 7dc <Lret_25>
+6F 00 00 11	# j 2278 <__dispatch_trap>
+6F E0 0F E1	# j 77c <Lret_22>
 13 03 A0 00	# li t1,10
-63 88 62 A4	# beq t0,t1,460 <Lret_10>
-63 C4 62 06	# blt t0,t1,127c <Lleft_10>
+63 94 62 00	# bne t0,t1,217c <Lleft_21+0xc>
+6F E0 8F A9	# j 410 <Lret_10>
+63 C0 62 08	# blt t0,t1,21fc <Lleft_10>
 13 03 F0 00	# li t1,15
-63 8E 62 B6	# beq t0,t1,598 <Lret_15>
-63 CC 62 02	# blt t0,t1,1258 <Lleft_15>
+63 94 62 00	# bne t0,t1,218c <Lleft_21+0x1c>
+6F E0 8F C5	# j 5e0 <Lret_15>
+63 C2 62 04	# blt t0,t1,21d0 <Lleft_15>
 13 03 20 01	# li t1,18
-63 84 62 BC	# beq t0,t1,5f0 <Lret_18>
-63 CC 62 00	# blt t0,t1,1244 <Lleft_18>
+63 94 62 00	# bne t0,t1,219c <Lleft_21+0x2c>
+6F E0 CF D3	# j 6d4 <Lret_18>
+63 CE 62 00	# blt t0,t1,21b8 <Lleft_18>
 13 03 30 01	# li t1,19
-63 8A 62 BC	# beq t0,t1,608 <Lret_19>
-63 C4 62 00	# blt t0,t1,1240 <Lleft_19>
-6F F0 8F BE	# j 624 <Lret_20>
-6F 00 00 0B	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,21ac <Lleft_21+0x3c>
+6F E0 4F D7	# j 71c <Lret_19>
+63 C4 62 00	# blt t0,t1,21b4 <Lleft_19>
+6F E0 CF D8	# j 73c <Lret_20>
+6F 00 40 0C	# j 2278 <__dispatch_trap>
 13 03 00 01	# li t1,16
-63 88 62 B6	# beq t0,t1,5b8 <Lret_16>
-63 C4 62 00	# blt t0,t1,1254 <Lleft_16>
-6F F0 8F B8	# j 5d8 <Lret_17>
-6F 00 C0 09	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,21c4 <Lleft_18+0xc>
+6F E0 8F CA	# j 668 <Lret_16>
+63 C4 62 00	# blt t0,t1,21cc <Lleft_16>
+6F E0 8F CD	# j 6a0 <Lret_17>
+6F 00 C0 0A	# j 2278 <__dispatch_trap>
 13 03 C0 00	# li t1,12
-63 86 62 A6	# beq t0,t1,4c8 <Lret_12>
-63 CC 62 00	# blt t0,t1,1278 <Lleft_12>
+63 94 62 00	# bne t0,t1,21dc <Lleft_15+0xc>
+6F E0 0F B8	# j 558 <Lret_12>
+63 CE 62 00	# blt t0,t1,21f8 <Lleft_12>
 13 03 D0 00	# li t1,13
-63 8C 62 A6	# beq t0,t1,4e0 <Lret_13>
-63 C4 62 00	# blt t0,t1,1274 <Lleft_13>
-6F F0 4F AF	# j 564 <Lret_14>
-6F 00 C0 07	# j 12f0 <__dispatch_trap>
-6F F0 0F A2	# j 498 <Lret_11>
+63 94 62 00	# bne t0,t1,21ec <Lleft_15+0x1c>
+6F E0 8F BA	# j 590 <Lret_13>
+63 C4 62 00	# blt t0,t1,21f4 <Lleft_13>
+6F E0 4F BD	# j 5c4 <Lret_14>
+6F 00 40 08	# j 2278 <__dispatch_trap>
+6F E0 8F A3	# j 430 <Lret_11>
 13 03 40 00	# li t1,4
-63 94 62 00	# bne t0,t1,1288 <Lleft_10+0xc>
-6F E0 5F FA	# j 228 <Lret_4>
-63 CE 62 02	# blt t0,t1,12c4 <Lleft_4>
+63 94 62 00	# bne t0,t1,2208 <Lleft_10+0xc>
+6F E0 CF 88	# j 290 <Lret_4>
+63 C2 62 04	# blt t0,t1,224c <Lleft_4>
 13 03 70 00	# li t1,7
-63 88 62 88	# beq t0,t1,320 <Lret_7>
-63 CC 62 00	# blt t0,t1,12ac <Lleft_7>
+63 94 62 00	# bne t0,t1,2218 <Lleft_10+0x1c>
+6F E0 CF 99	# j 3b0 <Lret_7>
+63 CE 62 00	# blt t0,t1,2234 <Lleft_7>
 13 03 80 00	# li t1,8
-63 8E 62 88	# beq t0,t1,338 <Lret_8>
-63 C4 62 00	# blt t0,t1,12a8 <Lleft_8>
-6F F0 0F 8B	# j 354 <Lret_9>
-6F 00 80 04	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,2228 <Lleft_10+0x2c>
+6F E0 8F 9A	# j 3cc <Lret_8>
+63 C4 62 00	# blt t0,t1,2230 <Lleft_8>
+6F E0 4F 9C	# j 3f0 <Lret_9>
+6F 00 80 04	# j 2278 <__dispatch_trap>
 13 03 50 00	# li t1,5
-63 94 62 00	# bne t0,t1,12b8 <Lleft_7+0xc>
-6F E0 5F F9	# j 248 <Lret_5>
-63 C4 62 00	# blt t0,t1,12c0 <Lleft_5>
-6F F0 8F 83	# j 2f4 <Lret_6>
-6F 00 00 03	# j 12f0 <__dispatch_trap>
+63 94 62 00	# bne t0,t1,2240 <Lleft_7+0xc>
+6F E0 8F 87	# j 2b4 <Lret_5>
+63 C4 62 00	# blt t0,t1,2248 <Lleft_5>
+6F E0 CF 93	# j 380 <Lret_6>
+6F 00 00 03	# j 2278 <__dispatch_trap>
 13 03 10 00	# li t1,1
-63 94 62 00	# bne t0,t1,12d0 <Lleft_4+0xc>
-6F E0 DF DE	# j b8 <Lret_1>
-63 CE 62 00	# blt t0,t1,12ec <Lleft_1>
+63 94 62 00	# bne t0,t1,2258 <Lleft_4+0xc>
+6F D0 9F E7	# j cc <Lret_1>
+63 CE 62 00	# blt t0,t1,2274 <Lleft_1>
 13 03 20 00	# li t1,2
-63 94 62 00	# bne t0,t1,12e0 <Lleft_4+0x1c>
-6F E0 DF E1	# j f8 <Lret_2>
-63 C4 62 00	# blt t0,t1,12e8 <Lleft_2>
-6F E0 1F EE	# j 1c4 <Lret_3>
-6F 00 80 00	# j 12f0 <__dispatch_trap>
-6F E0 9F D9	# j 84 <Lret_0>
+63 94 62 00	# bne t0,t1,2268 <Lleft_4+0x1c>
+6F D0 DF EB	# j 120 <Lret_2>
+63 C4 62 00	# blt t0,t1,2270 <Lleft_2>
+6F D0 1F FB	# j 21c <Lret_3>
+6F 00 80 00	# j 2278 <__dispatch_trap>
+6F D0 DF E1	# j 90 <Lret_0>
 # __dispatch_trap:
 # 1:  j       1b
-6F 00 00 00	# j 12f0 <__dispatch_trap>
+6F 00 00 00	# j 2278 <__dispatch_trap>

@@ -153,11 +153,12 @@ of four `0x04` bytes. It:
    (`_0000001`). The underscore keeps it from ever reading as a hex word.
 3. Orders the functions so each is defined before any function that calls
    it.
-4. Breaks each cycle (mutual recursion) with a stub: a short word defined
-   ahead of the cycle that jumps to the real function, patched when that
-   function is defined. Two small immediate words in the linker's output do
-   the recording and patching. *Not implemented: the linker reports mutual
-   recursion as an error. A function calling itself works.*
+4. Breaks each cycle (functions that call each other) with a stub: a word
+   holding one jump, defined ahead of the cycle. Calls made before the real
+   function is defined go to the stub, and the jump is pointed at the
+   function when it is defined. Three small words at the top of the
+   linker's output, run by the core as it compiles, do the recording and
+   pointing. A function calling itself needs no stub.
 5. Writes all functions, then every init record as top-level code, in
    input order. The core runs top-level code in order at startup, so the
    startup object goes first on the link line.
@@ -169,11 +170,25 @@ For the example above the linker writes:
 : _0000002 _0000001 ;
 ```
 
+And for `a` and `b` that call each other, with `b` reached first through
+`a`:
+
+```
+: >0000001 00000000 mark 6F000000 , ;
+: _0000002 ... >0000001 ... ;
+: _0000001 00000000 patch ... _0000002 ... ;
+```
+
+`>0000001` is the stub for `_0000001` and `00000000` its index. A stub's
+jump is a plain `jal`, so the stub and its function must end up within
+1 MiB of each other. If they do not, the link fails with a message saying
+so.
+
 Link errors are reported as text in place of the output, with exit code 1:
 
 - a call to a name no object defines (naming the caller)
 - a name defined by two objects
-- mutual recursion, for now
+- functions that call each other ending up over 1 MiB apart
 - input that is not an object, or an object whose contents are inconsistent
 
 ## What the core imposes on generated code
@@ -233,7 +248,10 @@ Each of these is a new part or a new symbol kind, under a new version.
    of code, and the core holds its whole input and output in a 5 MiB heap.
    If that becomes tight, the heap constant in `src/fam.S` is the first
    thing to raise.
-2. **Cycle stubs.** The scheme in "Linking" step 4 is untried.
+2. **Far cycles.** A stub reaches 1 MiB. Everything a function in a cycle
+   calls is written between its stub and itself, so a cycle near the root
+   of a large program could exceed that. A chain of stubs would lift the
+   limit.
 
 ## Decided
 

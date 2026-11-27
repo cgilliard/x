@@ -28,12 +28,22 @@
 # as top-level code, in input order.  On an error, writes a message in place
 # of the output and exits with 1.
 #
+# Functions that call each other in a cycle cannot all come before their
+# callers.  When a function calls one that is still being written, the call
+# goes through a stub instead, a word `>NNNNNNN` holding one jump:
+#     : >NNNNNNN iiiiiiii mark 6F000000 , ;
+# and the function it stands for starts with `iiiiiiii patch`, which points
+# that jump at it.  `mark` and `patch` run in the core as it compiles; they
+# and `allot`, which reserves the table they share, are defined at the top
+# of the output (see preamble).
+#
 # Built from this file by tools/s2fam0_fam.py into src/famld.fam0, which
 # bin/fam0 turns into bin/famld.
 #
 # Memory, from the page after the code (base):
 #   base                return ids, 64 KiB          (s10 floor, s11 pointer)
-#   base + 0x10000      the emit stack, 64 KiB      (tp floor, sp pointer)
+#   base + 0x10000      the emit stack, 64 KiB      (tp floor, sp pointer);
+#                       its top word, at -4(s3), counts the stubs
 #   base + 0x20000      the symbol table, 1 MiB     (s3 base, s4 next free)
 #   base + 0x120000     the init list, 64 KiB       (s5 base, s6 next free)
 #   base + 0x130000     the objects, 32 MiB         (s0 next free)
@@ -46,9 +56,9 @@
 #   - word 1 of each of its symbols (the name offset) holds the address of
 #     the linker's symbol for it, for functions and externals
 #
-# A linker symbol is 24 bytes: name start, name length, the object defining
+# A linker symbol is 28 bytes: name start, name length, the object defining
 #   it (0: none yet), its symbol there, state (0 not written, 1 being
-#   written, 2 written), number (from 1).
+#   written, 2 written), number (from 1), its stub's index + 1 (0: no stub).
 # An init entry is 8 bytes: the object, the init symbol there.
 #
 # Other registers:
@@ -135,7 +145,8 @@ Lleft_\mid:
 #   lay out its memory, from the page after the code (base), and read the
 #   source from the UART up to EOT.
 #     base                return ids, 64 KiB        (s10 floor, s11 pointer)
-#     base + 0x10000      the symbol count (one word), then
+#     base + 0x10000      16 words of variables (the last, at -4(s4),
+#                         is the symbol count), then
 #                         the symbols, 1 MiB        (s4 base, s5 next free)
 #     base + 0x110000     the call sites, 1 MiB     (s6 base, s7 next free)
 #     base + 0x210000     the names, 2 MiB          (gp base, tp next free)
@@ -151,8 +162,8 @@ Lleft_\mid:
     and     s10, s10, t0                # base: the page after the code
     li      t0, 0x10000
     add     s11, s10, t0                # return ids: top
-    sw      zero, 0(s11)                # the symbol count
-    addi    s4, s11, 4                  # symbols
+    addi    s4, s11, 64                 # symbols, after the variables
+    sw      zero, -4(s4)                # the symbol count
     mv      s5, s4
     li      t0, 0x100000
     add     s6, s11, t0                 # call sites
@@ -195,8 +206,9 @@ _start:
     li      t0, 0x10000
     add     s11, s10, t0                # return ids: top
     mv      tp, s11                     # emit stack: floor
-    add     sp, s11, t0                 # emit stack: top
-    mv      s3, sp                      # symbol table
+    add     s3, s11, t0                 # symbol table
+    addi    sp, s3, -16                 # emit stack: top, under the stub count
+    sw      zero, -4(s3)
     mv      s4, s3
     li      t0, 0x100000
     add     s5, s3, t0                  # init list
@@ -287,7 +299,7 @@ _start:
     add     a0, a0, t3                  # its address
     CALL    find_sym
     bnez    a2, 2f
-    addi    t2, s4, 24                  # a new name
+    addi    t2, s4, 28                  # a new name
     bgtu    t2, s5, err_big
     mv      a2, s4
     sw      a0, 0(a2)
@@ -295,9 +307,10 @@ _start:
     sw      zero, 8(a2)
     sw      zero, 12(a2)
     sw      zero, 16(a2)
+    sw      zero, 24(a2)
     li      t3, 1                       # number: the one before's + 1
     beq     s4, s3, 1f
-    lw      t3, -4(s4)
+    lw      t3, -8(s4)
     addi    t3, t3, 1
 1:  sw      t3, 20(a2)
     mv      s4, t2
@@ -359,7 +372,7 @@ _start:
     beqz    t2, 2f                      # never defined; an error if called
     mv      a2, ra
     CALL    emit_fn
-2:  addi    ra, ra, 24
+2:  addi    ra, ra, 28
     j       1b
 3:  mv      ra, s5
 4:  bgeu    ra, s6, 5f
@@ -370,7 +383,14 @@ _start:
     CALL    out_ch
     addi    ra, ra, 8
     j       4b
-5:  CALL    flush
+5:  mv      ra, s8                      # the preamble is written last and
+    CALL    preamble                    # sent first
+    mv      a0, ra
+    sub     a1, s8, ra
+    CALL    uput_tok
+    mv      a0, s7
+    sub     a1, ra, s7
+    CALL    uput_tok
     j       exit_ok
 
 # rd -- read bytes from the UART into [a0, a1); a0 = a1 after.
@@ -419,7 +439,7 @@ find_sym:
     bne     t5, t6, 3f
     addi    t4, t4, 1
     j       2b
-3:  addi    a2, a2, 24
+3:  addi    a2, a2, 28
     j       1b
 4:  li      a2, 0
 5:  RET
@@ -455,12 +475,17 @@ call_sym:
     RET
 
 # out_name -- a2 = symbol; append its short name: '_' and its number as
-#   seven hex digits.  Clobbers a0, t2, t3, t4.
+#   seven hex digits.  Clobbers a0, a1, t2, t3, t4.
 out_name:
     li      a0, '_'
+    lw      a1, 20(a2)
+    j       out_num                     # (its RET returns for us)
+
+# out_num -- a0 = a character, a1 = a number; append the character and the
+#   number's low 28 bits as seven hex digits.  Clobbers a0, t2, t3, t4.
+out_num:
     CALL    out_ch
-    lw      t2, 20(a2)
-    slli    t2, t2, 4                   # the low 28 bits, top first
+    slli    t2, a1, 4                   # the low 28 bits, top first
     li      t3, 7
 1:  srli    a0, t2, 28
     slli    t2, t2, 4
@@ -497,16 +522,17 @@ out_hex1:
 1:  addi    a0, a0, '0'
     j       out_ch                      # (its RET returns for us)
 
-# emit_fn -- a2 = symbol (defined).  Write the function, after the
-#   functions it calls (recursively).  A call to itself is fine (the core
-#   defines a name before its body); a longer cycle is an error for now.
+# emit_fn -- a2 = symbol (defined, not being written).  Write the function,
+#   after the functions it calls (recursively).  A callee that is being
+#   written -- this call closes a cycle -- gets a stub instead, if it has
+#   none yet.  (A call to itself needs none: the core defines a name before
+#   its body.)
 #   Frame on the emit stack: [s1, s2, s9]; s1 = the call site to look at
 #   next, s2 = the offset where the function's code ends.
 emit_fn:
     lw      t2, 16(a2)
     li      t3, 2
     beq     t2, t3, 3f                  # written already
-    bnez    t2, err_cycle               # being written: a cycle
     li      t2, 1
     sw      t2, 16(a2)
     addi    sp, sp, -12
@@ -533,7 +559,42 @@ emit_fn:
     lw      t3, 8(a2)
     beqz    t3, err_undef
     beq     a2, s9, 1b                  # itself
+    lw      t3, 16(a2)
+    li      t4, 1
+    beq     t3, t4, 4f
     CALL    emit_fn
+    j       1b
+4:  lw      t3, 24(a2)                  # being written: through its stub
+    bnez    t3, 1b
+    lw      t3, -4(s3)                  # a new stub, the next index
+    addi    t3, t3, 1
+    li      t4, 0xE000                  # (the core has room for these many)
+    bgtu    t3, t4, err_stubs
+    sw      t3, -4(s3)
+    sw      t3, 24(a2)
+    mv      a4, a2
+    li      a0, ':' | ' '<<8
+    CALL    out4
+    li      a0, '>'
+    lw      a1, 20(a4)
+    CALL    out_num
+    li      a0, ' '
+    CALL    out_ch
+    li      a0, '0'
+    lw      a1, 24(a4)
+    addi    a1, a1, -1
+    CALL    out_num
+    # append " mark 6F000000 , ;\n"
+    li      a0, ' ' | 'm'<<8 | 'a'<<16 | 'r'<<24
+    CALL    out4
+    li      a0, 'k' | ' '<<8 | '6'<<16 | 'F'<<24
+    CALL    out4
+    li      a0, '0' | '0'<<8 | '0'<<16 | '0'<<24
+    CALL    out4
+    li      a0, '0' | '0'<<8 | ' '<<16 | ','<<24
+    CALL    out4
+    li      a0, ' ' | ';'<<8 | 0x0A<<16
+    CALL    out4
     j       1b
 2:  li      a0, ':' | ' '<<8            # then its text
     CALL    out4
@@ -541,6 +602,17 @@ emit_fn:
     CALL    out_name
     li      a0, ' '
     CALL    out_ch
+    lw      a1, 24(s9)                  # its stub, if it has one, jumps here
+    beqz    a1, 5f
+    addi    a1, a1, -1
+    li      a0, '0'
+    CALL    out_num
+    # append " patch "
+    li      a0, ' ' | 'p'<<8 | 'a'<<16 | 't'<<24
+    CALL    out4
+    li      a0, 'c' | 'h'<<8 | ' '<<16
+    CALL    out4
+5:
     lw      a5, 8(s9)
     lw      a1, 12(s9)
     CALL    emit_code
@@ -575,8 +647,16 @@ emit_code:
     lw      t2, 8(a2)
     beqz    t2, err_undef
     addi    a6, a6, 8
-    CALL    out_name
-    li      a0, ' '
+    lw      t2, 16(a2)                  # one being written (not the one
+    li      t3, 1                       # this code is in): its stub
+    bne     t2, t3, 4f
+    beq     a2, s9, 4f
+    li      a0, '>'
+    lw      a1, 20(a2)
+    CALL    out_num
+    j       5f
+4:  CALL    out_name
+5:  li      a0, ' '
     CALL    out_ch
     j       1b
 2:  add     t2, a7, a3                  # a word
@@ -585,6 +665,233 @@ emit_code:
     addi    a3, a3, 4
     j       1b
 3:  RET
+
+# preamble -- if there are stubs, append the definitions of the words they
+#   use, which run in the core as it compiles (there: tp = its stack of
+#   numbers, gp = where the next word of output goes, s8 = the start of its
+#   region for such words: the region's next free address, a spare word,
+#   then the words' code).  `allot` must be the first of them: its code is
+#   6 instructions and the core's return, 28 bytes, so the table it reserves
+#   is at 36(s8).
+preamble:
+    lw      t2, -4(s3)
+    beqz    t2, 1f
+    # append ":I allot "
+    li      a0, ':' | 'I'<<8 | ' '<<16 | 'a'<<24
+    CALL    out4
+    li      a0, 'l' | 'l'<<8 | 'o'<<16 | 't'<<24
+    CALL    out4
+    li      a0, ' '
+    CALL    out4
+    # allot ( n -- ): reserve a table of n words in the region
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       lw      t3, 0(s8)
+    #       add     t3, t3, t2
+    #       sw      t3, 0(s8)
+    li      a0, 0x00022383
+    CALL    out_word
+    li      a0, 0x00420213
+    CALL    out_word
+    li      a0, 0x00239393
+    CALL    out_word
+    li      a0, 0x000C2E03
+    CALL    out_word
+    li      a0, 0x007E0E33
+    CALL    out_word
+    li      a0, 0x01CC2023
+    CALL    out_word
+    # append ";\n"
+    li      a0, ';' | 0x0A<<8
+    CALL    out4
+    li      a0, '0'
+    lw      a1, -4(s3)
+    CALL    out_num
+    # append " allot\n:I mark "
+    li      a0, ' ' | 'a'<<8 | 'l'<<16 | 'l'<<24
+    CALL    out4
+    li      a0, 'o' | 't'<<8 | 0x0A<<16 | ':'<<24
+    CALL    out4
+    li      a0, 'I' | ' '<<8 | 'm'<<16 | 'a'<<24
+    CALL    out4
+    li      a0, 'r' | 'k'<<8 | ' '<<16
+    CALL    out4
+    # mark ( i -- ): table[i] = where the next word goes, the stub's jump
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       add     t2, t2, s8
+    #       sw      gp, 36(t2)
+    li      a0, 0x00022383
+    CALL    out_word
+    li      a0, 0x00420213
+    CALL    out_word
+    li      a0, 0x00239393
+    CALL    out_word
+    li      a0, 0x018383B3
+    CALL    out_word
+    li      a0, 0x0233A223
+    CALL    out_word
+    # append ";\n:I patch "
+    li      a0, ';' | 0x0A<<8 | ':'<<16 | 'I'<<24
+    CALL    out4
+    li      a0, ' ' | 'p'<<8 | 'a'<<16 | 't'<<24
+    CALL    out4
+    li      a0, 'c' | 'h'<<8 | ' '<<16
+    CALL    out4
+    # patch ( i -- ): make the jump at table[i] come here.  If that is over
+    # 1 MiB, write a message to the UART and leave QEMU with exit code 1.
+    #       lw      t2, 0(tp)
+    #       addi    tp, tp, 4
+    #       slli    t2, t2, 2
+    #       add     t2, t2, s8
+    #       lw      t3, 36(t2)
+    #       sub     t2, gp, t3
+    #       srli    t4, t2, 20
+    #       bnez    t4, far
+    #       srli    t4, t2, 1
+    #       andi    t4, t4, 0x3FF
+    #       slli    t4, t4, 21
+    #       srli    t5, t2, 11
+    #       andi    t5, t5, 1
+    #       slli    t5, t5, 20
+    #       or      t4, t4, t5
+    #       srli    t5, t2, 12
+    #       andi    t5, t5, 0xFF
+    #       slli    t5, t5, 12
+    #       or      t4, t4, t5
+    #       ori     t4, t4, 0x6F
+    #       sw      t4, 0(t3)
+    #       j       done
+    #   msg:
+    #       .ascii  "famld: functions that call each other are over 1 MiB apart\n\0"
+    #       .balign 4
+    #   far:
+    #       lla     t2, msg
+    #       li      t3, 0x10000000
+    #   1:  lbu     t4, 0(t2)
+    #       beqz    t4, 3f
+    #   2:  lbu     t5, 5(t3)
+    #       andi    t5, t5, 0x20
+    #       beqz    t5, 2b
+    #       sb      t4, 0(t3)
+    #       addi    t2, t2, 1
+    #       j       1b
+    #   3:  li      t3, 0x100000
+    #       li      t4, 0x13333
+    #       sw      t4, 0(t3)
+    #   4:  j       4b
+    li      a0, 0x00022383
+    CALL    out_word
+    li      a0, 0x00420213
+    CALL    out_word
+    li      a0, 0x00239393
+    CALL    out_word
+    li      a0, 0x018383B3
+    CALL    out_word
+    li      a0, 0x0243AE03
+    CALL    out_word
+    li      a0, 0x41C183B3
+    CALL    out_word
+    li      a0, 0x0143DE93
+    CALL    out_word
+    li      a0, 0x060E9C63
+    CALL    out_word
+    li      a0, 0x0013DE93
+    CALL    out_word
+    li      a0, 0x3FFEFE93
+    CALL    out_word
+    li      a0, 0x015E9E93
+    CALL    out_word
+    li      a0, 0x00B3DF13
+    CALL    out_word
+    li      a0, 0x001F7F13
+    CALL    out_word
+    li      a0, 0x014F1F13
+    CALL    out_word
+    li      a0, 0x01EEEEB3
+    CALL    out_word
+    li      a0, 0x00C3DF13
+    CALL    out_word
+    li      a0, 0x0FFF7F13
+    CALL    out_word
+    li      a0, 0x00CF1F13
+    CALL    out_word
+    li      a0, 0x01EEEEB3
+    CALL    out_word
+    li      a0, 0x06FEEE93
+    CALL    out_word
+    li      a0, 0x01DE2023
+    CALL    out_word
+    li      a0, 0x0800006F
+    CALL    out_word
+    li      a0, 0x6C6D6166
+    CALL    out_word
+    li      a0, 0x66203A64
+    CALL    out_word
+    li      a0, 0x74636E75
+    CALL    out_word
+    li      a0, 0x736E6F69
+    CALL    out_word
+    li      a0, 0x61687420
+    CALL    out_word
+    li      a0, 0x61632074
+    CALL    out_word
+    li      a0, 0x65206C6C
+    CALL    out_word
+    li      a0, 0x20686361
+    CALL    out_word
+    li      a0, 0x6568746F
+    CALL    out_word
+    li      a0, 0x72612072
+    CALL    out_word
+    li      a0, 0x766F2065
+    CALL    out_word
+    li      a0, 0x31207265
+    CALL    out_word
+    li      a0, 0x42694D20
+    CALL    out_word
+    li      a0, 0x61706120
+    CALL    out_word
+    li      a0, 0x000A7472
+    CALL    out_word
+    li      a0, 0x00000397
+    CALL    out_word
+    li      a0, 0xFC438393
+    CALL    out_word
+    li      a0, 0x10000E37
+    CALL    out_word
+    li      a0, 0x0003CE83
+    CALL    out_word
+    li      a0, 0x000E8E63
+    CALL    out_word
+    li      a0, 0x005E4F03
+    CALL    out_word
+    li      a0, 0x020F7F13
+    CALL    out_word
+    li      a0, 0xFE0F0CE3
+    CALL    out_word
+    li      a0, 0x01DE0023
+    CALL    out_word
+    li      a0, 0x00138393
+    CALL    out_word
+    li      a0, 0xFE5FF06F
+    CALL    out_word
+    li      a0, 0x00100E37
+    CALL    out_word
+    li      a0, 0x00013EB7
+    CALL    out_word
+    li      a0, 0x333E8E93
+    CALL    out_word
+    li      a0, 0x01DE2023
+    CALL    out_word
+    li      a0, 0x0000006F
+    CALL    out_word
+    # append ";\n"
+    li      a0, ';' | 0x0A<<8
+    CALL    out4
+1:  RET
 
 # out_ch -- a0 = character; append it to the output buffer [s7, gp).
 out_ch:
@@ -604,20 +911,6 @@ out4:
     srli    a0, a0, 8
     j       1b
 2:  RET
-
-# flush -- write the output buffer [s7, s8) to the UART.
-flush:
-    li      t2, 0x10000000
-    mv      t3, s7
-1:  bgeu    t3, s8, 3f
-2:  lbu     t4, 5(t2)
-    andi    t4, t4, 0x20
-    beqz    t4, 2b
-    lbu     t4, 0(t3)
-    sb      t4, 0(t2)
-    addi    t3, t3, 1
-    j       1b
-3:  RET
 
 # --- errors: "famld: <what>[: <name>][ in <function>]", then exit 1 --------
 
@@ -699,6 +992,31 @@ err_big:
     li      a0, 'm' | 'o'<<8 | 'r'<<16 | 'y'<<24
     CALL    uput4
     j       err_end
+err_stubs:
+    # say "famld: too many functions call each other"
+    li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
+    CALL    uput4
+    li      a0, 'd' | ':'<<8 | ' '<<16 | 't'<<24
+    CALL    uput4
+    li      a0, 'o' | 'o'<<8 | ' '<<16 | 'm'<<24
+    CALL    uput4
+    li      a0, 'a' | 'n'<<8 | 'y'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'f' | 'u'<<8 | 'n'<<16 | 'c'<<24
+    CALL    uput4
+    li      a0, 't' | 'i'<<8 | 'o'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 's' | ' '<<8 | 'c'<<16 | 'a'<<24
+    CALL    uput4
+    li      a0, 'l' | 'l'<<8 | ' '<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, 'a' | 'c'<<8 | 'h'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'o' | 't'<<8 | 'h'<<16 | 'e'<<24
+    CALL    uput4
+    li      a0, 'r'
+    CALL    uput4
+    j       err_end
 err_deep:
     # say "famld: calls nested too deep"
     li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
@@ -746,37 +1064,6 @@ err_undef:                              # a2 = the symbol
     li      a0, 'n' | 'd'<<8 | 'e'<<16 | 'f'<<24
     CALL    uput4
     li      a0, 'i' | 'n'<<8 | 'e'<<16 | 'd'<<24
-    CALL    uput4
-    li      a0, ':' | ' '<<8
-    CALL    uput4
-    lw      a0, 0(a4)
-    lw      a1, 4(a4)
-    CALL    uput_tok
-    j       err_in
-err_cycle:                              # a2 = the function called
-    mv      a4, a2
-    # say "famld: mutual recursion is not supported yet: "
-    li      a0, 'f' | 'a'<<8 | 'm'<<16 | 'l'<<24
-    CALL    uput4
-    li      a0, 'd' | ':'<<8 | ' '<<16 | 'm'<<24
-    CALL    uput4
-    li      a0, 'u' | 't'<<8 | 'u'<<16 | 'a'<<24
-    CALL    uput4
-    li      a0, 'l' | ' '<<8 | 'r'<<16 | 'e'<<24
-    CALL    uput4
-    li      a0, 'c' | 'u'<<8 | 'r'<<16 | 's'<<24
-    CALL    uput4
-    li      a0, 'i' | 'o'<<8 | 'n'<<16 | ' '<<24
-    CALL    uput4
-    li      a0, 'i' | 's'<<8 | ' '<<16 | 'n'<<24
-    CALL    uput4
-    li      a0, 'o' | 't'<<8 | ' '<<16 | 's'<<24
-    CALL    uput4
-    li      a0, 'u' | 'p'<<8 | 'p'<<16 | 'o'<<24
-    CALL    uput4
-    li      a0, 'r' | 't'<<8 | 'e'<<16 | 'd'<<24
-    CALL    uput4
-    li      a0, ' ' | 'y'<<8 | 'e'<<16 | 't'<<24
     CALL    uput4
     li      a0, ':' | ' '<<8
     CALL    uput4
