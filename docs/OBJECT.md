@@ -110,29 +110,15 @@ A function's code does not include its return: the linker ends each
 function with the core's `;`. A function that returns early jumps to the
 end of its own code.
 
-## Looking at an object
+## An example
 
-`famc --dump FILE.o` prints an object as text, a record at a time:
+An object with two functions: `math.answer`, whose code is the one word
+`1305A002` (`addi a0,zero,42`), and `main`, whose code is one call site,
+for `math.answer`.
 
-```
-fn math.answer
-1305A002
-end
-fn main
-@math.answer
-end
-```
-
-| Line | Meaning |
-|---|---|
-| `fn NAME`, `local NAME`, `init` | A function, a local function or an init record starts. `end` ends it. |
-| `XXXXXXXX` | Four bytes of code, in memory order. `addi sp,sp,-4` is the word `0xFFC10113`, printed `1301C1FF`. |
-| `@NAME` | A call site for the function `NAME`. |
-| `&NAME` | An id site for the function `NAME`. |
-
-The object above is 124 bytes: the header, two symbols, one call site, 32
-bytes of code (4 for `math.answer`, 28 for the call site in `main`) and 16
-bytes of names.
+It is 124 bytes: the header, two symbols, one call site, 32 bytes of code
+(4 for `math.answer`, 28 for the call site in `main`) and 16 bytes of
+names.
 
 ## Linking
 

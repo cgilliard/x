@@ -13,21 +13,27 @@
 # (docs/OBJECT.md).  Linking adds the runtime (lib/rt.fam).  An error is
 # reported as FILE:LINE: WHAT.
 #
-# Two more things it does:
-#   famc --dump FILE.o              print what is in an object
+# One more thing it does:
 #   famc --pack BINARY -o PACKED    pack a binary into one that unpacks itself
 #
 # It runs the programs scripts/build.sh puts in bin/ -- famc (the compiler
-# proper), famld and the core -- one after another, each under QEMU
-# (tools/q32).  MEM and CPU as for q32; CORE names another core than bin/fam.
+# proper), famld and the core -- one after another, each under QEMU.  MEM
+# and CPU set the machine, as for tools/q32; CORE names another core than
+# bin/fam.
+#
+# It needs qemu-system-riscv32, cat, mktemp and rm (and wc for --pack).
 
-root=$(cd "$(dirname "$0")/.." && pwd) || exit 1
+# the repository's root: this file is in its tools/
+case $0 in */*) root=${0%/*}/.. ;; *) root=.. ;; esac
 bin=$root/bin
 : "${CORE:=$bin/fam}"
+: "${MEM:=128M}"
+: "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
+zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
+zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
         echo "usage: famc [-c] [--test] [-o OUTPUT] FILE...
-       famc --dump FILE.o
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
@@ -39,7 +45,6 @@ while [ $# -gt 0 ]; do
         -c)     only=1 ;;
         -o)     [ $# -ge 2 ] || usage; out=$2; shift ;;
         --test) testing=1 ;;
-        --dump) mode=dump ;;
         --pack) mode=pack ;;
         -*)     usage ;;
         *)      case $1 in *" "*) die "no spaces in file names: $1" ;; esac
@@ -54,44 +59,47 @@ set -- $files
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
+# qemu IMAGE -- run a program under QEMU: it reads $tmp/in from the serial
+# port, and what it writes there goes to $tmp/result.  Its exit status is
+# the program's.
+qemu() {
+        qemu-system-riscv32 \
+                -machine virt -m "$MEM" -cpu "$CPU" \
+                -display none -bios none \
+                -chardev file,id=ser0,path="$tmp/result",input-path="$tmp/in" \
+                -serial chardev:ser0 \
+                -device loader,file="$1",addr=0x80000000
+}
+
 # tool IMAGE OUTPUT INPUT... -- run one of the programs over the inputs.  If
-# it fails, what it wrote is its message: print that, with "name: line N:"
-# turned into "INPUT:N:", and leave no OUTPUT.  $pre, if set, goes first.
-# (The four 0x04 bytes end a list of objects; one ends a text.)
+# it fails, what it wrote is its message: print that, and leave OUTPUT as it
+# was.  $pre, if set, goes first.  (The four 0x04 bytes end a list of
+# objects; one ends a text.)
 pre=
 tool() {
         t_image=$1; t_out=$2; shift 2
         { [ -z "$pre" ] || printf '%s\n' "$pre"
           cat "$@"; printf '\004\004\004\004'
-        } | "$root/tools/q32" "$t_image" > "$tmp/result"
-        if [ $? -ne 0 ]; then
-                sed "s|^fam[a-z]*: line \\([0-9]*\\): |$1:\\1: |" "$tmp/result" >&2
-                rm -f "$t_out"
+        } > "$tmp/in"
+        if ! qemu "$t_image"; then
+                cat "$tmp/result" >&2
                 return 1
         fi
-        cp "$tmp/result" "$t_out"
+        cat "$tmp/result" > "$t_out"
 }
 
-case $mode in
-dump)
-        [ $# -eq 1 ] || usage
-        od -An -v -tu1 "$1" | awk -f "$root/scripts/dump.awk"
-        exit $?
-        ;;
-pack)
+if [ $mode = pack ]; then
         [ $# -eq 1 ] && [ -n "$out" ] || usage
         # bin/fampack reads the size as four bytes, lowest first, then the binary
         n=$(wc -c < "$1") || exit 1
         { printf "$(printf '\\%03o' $((n & 255)) $(((n >> 8) & 255)) \
                         $(((n >> 16) & 255)) $(((n >> 24) & 255)))"
           cat "$1"
-        } | "$root/tools/q32" "$bin/fampack" > "$tmp/packed" &&
-                [ "$(head -c 4 "$tmp/packed" | od -An -tx1 | tr -d ' \n')" = "13000000" ] ||
-                die "packing $1 failed: $(head -c 80 "$tmp/packed" | tr -d '\0')"
-        cp "$tmp/packed" "$out"
+        } > "$tmp/in"
+        qemu "$bin/fampack" || { cat "$tmp/result" >&2; die "packing $1 failed"; }
+        cat "$tmp/result" > "$out"
         exit $?
-        ;;
-esac
+fi
 
 [ -z "$only" ] || [ -z "$out" ] || [ $# -eq 1 ] || die "-c with -o takes one file"
 
@@ -110,8 +118,9 @@ for f; do
                 obj=$out
                 [ -n "$obj" ] || { obj=${f##*/}; obj=${obj%.*}.o; }
         fi
-        # to bin/famc, a first line of the byte 0x01 and the file's name
-        # asks for the tests
+        # bin/famc is told the file's name, for its messages, in a first
+        # line that starts with the byte 0x02, or 0x01 to ask for the tests
+        pre=$(printf '\002%s' "$f")
         [ -z "$testing" ] || pre=$(printf '\001%s' "$f")
         tool "$bin/famc" "$obj" "$f" || exit 1
         pre=
@@ -120,8 +129,8 @@ done
 [ -z "$only" ] || exit 0
 
 # Link.  The runtime comes first, for its startup code, and the call of
-# main (or the tests' report) last: init records run in the order given.  The linker writes text for
-# the core, which makes the binary.
+# main (or the tests' report) last: init records run in the order given.
+# The linker writes text for the core, which makes the binary.
 last=$bin/rtmain.o; [ -z "$testing" ] || last=$bin/rttest.o
 [ -r "$CORE" ] || die "no $CORE: run scripts/build.sh first"
 tool "$bin/famld" "$tmp/core" "$bin/rt.o" $objs "$last" || exit 1

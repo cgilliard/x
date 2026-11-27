@@ -94,9 +94,13 @@
 # a symbol `f` of kind 0x100, and resolve settles it when the whole file has
 # been read.
 #
-# Tests.  If the source starts with the byte 0x01, that and the rest of its
-# first line are not source: the line is the file's name, and the tests are
-# wanted (`tools/famc --test`).  Each test block then becomes an init
+# The file's name.  If the source starts with the byte 0x01 or 0x02, that
+# and the rest of its first line are not source: the line is the file's
+# name, as tools/famc sends it.  Errors are then reported as
+# "NAME:LINE: what"; without a name, as "famc: line LINE: what".
+#
+# Tests.  If that first byte is 0x01, the tests are wanted
+# (`tools/famc --test`).  Each test block then becomes an init
 # record, so it runs at startup, in order (lib/rt.fam has the functions):
 #         __test_begin(name, file)
 #         the block; a failed assert calls __test_fail(line) and jumps
@@ -125,8 +129,8 @@
 .equ V_PRO,   -32       # where its first three instructions are
 .equ V_TEST,  -36       # 1 while compiling a test block
 .equ V_MODE,  -40       # 1 if tests are wanted
-.equ V_FILE,  -44       # then: where the file's name starts
-.equ V_FEND,  -48       #       and ends
+.equ V_FILE,  -44       # where the file's name starts (0: not given)
+.equ V_FEND,  -48       #   and ends
 .equ V_MOD,   -52       # where this file's module name starts
 .equ V_MODLEN, -56      #   and its length (0: the root module)
 .equ V_ITOP,  -60       # the imports: next free entry
@@ -304,10 +308,13 @@ _start:
     add     t0, sp, t0
     sw      t0, V_ITOP(s4)              # the imports, after the locals
     sw      zero, V_MODE(s4)
-    bgeu    s1, s2, 3f                  # 0x01 and the file's name first?
-    lbu     t2, 0(s1)
-    li      t3, 1
-    bne     t2, t3, 3f
+    sw      zero, V_FILE(s4)
+    bgeu    s1, s2, 3f                  # 0x01 or 0x02 and the file's name
+    lbu     t2, 0(s1)                   # first?
+    addi    t3, t2, -1
+    li      t4, 2
+    bgeu    t3, t4, 3f
+    sltiu   t3, t3, 1                   # 0x01: and the tests are wanted
     sw      t3, V_MODE(s4)
     addi    s1, s1, 1
     sw      s1, V_FILE(s4)
@@ -2285,16 +2292,25 @@ o_write:
     CALL    uput_tok
     RET
 
-# err_line -- write "<program>: line N: " for the line in s3 (err_pfx
-#   writes the program's part).  Clobbers a0, a4, a5, t2-t5.
+# err_line -- write where an error is, the line in s3: "FILE:N: " if the
+#   file's name is known (V_FILE), else "<program>: line N: " (err_pfx
+#   writes the program's part).  Clobbers a0, a1, a4, a5, t2-t5.
 err_line:
-    CALL    err_pfx
+    lw      a0, V_FILE(s4)
+    beqz    a0, 1f
+    lw      a1, V_FEND(s4)
+    sub     a1, a1, a0
+    CALL    uput_tok
+    li      a0, ':'
+    CALL    uput4
+    j       2f
+1:  CALL    err_pfx
     # say "line "
     li      a0, 'l' | 'i'<<8 | 'n'<<16 | 'e'<<24
     CALL    uput4
     li      a0, ' '
     CALL    uput4
-    mv      a4, s3
+2:  mv      a4, s3
     li      a5, 0
     DEC_DIGIT 1000000000
     DEC_DIGIT 100000000
