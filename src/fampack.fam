@@ -1,0 +1,233 @@
+// MIT License
+//
+// Copyright (c) 2026 Christopher Gilliard
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+//
+// fampack -- pack a binary into one that unpacks itself and runs.
+//
+// It reads, from the console:   4 bytes, the size N (lowest byte first)
+//                               N bytes, the binary
+// and writes the packed binary:
+//     16 bytes   a nop (the mark of a fam binary), a jump over the next two
+//                words, the size of the packed data, and N
+//     260 bytes  the unpacker (below)
+//     the rest   the packed data
+//
+// The packed data is groups of eight items, each group after one byte of
+// flags, the first item's flag in the top bit:
+//     flag 1     one byte, as it is
+//     flag 0     two bytes: a copy of 3 to 18 bytes that came 1 to 4096
+//                bytes earlier.  The first byte is the low 8 bits of the
+//                distance less 1; the second has the other 4 bits of that
+//                in its low half and the length less 3 in its high half.
+// The last group may have fewer items, its flags padded with zeros.
+//
+// For each position the packer tries every distance and takes the longest
+// copy, the farthest of those: slow, simple, and enough for binaries of a
+// few thousand bytes.
+//
+// Built by scripts/build.sh, which uses it to pack bin/fam.uncompressed
+// into bin/fam.
+
+// The unpacker, as machine code with its addresses when loaded at
+// 0x80000000.  It copies the packed data up to 0x84800000, unpacks it to
+// 0x80001000 and jumps there, so what is packed must run at that address
+// (the core's output runs anywhere).  A hart other than the first waits
+// for the word "FAM!" below the copy, which the first writes when it is
+// done, and then jumps too.
+fn unpacker() {
+    return bytes {
+        F32240F1    // 010: csrr t0,mhartid
+        63820202    // 014: beqz t0,80000038
+        B7028084    // 018: lui t0,0x84800
+        03A3C2FF    // 01c: lw t1,-4(t0) # 847ffffc
+        B7434D21    // 020: lui t2,0x214d4
+        93836314    // 024: addi t2,t2,326 # 214d4146
+        E31873FE    // 028: bne t1,t2,80000018
+        0F00F00F    // 02c: fence
+        B7120080    // 030: lui t0,0x80001
+        67800200    // 034: jr t0 # 80001000
+        B7020080    // 038: lui t0,0x80000
+        03A38200    // 03c: lw t1,8(t0) # 80000008
+        93834211    // 040: addi t2,t0,276
+        370E8084    // 044: lui t3,0x84800
+        B38E6300    // 048: add t4,t2,t1
+        638CD301    // 04c: beq t2,t4,80000064
+        03C50300    // 050: lbu a0,0(t2)
+        2300AE00    // 054: sb a0,0(t3) # 84800000
+        93831300    // 058: addi t2,t2,1
+        130E1E00    // 05c: addi t3,t3,1
+        6FF0DFFE    // 060: j 8000004c
+        03A3C200    // 064: lw t1,12(t0)
+        B7038084    // 068: lui t2,0x84800
+        371E0080    // 06c: lui t3,0x80001
+        B30E6E00    // 070: add t4,t3,t1
+        130F0000    // 074: li t5,0
+        930F0000    // 078: li t6,0
+        630EDE07    // 07c: beq t3,t4,800000f8
+        63980F00    // 080: bnez t6,80000090
+        03CF0300    // 084: lbu t5,0(t2) # 84800000
+        93831300    // 088: addi t2,t2,1
+        930F8000    // 08c: li t6,8
+        13750F08    // 090: andi a0,t5,128
+        131F1F00    // 094: slli t5,t5,0x1
+        938FFFFF    // 098: addi t6,t6,-1
+        630C0500    // 09c: beqz a0,800000b4
+        03C50300    // 0a0: lbu a0,0(t2)
+        2300AE00    // 0a4: sb a0,0(t3) # 80001000
+        93831300    // 0a8: addi t2,t2,1
+        130E1E00    // 0ac: addi t3,t3,1
+        6FF0DFFC    // 0b0: j 8000007c
+        83C50300    // 0b4: lbu a1,0(t2)
+        03C61300    // 0b8: lbu a2,1(t2)
+        93832300    // 0bc: addi t2,t2,2
+        9376F600    // 0c0: andi a3,a2,15
+        93968600    // 0c4: slli a3,a3,0x8
+        B3E5D500    // 0c8: or a1,a1,a3
+        93851500    // 0cc: addi a1,a1,1
+        93564600    // 0d0: srli a3,a2,0x4
+        93863600    // 0d4: addi a3,a3,3
+        3307BE40    // 0d8: sub a4,t3,a1
+        E38006FA    // 0dc: beqz a3,8000007c
+        83470700    // 0e0: lbu a5,0(a4)
+        2300FE00    // 0e4: sb a5,0(t3)
+        13071700    // 0e8: addi a4,a4,1
+        130E1E00    // 0ec: addi t3,t3,1
+        9386F6FF    // 0f0: addi a3,a3,-1
+        6FF09FFE    // 0f4: j 800000dc
+        0F00F00F    // 0f8: fence
+        B7028084    // 0fc: lui t0,0x84800
+        37434D21    // 100: lui t1,0x214d4
+        13036314    // 104: addi t1,t1,326 # 214d4146
+        23AE62FE    // 108: sw t1,-4(t0) # 847ffffc
+        B7120080    // 10c: lui t0,0x80001
+        67800200    // 110: jr t0 # 80001000
+    };
+}
+
+fn read32() {
+    let v = getc();
+    v = v | getc() << 8;
+    v = v | getc() << 16;
+    return v | getc() << 24;
+}
+
+// putc writes the low byte of what it is given.
+fn write32(v) {
+    putc(v);
+    putc(v >> 8);
+    putc(v >> 16);
+    putc(v >> 24);
+}
+
+// Append a group -- its flags, then the bytes of its items -- to the packed
+// data, which has `size` bytes; the new size.
+fn add_group(packed, size, flags, items, items_size) {
+    store8(packed + size, flags);
+    size = size + 1;
+    let k = 0;
+    while k < items_size {
+        store8(packed + size, load8(items + k));
+        size = size + 1;
+        k = k + 1;
+    }
+    return size;
+}
+
+fn main() {
+    let n = read32();
+    let input = alloc(n);
+    let i = 0;
+    while i < n {
+        store8(input + i, getc());
+        i = i + 1;
+    }
+
+    let packed = alloc(n + (n >> 3) + 32);      // at worst a ninth larger
+    let size = 0;
+    let items = alloc(16);                      // the group being filled
+    let items_size = 0;
+    let flags = 0;
+    let count = 0;
+
+    i = 0;
+    while i < n {
+        let here = input + i;
+        let max = n - i;                        // the longest copy possible
+        if max > 18 { max = 18; }
+        let j = i - 4096;                       // the farthest place to copy from
+        if j < 0 { j = 0; }
+        let best = 0;
+        let best_at = 0;
+        while j < i {
+            let there = input + j;
+            let len = 0;
+            while len < max && load8(there + len) == load8(here + len) {
+                len = len + 1;
+            }
+            if len > best {
+                best = len;
+                best_at = j;
+            }
+            j = j + 1;
+        }
+
+        flags = flags << 1;
+        if best < 3 {
+            flags = flags | 1;
+            store8(items + items_size, load8(here));
+            items_size = items_size + 1;
+            i = i + 1;
+        } else {
+            let distance = i - best_at - 1;
+            store8(items + items_size, distance);
+            store8(items + items_size + 1, (distance >> 8 & 15) | (best - 3) << 4);
+            items_size = items_size + 2;
+            i = i + best;
+        }
+        count = count + 1;
+        if count == 8 {
+            size = add_group(packed, size, flags, items, items_size);
+            items_size = 0;
+            flags = 0;
+            count = 0;
+        }
+    }
+    if count > 0 {
+        size = add_group(packed, size, flags << (8 - count), items, items_size);
+    }
+
+    write32(0x00000013);                        // nop
+    write32(0x00C0006F);                        // j +12
+    write32(size);
+    write32(n);
+    let code = unpacker();
+    i = 0;
+    while i < 260 {
+        putc(load8(code + i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < size {
+        putc(load8(packed + i));
+        i = i + 1;
+    }
+    return 0;
+}

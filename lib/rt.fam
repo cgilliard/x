@@ -52,6 +52,20 @@ pub fn print_hex(n) {
     }
 }
 
+// ---- input ----------------------------------------------------------------
+
+// getc(): the next byte from the console.  Waits until there is one.
+pub fn getc() {
+    asm {
+        B7030010    // lui t2,0x10000
+        // wait:
+        03CE5300    // lbu t3,5(t2)
+        137E1E00    // andi t3,t3,1
+        E30C0EFE    // beqz t3,wait
+        03C50300    // lbu a0,0(t2)
+    }
+}
+
 // ---- leaving --------------------------------------------------------------
 
 // exit(code): end the program.  The low 8 bits of the code reach the shell.
@@ -85,6 +99,25 @@ pub fn panic(message) {
 
 // ---- memory ---------------------------------------------------------------
 
+// alloc(size): the address of a new piece of memory of that many bytes,
+// for the program to keep.  Nothing gives it back.  The pieces come from
+// the space below the stack; running into the stack is a panic.
+pub fn alloc(size) {
+    let v = __vars();
+    let piece = load32(v + 20);
+    let next = piece + ((size + 15) & ~15);
+    if size < 0 || __sp() - next < 65536 { panic("out of memory"); }
+    store32(v + 20, next);
+    return piece;
+}
+fn __sp() {
+    asm {
+        13050100    // mv a0,sp
+    }
+}
+
+// The compiler turns calls of these four into single instructions; the
+// functions are here for `&load8` and the like.
 // load8(address), load32(address): the byte (0 to 255) or word there.
 pub fn load8(address) {
     asm {
@@ -211,6 +244,7 @@ pub fn __rem_bits(a, b) {
 //     +0   tests passed            +4   tests failed
 //     +8   the running test's name +12  its file
 //     +16  1 once it has failed
+//     +20  where alloc's next piece goes
 pub fn __vars() {
     asm {
         13050200    // mv a0,tp

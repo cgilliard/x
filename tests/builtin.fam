@@ -1,0 +1,19 @@
+// exit: 0
+// output: 65 66 1094795585 9\n
+// load and store compile to single instructions; through an id they are
+// the library's functions, and do the same.
+fn main() {
+    let p = alloc(8);
+    store32(p, 0x41414141);
+    store8(p + 1, 66);
+    print_int(load8(p)); putc(32);
+    print_int(load8(p + 1)); putc(32);
+    let f = &load32;
+    store8(p + 1, 65);
+    print_int(f(p)); putc(32);
+    let g = &store8;
+    g(p, 9);
+    print_int(load8(p));
+    putc(10);
+    return 0;
+}

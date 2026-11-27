@@ -44,6 +44,7 @@
 #                   * / %
 #     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
 #               | "&" [ NAME "." ] NAME         a function's id
+#               | "bytes" "{" { HEXBYTES } "}"  data; its value is its address
 #               | [ NAME "." ] NAME "(" [ expr { "," expr } ] ")"
 #               | "(" expr ")"
 #     NAME      = a letter or '_', then letters, digits, '_'
@@ -51,6 +52,7 @@
 #     STRING    = "..." with \n \t \0 \\ \" for a newline, a tab, a zero
 #                 byte, a backslash and a quote; its value is its address
 #     HEXWORD   = eight uppercase hex digits: four bytes of code
+#     HEXBYTES  = uppercase hex digits, two for each byte
 #     // starts a comment that runs to the end of the line
 #
 # The code it writes (docs/OBJECT.md, "Calling convention"):
@@ -70,6 +72,9 @@
 #   - `&f` is an id site: the linker fills in the two instructions that
 #     load f's id.  A call `p(...)` where p is a local is a call through an
 #     id: a call to __call, which the linker writes, with the id in t2.
+#   - `bytes { ... }` is laid down like a string, without the zero byte.
+#   - load8, load32, store8 and store32 are not calls but one instruction
+#     each, on a0 (and a1).
 #   - `return` jumps to the code at the function's end that drops the frame.
 #     A function that runs off its end returns whatever is in a0.
 #
@@ -979,6 +984,17 @@ unary:
     beq     t2, t3, .Lu_call
     li      t3, '.'
     beq     t2, t3, .Lu_qual
+    li      t3, '{'
+    bne     t2, t3, 1f
+    mv      a4, a0                      # bytes { ... } ?
+    lw      a0, 0(sp)
+    lw      a1, 4(sp)
+    CALL    pack_tok
+    mv      a0, a4
+    li      t2, 'b' | 'y'<<8 | 't'<<16 | 'e'<<24
+    bne     a2, t2, 1f
+    li      t2, 's'
+    beq     a3, t2, .Lu_bytes
 1:  mv      s1, a0                      # else a local
     lw      a0, 0(sp)
     lw      a1, 4(sp)
@@ -989,6 +1005,65 @@ unary:
 
     # A call: each argument's value into a temporary; then the first eight
     # into a0 to a7 and the rest into the frame's low end; then the call.
+    # bytes { HEXBYTES ... }: as a string, `jal a0, <past it>` and the
+    # bytes, with zero bytes up to a whole word.  a4 = the word being
+    # filled, a5 = how many bytes it has, a2/a3 = the digits left of a token.
+.Lu_bytes:
+    addi    sp, sp, 8                   # (keep one word of the frame)
+    li      a0, 0x56F                   # jal a0, 0
+    CALL    o_word
+    addi    t2, s9, -4
+    sw      t2, 0(sp)
+    li      a4, 0
+    li      a5, 0
+1:  CALL    lex
+    beqz    a6, err_syntax
+    li      t2, 3
+    bne     a6, t2, 2f
+    lbu     t2, 0(a0)
+    li      t3, '}'
+    bne     t2, t3, err_syntax
+    beqz    a5, 6f                      # the end: the last word, if begun
+    mv      a0, a4
+    CALL    o_word
+6:  lw      a0, 0(sp)
+    addi    sp, sp, 4
+    mv      a1, s9
+    li      a2, 0x56F
+    j       patch_jal
+2:  andi    t2, a1, 1                   # hex digits, in pairs
+    bnez    t2, err_token
+    mv      a2, a0
+    add     a3, a0, a1
+3:  bgeu    a2, a3, 1b
+    li      t6, 0                       # t6 = the byte: two digits
+    li      t2, 2
+4:  lbu     t3, 0(a2)
+    addi    a2, a2, 1
+    addi    t4, t3, -'0'
+    li      t5, 10
+    bltu    t4, t5, 5f
+    addi    t4, t3, -'A'
+    li      t5, 6
+    bgeu    t4, t5, err_token
+    addi    t4, t4, 10
+5:  slli    t6, t6, 4
+    or      t6, t6, t4
+    addi    t2, t2, -1
+    bnez    t2, 4b
+    slli    t4, a5, 3
+    sll     t6, t6, t4
+    or      a4, a4, t6
+    addi    a5, a5, 1
+    li      t4, 4
+    bltu    a5, t4, 3b
+    mv      a6, a0                      # a whole word
+    mv      a0, a4
+    CALL    o_word
+    mv      a0, a6
+    li      a4, 0
+    li      a5, 0
+    j       3b
 .Lu_qual:                               # module . name (
     lw      a0, 0(sp)
     lw      a1, 4(sp)
@@ -1012,7 +1087,26 @@ unary:
     addi    a3, a3, 1
     sw      a3, 4(sp)
     j       1f
-3:  sw      zero, 4(sp)
+3:  CALL    pack_tok                    # one of the four built in?
+    li      a4, -1
+    li      t2, 'l' | 'o'<<8 | 'a'<<16 | 'd'<<24
+    bne     a2, t2, 4f
+    li      t2, '8'
+    beq     a3, t2, 5f
+    li      a4, -2
+    li      t2, '3' | '2'<<8
+    beq     a3, t2, 5f
+4:  li      t2, 's' | 't'<<8 | 'o'<<16 | 'r'<<24
+    bne     a2, t2, 6f
+    li      a4, -3
+    li      t2, 'e' | '8'<<8
+    beq     a3, t2, 5f
+    li      a4, -4
+    li      t2, 'e' | '3'<<8 | '2'<<16
+    bne     a3, t2, 6f
+5:  sw      a4, 4(sp)                   # [-, minus which, arguments]
+    j       1f
+6:  sw      zero, 4(sp)
     li      a5, 0
     lw      t2, V_MODLEN(s4)
     beqz    t2, 2f
@@ -1075,7 +1169,23 @@ unary:
     sw      t2, V_OUT(s4)
 8:  lw      a3, 4(sp)
     beqz    a3, 9f
-    addi    a3, a3, -1                  # through an id: lw t2, <its slot>
+    bgez    a3, 5f
+    addi    sp, sp, 12                  # built in: one instruction
+    li      t2, 1                       # the loads take one argument,
+    li      a0, 0x00054503              # lbu a0, 0(a0)
+    li      t3, -1
+    beq     a3, t3, 4f
+    li      a0, 0x00052503              # lw a0, 0(a0)
+    li      t3, -2
+    beq     a3, t3, 4f
+    li      t2, 2                       # the stores two
+    li      a0, 0x00B50023              # sb a1, 0(a0)
+    li      t3, -3
+    beq     a3, t3, 4f
+    li      a0, 0x00B52023              # sw a1, 0(a0)
+4:  bne     a7, t2, err_args
+    j       o_word
+5:  addi    a3, a3, -1                  # through an id: lw t2, <its slot>
     li      a2, 7
     CALL    e_lw_slot
     addi    sp, sp, 12
@@ -1821,6 +1931,24 @@ err_long:
     li      a0, ' ' | 'l'<<8 | 'o'<<16 | 'n'<<24
     CALL    uput4
     li      a0, 'g'
+    CALL    uput4
+    j       err_end
+err_args:
+    CALL    err_line
+    # say "wrong number of arguments"
+    li      a0, 'w' | 'r'<<8 | 'o'<<16 | 'n'<<24
+    CALL    uput4
+    li      a0, 'g' | ' '<<8 | 'n'<<16 | 'u'<<24
+    CALL    uput4
+    li      a0, 'm' | 'b'<<8 | 'e'<<16 | 'r'<<24
+    CALL    uput4
+    li      a0, ' ' | 'o'<<8 | 'f'<<16 | ' '<<24
+    CALL    uput4
+    li      a0, 'a' | 'r'<<8 | 'g'<<16 | 'u'<<24
+    CALL    uput4
+    li      a0, 'm' | 'e'<<8 | 'n'<<16 | 't'<<24
+    CALL    uput4
+    li      a0, 's'
     CALL    uput4
     j       err_end
 err_assert:

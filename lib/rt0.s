@@ -7,7 +7,7 @@
 # is lib/rtmain.s (call main and exit) or lib/rttest.s (report the tests).
 # The rest of the runtime is lib/rt.fam.
 #
-#   image | variables | return ids | guard page | ... stack ... | device tree
+#   image | variables | return ids | guard page | heap > ... < stack | device tree
 #         tp          s10          s11 at first                sp at first
 #
 # On entry gp = the image's end (the core's doing) and a1 = the address of
@@ -44,6 +44,12 @@ B383A541    # sub t2,a1,s10
 93D30301    # srli t2,t2,0x10
 9393C300    # slli t2,t2,0xc
 B30D7D00    # add s11,s10,t2
+
+# What alloc hands out starts above the guard page and grows up, toward the
+# stack: variable 20 is where the next piece goes.
+B7130000    # lui t2,0x1
+B3837D00    # add t2,s11,t2
+232A7200    # sw t2,20(tp)
 
 # The page above them is a guard: a locked PMP entry makes any access to it
 # trap, so a stack that grows down into it is caught.  The trap code finds

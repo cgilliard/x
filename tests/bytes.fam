@@ -1,0 +1,19 @@
+// exit: 0
+// output: 19 0 111 192 | 305419896 | abc | 7\n
+fn main() {
+    let d = bytes { 13 00 006FC0 00 0000
+                    78563412 };         // any grouping; two digits a byte
+    print_int(load8(d)); putc(32);
+    print_int(load8(d + 1)); putc(32);
+    print_int(load8(d + 3)); putc(32);
+    print_int(load8(d + 4));
+    print(" | ");
+    print_int(load32(d + 8));
+    print(" | ");
+    print(bytes { 61 62 63 00 });
+    print(" | ");
+    let one = bytes { 07 };             // padded with zero bytes to a word
+    print_int(load32(one));
+    putc(10);
+    return 0;
+}

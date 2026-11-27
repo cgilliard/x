@@ -1,0 +1,19 @@
+// exit: 0
+// output: 16 1 4950 0\n
+fn main() {
+    let a = alloc(10);
+    let b = alloc(100);
+    print_int(b - a); putc(32);         // pieces are 16 bytes apart at least
+    print_int((a & 15) == 0); putc(32);
+    let i = 0;
+    while i < 100 { store8(b + i, i); i = i + 1; }
+    let sum = 0;
+    i = 0;
+    while i < 100 { sum = sum + load8(b + i); i = i + 1; }
+    print_int(sum); putc(32);
+    let big = alloc(4000000);           // 4 MB is fine
+    store32(big + 3999996, 7);
+    print_int(load32(big + 3999996) - 7);
+    putc(10);
+    return 0;
+}

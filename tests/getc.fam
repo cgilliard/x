@@ -1,0 +1,13 @@
+// exit: 0
+// input: hello\n
+// output: HELLO\n
+// Read a line and write it in capitals.
+fn main() {
+    let c = getc();
+    while c != 10 {
+        putc(c - 32);
+        c = getc();
+    }
+    putc(10);
+    return 0;
+}

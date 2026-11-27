@@ -4,8 +4,11 @@
 #   fam.sh cc   [--test] SOURCE OBJECT      compile one source file to an object
 #   fam.sh as   TEXT OBJECT                 assemble the text form of an object
 #   fam.sh ld   [--test] BINARY OBJECT...   link objects and the runtime to a binary
-#   fam.sh run  BINARY                      run a binary; its exit code is ours
+#   fam.sh run  BINARY [INPUT]              run a binary; its exit code is ours;
+#                                           the file INPUT is what it reads
 #   fam.sh test SOURCE...                   compile, link and run the sources' tests
+#   fam.sh pack BINARY PACKED               pack a binary into one that unpacks
+#                                           itself (src/fampack.fam)
 #   fam.sh dump OBJECT                      print an object in its text form
 #
 # With --test, cc compiles the `test` blocks (otherwise skipped) and ld makes
@@ -20,6 +23,9 @@ cd "$(dirname "$0")/.." || exit 1
 zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 : "${MEM:=128M}"
+# the core that turns the linker's text into a binary; bin/fam is the same,
+# packed
+: "${CORE:=bin/fam.uncompressed}"
 
 qemu() {  # qemu IMAGE INFILE OUTFILE
         qemu-system-riscv32 \
@@ -63,12 +69,12 @@ ld() {
         l_last=bin/rtmain.o; [ -z "$testing" ] || l_last=bin/rttest.o
         # startup first and the call of main last: init records run in order
         stage bin/famld "$l_out.core" bin/rt0.o "$@" bin/rt.o $l_last || return 1
-        stage bin/fam.uncompressed "$l_out" "$l_out.core"; l_rc=$?
+        stage "$CORE" "$l_out" "$l_out.core"; l_rc=$?
         rm -f "$l_out.core"
         return $l_rc
 }
 run() {
-        printf '\004' > "$1.in"
+        { [ -z "$2" ] || cat "$2"; printf '\004'; } > "$1.in"
         qemu "$1" "$1.in" "$1.out"; r_rc=$?
         cat "$1.out"
         rm -f "$1.in" "$1.out"
@@ -92,8 +98,9 @@ ld)
         ld "$@" || exit 1
         ;;
 run)
-        [ $# -eq 1 ] || { echo "usage: fam.sh run BINARY" >&2; exit 2; }
-        run "$1"
+        [ $# -eq 1 ] || [ $# -eq 2 ] ||
+                { echo "usage: fam.sh run BINARY [INPUT]" >&2; exit 2; }
+        run "$1" "$2"
         exit $?
         ;;
 test)
@@ -109,11 +116,28 @@ test)
         rm -f "$t_tmp" "$t_tmp".*.o
         exit $t_rc
         ;;
+pack)
+        [ $# -eq 2 ] || { echo "usage: fam.sh pack BINARY PACKED" >&2; exit 2; }
+        # bin/fampack reads the size as four bytes, lowest first, then the binary
+        p_n=$(wc -c < "$1")
+        { printf "$(printf '\\%03o' $((p_n & 255)) $(((p_n >> 8) & 255)) \
+                        $(((p_n >> 16) & 255)) $(((p_n >> 24) & 255)))"
+          cat "$1"
+        } > "$2.in"
+        qemu bin/fampack "$2.in" "$2"; p_rc=$?
+        rm -f "$2.in"
+        if [ $p_rc -ne 0 ] ||
+                [ "$(head -c 4 "$2" | od -An -tx1 | tr -d ' \n')" != "13000000" ]; then
+                echo "fam.sh: packing $1 failed: $(head -c 80 "$2" | tr -d '\0')" >&2
+                rm -f "$2"
+                exit 1
+        fi
+        ;;
 dump)
         [ $# -eq 1 ] || { echo "usage: fam.sh dump OBJECT" >&2; exit 2; }
         od -An -v -tu1 "$1" | awk -f scripts/dump.awk
         ;;
 *)
-        echo "usage: fam.sh cc|as|ld|run|test|dump ..." >&2; exit 2
+        echo "usage: fam.sh cc|as|ld|run|test|pack|dump ..." >&2; exit 2
         ;;
 esac

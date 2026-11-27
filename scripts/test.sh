@@ -4,9 +4,10 @@
 #
 # A test is a source file (tests/*.fam) or the text form of an object
 # (tests/*.s).  It is compiled or assembled, linked with the runtime and
-# run.  Comments in its first four lines say what must happen:
+# run.  Comments in its first five lines say what must happen:
 #     exit: N          the program runs and exits with code N
 #     output: TEXT     and writes exactly TEXT (\n for a newline)
+#     input: TEXT      what the program reads (\n for a newline)
 #     error: TEXT      a step fails with exactly the message TEXT
 # and may name more files (relative to tests/) to build and link with it:
 #     with: FILE...
@@ -46,17 +47,19 @@ check() {
 link_run() {
         l_msg=$(sh scripts/fam.sh ld $tflag "$tmp" "$@" 2>&1) ||
                 { echo "error: $l_msg"; return; }
-        timeout 60 sh scripts/fam.sh run "$tmp" > "$tmp.txt" 2>&1
+        l_in=; [ -z "$win" ] || { printf '%b' "$win" > "$tmp.inp"; l_in=$tmp.inp; }
+        timeout 60 sh scripts/fam.sh run "$tmp" $l_in > "$tmp.txt" 2>&1
         echo "exit: $?"
 }
 
 raw=
 [ $# -gt 0 ] || { set -- tests/*.fam tests/*.s; raw=1; }
 for t; do
-        head3=$(head -n 4 "$t" | sed 's/^\(\/\/\|#\) *//')
+        head3=$(head -n 5 "$t" | sed 's/^\(\/\/\|#\) *//')
         want=$(printf "%s\n" "$head3" | sed -n 's/^\(exit\|error\): */\1: /p' | head -n 1)
         with=$(printf "%s\n" "$head3" | sed -n 's/^with: *//p')
         wout=$(printf "%s\n" "$head3" | sed -n 's/^output: //p')
+        win=$(printf "%s\n" "$head3" | sed -n 's/^input: //p')
         got=; objs=; i=0
         case $t in *.test.fam) tflag=--test ;; *) tflag= ;; esac
         for f in "$t" $(for w in $with; do echo "tests/$w"; done); do
@@ -71,12 +74,12 @@ for t; do
                         got="$got, output: $(cat "$tmp.txt")"
         fi
         check "$t" "$want" "$got"
-        rm -f "$tmp" "$tmp".*.o "$tmp.txt"
+        rm -f "$tmp" "$tmp".*.o "$tmp.txt" "$tmp.inp"
 done
 
 # raw NAME WANT BYTES -- give the linker BYTES (a printf format) as an object.
 raw() {
-        tflag=
+        tflag=; win=
         printf "$3" > "$tmp.1.o"
         check "$1" "$2" "$(link_run "$tmp.1.o")"
         rm -f "$tmp" "$tmp".*.o "$tmp.txt"
@@ -95,6 +98,19 @@ if [ -n "$raw" ]; then
                 cmp -s bin/rt0.o "$tmp.1.o"
         check "(dump, then as, gives the same object)" "exit: 0" "exit: $?"
         rm -f "$tmp.s" "$tmp.1.o"
+
+        # the packer: a packed program runs as the program does, and the
+        # packed core compiles as the core does
+        sh scripts/fam.sh cc tests/print_int.fam "$tmp.1.o" &&
+                sh scripts/fam.sh ld "$tmp" "$tmp.1.o" &&
+                sh scripts/fam.sh pack "$tmp" "$tmp.packed" &&
+                sh scripts/fam.sh run "$tmp" > "$tmp.txt" &&
+                sh scripts/fam.sh run "$tmp.packed" | cmp -s - "$tmp.txt" &&
+                [ "$(wc -c < "$tmp.packed")" -lt "$(wc -c < "$tmp")" ]
+        check "(a packed program runs the same, and is smaller)" "exit: 0" "exit: $?"
+        CORE=bin/fam sh scripts/fam.sh ld "$tmp.2" "$tmp.1.o" && cmp -s "$tmp" "$tmp.2"
+        check "(the packed core links the same binary)" "exit: 0" "exit: $?"
+        rm -f "$tmp" "$tmp.2" "$tmp.1.o" "$tmp.packed" "$tmp.txt"
 fi
 
 echo

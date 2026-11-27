@@ -42,6 +42,10 @@ A string, `"hello\n"`, is the address of its bytes, which end with a zero
 byte. Inside one, `\n` is a newline, `\t` a tab, `\0` a zero byte, `\\` a
 backslash and `\"` a quote. A string must end on the line it starts on.
 
+`bytes { 13 00 00 00 6F00C000 }` is the address of those bytes: uppercase
+hex digits, two for each byte, grouped any way. There is no zero byte at
+the end, and the program has to know the length.
+
 ## Functions
 
 ```
@@ -199,6 +203,8 @@ by their bare names.
 | `print(s)` | Write a string. |
 | `print_int(n)` | Write a number in decimal. |
 | `print_hex(n)` | Write a number as `0x` and eight hex digits. |
+| `getc()` | The next byte from the console. Waits until there is one. |
+| `alloc(size)` | The address of a new piece of memory of that many bytes. Nothing gives it back; running out is a panic. |
 | `exit(code)` | End the program with that exit code. |
 | `panic(message)` | Write `panic: ` and the message, and exit with code 1. |
 | `load8(address)` `load32(address)` | The byte (0 to 255) or the word at an address. |
@@ -206,11 +212,17 @@ by their bare names.
 
 Names starting with `__` belong to the runtime.
 
+The four `load` and `store` functions compile to a single instruction each
+when called by name.
+
+`fam.sh run BINARY INPUT` gives a program the file `INPUT` to read.
+
 ## When a program goes wrong
 
 The startup code (`lib/rt0.s`) gives the stack everything from the end of
 the program to the top of the machine's memory, less a sixteenth for the
-return ids of calls. Running out of either is caught and reported, with
+return ids of calls. `alloc` takes its pieces from the low end of the
+stack's space. Running out of either stack is caught and reported, with
 exit code 1, as is any other fault:
 
 ```
@@ -259,8 +271,7 @@ prog.fam:3: unknown variable y
 
 - Types other than the 32-bit integer; arrays, pointers, structs.
 - Character literals.
-- Global variables and constants; a heap.
-- Console input.
+- Global variables and constants; giving memory back.
 - Checking the number of arguments of a call.
 - Nested modules; importing single names; checking at compile time that
   an imported function exists.

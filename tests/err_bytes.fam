@@ -1,0 +1,4 @@
+// error: tests/err_bytes.fam:3: bad hex word 1G
+fn main() {
+    let d = bytes { 00 1G };
+}

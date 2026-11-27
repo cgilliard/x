@@ -63,3 +63,17 @@ for o in rt0 rtmain rttest; do
 done
 fresh bin/rt.o bin/famc lib/rt.fam ||
         sh "$(dirname "$0")/fam.sh" cc lib/rt.fam bin/rt.o || exit 1
+
+# the packer, a fam program, and the core packed with it
+fresh bin/fampack src/fampack.fam bin/famc bin/famld bin/fam.uncompressed \
+        bin/rt0.o bin/rt.o bin/rtmain.o || {
+        sh "$(dirname "$0")/fam.sh" cc src/fampack.fam bin/fampack.o &&
+        sh "$(dirname "$0")/fam.sh" ld bin/fampack bin/fampack.o
+        b_rc=$?
+        rm -f bin/fampack.o
+        [ $b_rc -eq 0 ] || exit 1
+}
+fresh bin/fam bin/fam.uncompressed bin/fampack || {
+        echo "Packing bin/fam.uncompressed → bin/fam" >&2
+        sh "$(dirname "$0")/fam.sh" pack bin/fam.uncompressed bin/fam || exit 1
+}

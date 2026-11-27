@@ -1,0 +1,4 @@
+// error: tests/err_args.fam:3: wrong number of arguments
+fn main() {
+    return load8(1, 2);
+}
