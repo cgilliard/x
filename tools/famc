@@ -26,16 +26,14 @@
 #   famc --pack BINARY -o PACKED    pack a binary into one that unpacks itself
 #
 # It runs the programs scripts/build.sh puts in bin/ -- famc (the compiler
-# proper), famld and the core -- one after another, each under QEMU.  MEM
-# and CPU set the machine, as for tools/q32; CORE names another core than
-# bin/fam.
+# proper) for each source, then famld (the linker) -- each under QEMU.  MEM
+# and CPU set the machine, as for tools/q32.
 #
 # It needs qemu-system-riscv32, cat, mktemp and rm (and wc for --pack).
 
 # the repository's root: this file is in its tools/
 case $0 in */*) root=${0%/*}/.. ;; *) root=.. ;; esac
 bin=$root/bin
-: "${CORE:=$bin/fam}"
 : "${MEM:=128M}"
 : "${CPU:=rv32,zicsr=true,m=false,a=false,f=false,d=false,c=false,\
 zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
@@ -171,18 +169,15 @@ done
 
 # Link.  The runtime comes first, for its startup code, and the call of
 # main (or the tests' report) last: init records run in the order given.
-# The linker writes text for the core, which makes the binary.
 last=$bin/rtmain.o; [ -z "$testing" ] || last=$bin/rttest.o
-[ -r "$CORE" ] || die "no $CORE: run scripts/build.sh first"
-tool "$bin/famld" "$tmp/core" "$rt" $objs "$last" || exit 1
 if [ -z "$testing" ] || [ -n "$out" ]; then
-        tool "$CORE" "${out:-a.out}" "$tmp/core" || exit 1
+        tool "$bin/famld" "${out:-a.out}" "$rt" $objs "$last" || exit 1
         exit 0
 fi
 
 # --test without -o: run the tests now.  The serial port is our standard
 # input and output, as in tools/q32, and the exit code is the tests'.
-tool "$CORE" "$tmp/tests" "$tmp/core" || exit 1
+tool "$bin/famld" "$tmp/tests" "$rt" $objs "$last" || exit 1
 qemu-system-riscv32 \
         -machine virt -m "$MEM" -cpu "$CPU" \
         -display none -bios none \

@@ -15,7 +15,7 @@
 //   image | variables | return ids | guard page | heap > ... < stack | device tree
 //         tp          s10          s11 at first                sp at first
 //
-// On entry gp = the image's end (the core's doing) and a1 = the address of
+// On entry gp = the image's end (the linker's doing) and a1 = the address of
 // the device tree, which QEMU puts just under the top of RAM.  There is no
 // stack yet, so this is code and nothing else.
 init asm {
@@ -73,7 +73,7 @@ init asm {
     73905330    // csrw mtvec,t2
     6F000004    // j done
 
-    // trap: a call nested too deep (the core's call sequence executes ebreak),
+    // trap: a call nested too deep (the call sequence executes ebreak),
     // a stack overflow (the guard page), or any other fault.  Nothing can be
     // resumed: take a fresh piece of both stacks and report it.
     //   __trap(cause, pc, address, guard page)

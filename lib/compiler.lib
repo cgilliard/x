@@ -1193,4 +1193,40 @@ E30C03FE ,   \ beqz t1, -8              ( wait for a byte )
 23206100 ,   \ sw   t1, 0(sp)           ( push it )
 ;
 
+
+\ ============================================================
+\ More words, written with those above.
+\ ============================================================
+
+\ exit  ( -- )   leave the word being defined here and now, as its ; would.
+\        COMPILE-TIME: emit a jump to where this part of the output's words
+\        return (the core keeps that in its call-site table, at +20).  Not
+\        inside do ... loop, whose frame it would leave behind.
+:I exit
+B7021000 ,   \ lui  t0, 0x100
+B3825B00 ,   \ add  t0, s7, t0          ( the call-site table )
+83A24201 ,   \ lw   t0, 20(t0)          ( where words return )
+1302C2FF ,   \ addi tp, tp, -4
+23205200 ,   \ sw   t0, 0(tp)           ( push it, for ,jto )
+,jto
+;
+
+\ 1+ ( a -- a+1 )
+:M 1+  1 lit + ;
+
+\ The comparisons that are not there yet.  A flag is -1 or 0.
+\ >=  <=  ( a b -- flag )  signed      u>=  u<=  ( a b -- flag )  unsigned
+:M >=   < 0= ;
+:M <=   > 0= ;
+:M u>=  u< 0= ;
+:M u<=  u> 0= ;
+
+\ type  ( addr len -- )   write len bytes to the console.
+: type
+begin dup while
+   over c@ putc
+   swap 1+ swap 1-
+repeat
+2drop ;
+
 init

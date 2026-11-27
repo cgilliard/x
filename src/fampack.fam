@@ -48,7 +48,7 @@
 // The unpacker, as machine code with its addresses when loaded at
 // 0x80000000.  It copies the packed data up to 0x84800000, unpacks it to
 // 0x80001000 and jumps there, so what is packed must run at that address
-// (the core's output runs anywhere).  A hart other than the first waits
+// (a fam binary runs anywhere).  A hart other than the first waits
 // for the word "FAM!" below the copy, which the first writes when it is
 // done, and then jumps too.
 fn unpacker() {

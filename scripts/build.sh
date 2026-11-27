@@ -72,11 +72,13 @@ verify() {
         echo "$1 and $2 are identical" > "$note"
 }
 
-# the core of fam: the back end, the compiler and the linker, each built by
-# the seed from its hex
+# the core, a minimal macro compiler, built by the seed from its hex
 compile bin/fam   fam0.seed src/fam.fam0
+
+# the fam compiler: the front end (still hex, for now) and the linker and
+# back end, which the core compiles from Forth, the compiler's library first
 compile bin/famc  fam0.seed src/famc.fam0
-compile bin/famld fam0.seed src/famld.fam0
+compile bin/famld bin/fam   lib/compiler.lib src/famld.forth
 
 # the runtime, which tools/famc adds to every link: startup and library,
 # and the last step (call main, or report the tests)
@@ -84,15 +86,12 @@ compile bin/rt.o      bin/famc lib/rt.fam
 compile bin/rtmain.o  bin/famc lib/rtmain.fam
 compile bin/rttest.o  bin/famc lib/rttest.fam
 
-# the packer (tools/famc --pack), a fam program: compile, link, and the
-# core makes the binary
-compile bin/fampack.o    bin/famc  src/fampack.fam
-compile bin/fampack.core bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
-compile bin/fampack      bin/fam bin/fampack.core
+# the packer (tools/famc --pack), a fam program: compile, then link
+compile bin/fampack.o bin/famc  src/fampack.fam
+compile bin/fampack   bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
 
 # a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0
 compile bin/same.o    bin/famc  src/same.fam
-compile bin/same.core bin/famld bin/rt.o bin/same.o bin/rtmain.o
-compile bin/same      bin/fam   bin/same.core
+compile bin/same      bin/famld bin/rt.o bin/same.o bin/rtmain.o
 verify  bin/fam0      fam0.seed

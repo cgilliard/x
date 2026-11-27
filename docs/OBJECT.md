@@ -1,15 +1,15 @@
 # fam object format, version 1 (draft)
 
 Status: a draft, implemented by `src/famc.S` (the front end) and
-`src/famld.S` (the linker). Parts listed under "Open questions" are the
-ones most likely to change.
+`src/famld.forth` (the linker and back end). Parts listed under "Open
+questions" are the ones most likely to change.
 
 ## Pipeline
 
 ```
 lib/rt.fam ──famc───▶ rt.o ─────┐
 source.fam ──famc───▶ source.o ─┤
-source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ core text ──▶ core ──▶ binary
+source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ binary
 lib/rtmain.fam ─famc▶ rtmain.o ─┘
 ```
 
@@ -17,10 +17,8 @@ lib/rtmain.fam ─famc▶ rtmain.o ─┘
 - An **object** is binary: machine code, the names it defines and calls,
   and where the calls are.
 - The **linker** (`famld`) reads the objects one after another and writes
-  text in the core's language (`: name ... ;`, hex words, `,`), with every
-  function given a short name and placed before its first caller.
-- The **core** (`src/fam.S`) compiles that text to the final binary. Calls,
-  return ids, islands and relays are the core's, unchanged.
+  the binary: every function the program uses, each placed before its
+  first caller, with the calls and returns filled in.
 
 Each of these is a program of its own, run under QEMU with its input on the
 serial port and its output redirected to a file. `tools/famc` drives
@@ -89,8 +87,7 @@ that is not `pub` a local one.
 | 1 | the index of the symbol called: a function, a local function or an external |
 
 A call site is 28 bytes of code, all zero in the object. That is the size
-of the core's call sequence, which the linker has the core put there. So
-the code in an object is laid out exactly as it will be in memory, and the
+of the call sequence the linker puts there. So the code in an object is laid out exactly as it will be in memory, and the
 front end can resolve every branch from offsets in its own output.
 
 Call sites are in ascending order of offset and do not overlap. Each lies
@@ -107,8 +104,8 @@ All branches and data references inside a record are PC-relative and
 already resolved. The only thing left for the linker is the calls.
 
 A function's code does not include its return: the linker ends each
-function with the core's `;`. A function that returns early jumps to the
-end of its own code.
+function with a jump to where returns are handled. A function that returns
+early jumps to the end of its own code.
 
 ## An example
 
@@ -126,53 +123,76 @@ The linker's input is the objects, one after another, then an end marker
 of four `0x04` bytes. It:
 
 1. Reads and checks every object, in the order given.
-2. Gives each name a short name the core accepts: `_` and seven hex digits
-   (`_0000001`). The underscore keeps it from ever reading as a hex word.
-3. Finds the functions the init records reach, directly or through other
-   functions, and orders them so each is defined before any function that
+2. Finds the functions the init records reach, directly or through other
+   functions, and orders them so each is written before any function that
    calls it. A function nothing reaches is left out of the binary.
-4. Breaks each cycle (functions that call each other) with a stub: a word
-   holding one jump, defined ahead of the cycle. Calls made before the real
-   function is defined go to the stub, and the jump is pointed at the
-   function when it is defined. Three small words at the top of the
-   linker's output, run by the core as it compiles, do the recording and
-   pointing. A function calling itself needs no stub.
-5. Writes those functions, then every init record as top-level code, in
-   input order. The core runs top-level code in order at startup, so the
-   runtime (`lib/rt.fam`, which begins with the startup code) goes first
-   and the object that calls `main` (`lib/rtmain.fam`) last, with the init
-   records of the program's objects in between; `tools/famc` sees to
-   that. In a test build each `test` block is an init record, and `lib/rttest.fam`,
-   which reports the results, takes the place of `lib/rtmain.fam`.
+3. Breaks each cycle (functions that call each other) with a stub: one
+   jump, written ahead of the cycle. Calls made before the real function
+   is written go to the stub, and the jump is pointed at the function when
+   it is written. A function calling itself needs no stub.
+4. Writes those functions, then every init record, in input order, as the
+   code the binary starts running. So the runtime (`lib/rt.fam`, which
+   begins with the startup code) goes first and the object that calls
+   `main` (`lib/rtmain.fam`) last, with the init records of the program's
+   objects in between; `tools/famc` sees to that. In a test build each
+   `test` block is an init record, and `lib/rttest.fam`, which reports the
+   results, takes the place of `lib/rtmain.fam`.
 
-For the example above the linker writes:
+A stub's jump is a plain `jal`, so the stub and its function must end up
+within 1 MiB of each other. If they do not, the link fails with a message
+saying so.
 
-```
-: _0000001 1305A002 , ;
-: _0000002 _0000001 ;
-```
-
-And for `a` and `b` that call each other, with `b` reached first through
-`a`:
-
-```
-: >0000001 00000000 mark 6F000000 , ;
-: _0000002 ... >0000001 ... ;
-: _0000001 00000000 patch ... _0000002 ... ;
-```
-
-`>0000001` is the stub for `_0000001` and `00000000` its index. A stub's
-jump is a plain `jal`, so the stub and its function must end up within
-1 MiB of each other. If they do not, the link fails with a message saying
-so.
-
-Link errors are reported as text in place of the output, with exit code 1:
+Link errors are reported as text in place of the binary, with exit code 1:
 
 - a call, in a function that is kept, to a name no object defines (naming
   the caller)
 - a name defined by two objects
 - functions that call each other ending up over 1 MiB apart
 - input that is not an object, or an object whose contents are inconsistent
+- not enough memory for the link
+
+## The binary
+
+```
+nop                          the mark of a fam binary
+j +12                        over the next two words
+j <the first island>         functions before the first island return here
+j .
+auipc gp, 0 ; addi gp, gp, 0     gp = the address just past the binary
+<functions, stubs and islands>
+<the init records>           where the program starts running
+j .
+<the last island>
+```
+
+It runs at whatever address it is loaded: every jump in it is relative.
+
+**A function** is a jump over itself, its code, and a jump to the island
+it returns through. (The jump over it is there because the binary runs
+from the top, through the functions, to reach the init records.)
+
+**A call** is seven instructions in the 28 bytes of a call site:
+
+```
+addi s11, s11, -4 ; bgeu s11, s10, +8 ; ebreak     room for a return id?
+lui t0, id ; addi t0, t0, id                       this call's return id
+sw t0, 0(s11)
+j <the function, or a relay for it>
+```
+
+Return ids are numbered through the binary in the order the calls are
+written.
+
+**An island** is where functions return. There is one about every 256 KiB,
+between functions, and one at the end. It pops the return id and jumps to
+the instruction after that call, finding it by halving through the ids of
+the calls since the island before; an id outside those is passed to the
+island before or after. Every island but the last also has a relay, one
+jump, for every function written so far: a call too far from its function
+jumps to the nearest relay behind it, which jumps to the function or to
+the relay before that.
+
+No jump in the binary is a `jalr`.
 
 ## Function ids
 
@@ -193,10 +213,9 @@ illegal instruction, which the runtime reports.
 Every function with an id is kept in a binary that has the dispatcher,
 whether or not anything calls it directly.
 
-## What the core imposes on generated code
+## What the calls impose on generated code
 
-These come from the core's call and return sequences and are not negotiable
-without changing `src/fam.S`:
+These come from the call and return sequences above:
 
 - `s10` and `s11` are the return-id stack's floor and pointer. The startup
   code sets them before the first call. Nothing else may touch them.
@@ -209,7 +228,7 @@ without changing `src/fam.S`:
 ## Calling convention
 
 The standard RISC-V ILP32 integer convention, with two deviations forced by
-the core's call sequence.
+the call sequence.
 
 As in the standard:
 
@@ -244,10 +263,12 @@ Each of these is a new part or a new symbol kind, under a new version.
 
 ## Open questions
 
-1. **The linker's output is text.** Hex text is about 11 bytes per 4 bytes
-   of code, and the core holds its whole input and output in a 5 MiB heap.
-   If that becomes tight, the heap constant in `src/fam.S` is the first
-   thing to raise.
+1. **Size.** The linker has room for 32 MiB of objects and a 32 MiB
+   binary, 32,768 symbols and 262,144 calls. Every island carries a relay
+   for every function before it, so that part grows with the square of the
+   program. And the init records are written with no island among them,
+   so all of them together (every `test` block is one) must stay within a
+   jump's reach, about 1 MiB.
 2. **Far cycles.** A stub reaches 1 MiB. Everything a function in a cycle
    calls is written between its stub and itself, so a cycle near the root
    of a large program could exceed that. A chain of stubs would lift the
@@ -257,9 +278,12 @@ Each of these is a new part or a new symbol kind, under a new version.
 
 - Objects are binary. Code that must be written by hand, such as the
   startup code, is written in fam with `asm` and `init asm`.
-- The linker is its own program and its own pass. A single driver that
-  compiles or links depending on its inputs, the way `gcc` does, comes
-  later and sits on top of the tools.
+- The linker is its own program and its own pass, and it is the back end
+  too: it writes the binary. `tools/famc` is the driver that compiles or
+  links depending on what it is given, the way `gcc` does.
+- The compiler's own programs are written in the Forth of
+  `lib/compiler.lib` and compiled by the core (`src/fam.S`), which the
+  seed builds. The linker is; the front end is still assembly.
 - The program starts in the runtime's init record (in `lib/rt.fam`),
   which lays out memory. The last init record (`lib/rtmain.fam`) calls
   `main`, then `exit` with its result.
