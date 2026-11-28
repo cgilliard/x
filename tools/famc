@@ -23,13 +23,13 @@
 # tests and used in place of bin/rt.o.
 #
 # One more thing it does:
-#   famc --pack BINARY -o PACKED    pack a binary into one that unpacks itself
+#   famc --pack BINARY -o PACKED    pack a fam binary into one that unpacks itself
 #
 # It runs the programs scripts/build.sh puts in bin/ -- famc (the compiler
 # proper) for each source, then famld (the linker) -- each under QEMU.  MEM
 # and CPU set the machine, as for tools/q32.
 #
-# It needs qemu-system-riscv32, cat, mktemp and rm (and wc for --pack).
+# It needs qemu-system-riscv32, cat, mktemp and rm.
 
 # the repository's root: this file is in its tools/
 case $0 in */*) root=${0%/*}/.. ;; *) root=.. ;; esac
@@ -120,12 +120,8 @@ tool() {
 
 if [ $mode = pack ]; then
         [ $# -eq 1 ] && [ -n "$out" ] || usage
-        # bin/fampack reads the size as four bytes, lowest first, then the binary
-        n=$(wc -c < "$1") || exit 1
-        { printf "$(printf '\\%03o' $((n & 255)) $(((n >> 8) & 255)) \
-                        $(((n >> 16) & 255)) $(((n >> 24) & 255)))"
-          cat "$1"
-        } > "$tmp/in"
+        # bin/fampack finds the size in the binary itself
+        cat "$1" > "$tmp/in" || exit 1
         qemu "$bin/fampack" || { cat "$tmp/result" >&2; die "packing $1 failed"; }
         cat "$tmp/result" > "$out"
         exit $?

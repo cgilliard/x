@@ -78,7 +78,7 @@ compile bin/fam   fam0.seed src/fam.fam0
 # the fam compiler: the front end, and the linker and back end.  Both are
 # Forth, which the core compiles, the compiler's library first.
 compile bin/famc  bin/fam lib/compiler.lib src/famc.forth
-compile bin/famld bin/fam lib/compiler.lib src/famld.forth
+compile bin/famld.unpacked bin/fam lib/compiler.lib src/famld.forth
 
 # the runtime, which tools/famc adds to every link: startup and library,
 # and the last step (call main, or report the tests)
@@ -86,9 +86,12 @@ compile bin/rt.o      bin/famc lib/rt.fam
 compile bin/rtmain.o  bin/famc lib/rtmain.fam
 compile bin/rttest.o  bin/famc lib/rttest.fam
 
-# the packer (tools/famc --pack), a fam program: compile, then link
+# the packer, a fam program: compile, then link.  Then the linker, packed:
+# a quarter of the size, and it unpacks itself each time it runs.  It links
+# everything from here on.
 compile bin/fampack.o bin/famc  src/fampack.fam
-compile bin/fampack   bin/famld bin/rt.o bin/fampack.o bin/rtmain.o
+compile bin/fampack   bin/famld.unpacked bin/rt.o bin/fampack.o bin/rtmain.o
+compile bin/famld     bin/fampack bin/famld.unpacked
 
 # a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0

@@ -20,14 +20,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 //
-// fampack -- pack a binary into one that unpacks itself and runs.
+// fampack -- pack a fam binary into one that unpacks itself and runs.
 //
-// It reads, from the console:   4 bytes, the size N (lowest byte first)
-//                               N bytes, the binary
-// and writes the packed binary:
+// It reads the binary from the console.  A fam binary (one the linker or the
+// core wrote) says in its first 24 bytes how long it is: it starts
+//     nop ; j +12 ; <two words> ; auipc gp, HI ; addi gp, gp, LO
+// where those last two give gp the address just past the binary.  So N, the
+// binary's size, is 16 + HI + LO, and nothing has to say where the input
+// ends.  Anything that does not start that way is refused.
+//
+// It writes the packed binary:
 //     16 bytes   a nop (the mark of a fam binary), a jump over the next two
 //                words, the size of the packed data, and N
-//     260 bytes  the unpacker (below)
+//     296 bytes  the unpacker (below)
 //     the rest   the packed data
 //
 // The packed data is groups of eight items, each group after one byte of
@@ -43,89 +48,98 @@
 // copy, the farthest of those: slow, simple, and enough for binaries of a
 // few thousand bytes.
 //
-// Built by scripts/build.sh as bin/fampack; `tools/famc --pack` runs it.
+// Built by scripts/build.sh as bin/fampack, which packs the linker with it;
+// `tools/famc --pack` runs it too.
 
 // The unpacker, as machine code with its addresses when loaded at
-// 0x80000000.  It copies the packed data up to 0x84800000, unpacks it to
-// 0x80001000 and jumps there, so what is packed must run at that address
-// (a fam binary runs anywhere).  A hart other than the first waits
-// for the word "FAM!" below the copy, which the first writes when it is
-// done, and then jumps too.
+// 0x80000000.  It copies the packed data out of the way, to just past where
+// the unpacked binary and the packed one both end; unpacks it to 0x80001000;
+// clears the copy, so the memory after the binary is zero as it would be had
+// the binary been loaded as it is; and jumps to 0x80001000.  So what is
+// packed must run at that address (a fam binary runs anywhere), and the
+// machine needs little more memory than the binary and twice its packed
+// data.  A hart other than the first waits for the word "FAM!" in place of
+// the packed size at 0x80000008, which the first writes when it is done,
+// and then jumps too.  Its jumps are relative: like all else here it has no
+// jalr.  It leaves a1 alone: that is the address of the
+// device tree, which the startup code of what is packed sizes memory from.
 fn unpacker() {
     return bytes {
         F32240F1    // 010: csrr t0,mhartid
-        63820202    // 014: beqz t0,80000038
-        B7028084    // 018: lui t0,0x84800
-        03A3C2FF    // 01c: lw t1,-4(t0) # 847ffffc
+        63800202    // 014: beqz t0,80000034
+        B7020080    // 018: lui t0,0x80000
+        03A38200    // 01c: lw t1,8(t0) # 80000008
         B7434D21    // 020: lui t2,0x214d4
         93836314    // 024: addi t2,t2,326 # 214d4146
         E31873FE    // 028: bne t1,t2,80000018
         0F00F00F    // 02c: fence
-        B7120080    // 030: lui t0,0x80001
-        67800200    // 034: jr t0 # 80001000
-        B7020080    // 038: lui t0,0x80000
-        03A38200    // 03c: lw t1,8(t0) # 80000008
-        93834211    // 040: addi t2,t0,276
-        370E8084    // 044: lui t3,0x84800
-        B38E6300    // 048: add t4,t2,t1
-        638CD301    // 04c: beq t2,t4,80000064
-        03C50300    // 050: lbu a0,0(t2)
-        2300AE00    // 054: sb a0,0(t3) # 84800000
-        93831300    // 058: addi t2,t2,1
-        130E1E00    // 05c: addi t3,t3,1
-        6FF0DFFE    // 060: j 8000004c
-        03A3C200    // 064: lw t1,12(t0)
-        B7038084    // 068: lui t2,0x84800
-        371E0080    // 06c: lui t3,0x80001
-        B30E6E00    // 070: add t4,t3,t1
-        130F0000    // 074: li t5,0
-        930F0000    // 078: li t6,0
-        630EDE07    // 07c: beq t3,t4,800000f8
-        63980F00    // 080: bnez t6,80000090
-        03CF0300    // 084: lbu t5,0(t2) # 84800000
-        93831300    // 088: addi t2,t2,1
-        930F8000    // 08c: li t6,8
-        13750F08    // 090: andi a0,t5,128
-        131F1F00    // 094: slli t5,t5,0x1
-        938FFFFF    // 098: addi t6,t6,-1
-        630C0500    // 09c: beqz a0,800000b4
-        03C50300    // 0a0: lbu a0,0(t2)
-        2300AE00    // 0a4: sb a0,0(t3) # 80001000
-        93831300    // 0a8: addi t2,t2,1
-        130E1E00    // 0ac: addi t3,t3,1
-        6FF0DFFC    // 0b0: j 8000007c
-        83C50300    // 0b4: lbu a1,0(t2)
-        03C61300    // 0b8: lbu a2,1(t2)
-        93832300    // 0bc: addi t2,t2,2
-        9376F600    // 0c0: andi a3,a2,15
-        93968600    // 0c4: slli a3,a3,0x8
-        B3E5D500    // 0c8: or a1,a1,a3
-        93851500    // 0cc: addi a1,a1,1
-        93564600    // 0d0: srli a3,a2,0x4
-        93863600    // 0d4: addi a3,a3,3
-        3307BE40    // 0d8: sub a4,t3,a1
-        E38006FA    // 0dc: beqz a3,8000007c
-        83470700    // 0e0: lbu a5,0(a4)
-        2300FE00    // 0e4: sb a5,0(t3)
-        13071700    // 0e8: addi a4,a4,1
-        130E1E00    // 0ec: addi t3,t3,1
-        9386F6FF    // 0f0: addi a3,a3,-1
-        6FF09FFE    // 0f4: j 800000dc
-        0F00F00F    // 0f8: fence
-        B7028084    // 0fc: lui t0,0x84800
-        37434D21    // 100: lui t1,0x214d4
-        13036314    // 104: addi t1,t1,326 # 214d4146
-        23AE62FE    // 108: sw t1,-4(t0) # 847ffffc
-        B7120080    // 10c: lui t0,0x80001
-        67800200    // 110: jr t0 # 80001000
+        6F00107D    // 030: j 80001000
+        B7020080    // 034: lui t0,0x80000
+        03A38200    // 038: lw t1,8(t0) # 80000008
+        83A3C200    // 03c: lw t2,12(t0)
+        B7180080    // 040: lui a7,0x80001
+        B3887800    // 044: add a7,a7,t2
+        B3886800    // 048: add a7,a7,t1
+        93883800    // 04c: addi a7,a7,3 # 80001003
+        93F8C8FF    // 050: andi a7,a7,-4
+        93838213    // 054: addi t2,t0,312
+        138E0800    // 058: mv t3,a7
+        B38E6300    // 05c: add t4,t2,t1
+        638CD301    // 060: beq t2,t4,80000078
+        03C50300    // 064: lbu a0,0(t2)
+        2300AE00    // 068: sb a0,0(t3)
+        93831300    // 06c: addi t2,t2,1
+        130E1E00    // 070: addi t3,t3,1
+        6FF0DFFE    // 074: j 80000060
+        03A3C200    // 078: lw t1,12(t0)
+        93830800    // 07c: mv t2,a7
+        371E0080    // 080: lui t3,0x80001
+        B30E6E00    // 084: add t4,t3,t1
+        130F0000    // 088: li t5,0
+        930F0000    // 08c: li t6,0
+        630EDE07    // 090: beq t3,t4,8000010c
+        63980F00    // 094: bnez t6,800000a4
+        03CF0300    // 098: lbu t5,0(t2)
+        93831300    // 09c: addi t2,t2,1
+        930F8000    // 0a0: li t6,8
+        13750F08    // 0a4: andi a0,t5,128
+        131F1F00    // 0a8: slli t5,t5,0x1
+        938FFFFF    // 0ac: addi t6,t6,-1
+        630C0500    // 0b0: beqz a0,800000c8
+        03C50300    // 0b4: lbu a0,0(t2)
+        2300AE00    // 0b8: sb a0,0(t3) # 80001000
+        93831300    // 0bc: addi t2,t2,1
+        130E1E00    // 0c0: addi t3,t3,1
+        6FF0DFFC    // 0c4: j 80000090
+        03C80300    // 0c8: lbu a6,0(t2)
+        03C61300    // 0cc: lbu a2,1(t2)
+        93832300    // 0d0: addi t2,t2,2
+        9376F600    // 0d4: andi a3,a2,15
+        93968600    // 0d8: slli a3,a3,0x8
+        3368D800    // 0dc: or a6,a6,a3
+        13081800    // 0e0: addi a6,a6,1
+        93564600    // 0e4: srli a3,a2,0x4
+        93863600    // 0e8: addi a3,a3,3
+        33070E41    // 0ec: sub a4,t3,a6
+        E38006FA    // 0f0: beqz a3,80000090
+        83470700    // 0f4: lbu a5,0(a4)
+        2300FE00    // 0f8: sb a5,0(t3)
+        13071700    // 0fc: addi a4,a4,1
+        130E1E00    // 100: addi t3,t3,1
+        9386F6FF    // 104: addi a3,a3,-1
+        6FF09FFE    // 108: j 800000f0
+        03A38200    // 10c: lw t1,8(t0)
+        33836800    // 110: add t1,a7,t1
+        63886800    // 114: beq a7,t1,80000124
+        23800800    // 118: sb zero,0(a7)
+        93881800    // 11c: addi a7,a7,1
+        6FF05FFF    // 120: j 80000114
+        0F00F00F    // 124: fence
+        37434D21    // 128: lui t1,0x214d4
+        13036314    // 12c: addi t1,t1,326 # 214d4146
+        23A46200    // 130: sw t1,8(t0)
+        6F00D06C    // 134: j 80001000
     };
-}
-
-fn read32() {
-    let v = getc();
-    v = v | getc() << 8;
-    v = v | getc() << 16;
-    return v | getc() << 24;
 }
 
 // putc writes the low byte of what it is given.
@@ -214,11 +228,34 @@ fn room(n) {
 }
 
 fn main() {
-    let n = read32();
-    let input = alloc(n);
+    // the first 24 bytes, which say how many there are in all
+    let head = alloc(24);
     let i = 0;
+    while i < 24 {
+        store8(head + i, getc());
+        i = i + 1;
+    }
+    let auipc = load32(head + 16);
+    let addi = load32(head + 20);
+    if load32(head) != 0x00000013 || load32(head + 4) != 0x00C0006F
+            || (auipc & 0xFFF) != 0x197 || (addi & 0xFFFFF) != 0x18193 {
+        print("fampack: the input is not a fam binary\n");
+        return 1;
+    }
+    let n = 16 + (auipc & 0xFFFFF000) + (addi >> 20);
+    if n < 24 {
+        print("fampack: the input is not a fam binary\n");
+        return 1;
+    }
+
+    let input = alloc(n);
+    i = 0;
     while i < n {
-        store8(input + i, getc());
+        if i < 24 {
+            store8(input + i, load8(head + i));
+        } else {
+            store8(input + i, getc());
+        }
         i = i + 1;
     }
 
@@ -231,7 +268,7 @@ fn main() {
     write32(n);
     let code = unpacker();
     i = 0;
-    while i < 260 {
+    while i < 296 {
         putc(load8(code + i));
         i = i + 1;
     }
@@ -406,8 +443,8 @@ test "data longer than the 4096 bytes a copy can reach back unpacks to what it w
     assert survives(input, n);
 }
 
-test "the unpacker is 65 instructions and ends by jumping to what it unpacked" {
+test "the unpacker is 74 instructions and ends by jumping to what it unpacked" {
     let code = unpacker();
     assert load32(code) == 0xF14022F3;          // csrr t0, mhartid
-    assert load32(code + 256) == 0x00028067;    // jr t0
+    assert load32(code + 292) == 0x6CD0006F;    // j 0x80001000
 }
