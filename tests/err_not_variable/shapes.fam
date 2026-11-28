@@ -1,0 +1,2 @@
+module shapes;
+pub fn area(w, h) { return w * h; }

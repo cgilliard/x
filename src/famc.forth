@@ -9,15 +9,20 @@
 \ core compile the two together into bin/famc.
 \
 \ The language (every value is a 32-bit integer):
-\     program   = [ "module" NAME ";" ] { import | function | test | init }
+\     program   = [ "module" NAME ";" ]
+\                 { import | constant | global | function | test | init }
 \     import    = "import" NAME ";"
+\     constant  = "const" NAME "=" value ";"    a name for a number, in this file
+\     global    = [ "pub" ] "let" NAME "=" value ";"    a variable outside any
+\                                               function, starting at value
+\     value     = [ "-" ] ( NUMBER | NAME )     the name of a constant
 \     function  = [ "pub" ] "fn" NAME "(" [ NAME { "," NAME } ] ")" block
 \     test      = "test" STRING block
 \     init      = "init" block                  run at startup, in order
 \               | "init" "asm" "{" ... "}"      the same, nothing but the code
 \     block     = "{" { statement } "}"
 \     statement = "let" NAME "=" expr ";"
-\               | NAME "=" expr ";"
+\               | [ NAME "." ] NAME "=" expr ";"
 \               | "if" expr block [ "else" ( block | if-statement ) ]
 \               | "while" expr block
 \               | "return" [ expr ] ";"
@@ -27,7 +32,7 @@
 \     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 \                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 \                   * / %
-\     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | NAME
+\     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | [ NAME "." ] NAME
 \               | "&" fname                     a function's id
 \               | "bytes" "{" { HEXBYTES } "}"  data: its value is its address
 \               | fname "(" [ expr { "," expr } ] ")"
@@ -62,6 +67,10 @@
 \   - load8, load32, store8 and store32 are not calls but one instruction
 \     each, on a0 (and a1).
 \   - In `asm`, `@f` is a call site for f and `&f` an id site.
+\   - A global is a data record: one word, its starting value.  Reading or
+\     writing it is an address site -- the linker fills in the two
+\     instructions that load its address into a0 -- and a load or a store.
+\     A constant is its number wherever it is named.
 \   - An `init` block is an init record with a frame, like a function's.
 \     `init asm` has no frame: it is for the startup code, which runs
 \     before there is a stack.
@@ -75,7 +84,9 @@
 \ of the symbol `m.f`, and m must be this file's module or imported.  A
 \ call `f()` in module m is of this file's `m.f` if it defines one, else of
 \ the root's `f`: it is noted as a symbol `f` of kind 0x100, and `resolve`
-\ settles it when the whole file has been read.
+\ settles it when the whole file has been read.  A global `g` is the symbol
+\ `m.g` likewise, local unless `pub`.  It must be defined above where it is
+\ used by its bare name; another module's is `m.g`, and needs no more.
 \
 \ The file's name.  If the source starts with the byte 0x01 or 0x02, that
 \ and the rest of its first line are not source: the line is the file's
@@ -138,6 +149,7 @@
 : elong     ( -- )   where "name too long" puts fail ;
 : eargs     ( -- )   where "wrong number of arguments" puts fail ;
 : eassert   ( -- )   where "assert outside a test" puts fail ;
+: econst    ( -- )   where "cannot assign to a constant" puts fail ;
 : elocals   ( -- )   where "function needs too many locals" puts fail ;
 : edeep     ( -- )   where "nested too deep" puts fail ;
 : efar      ( -- )   where "function too large" puts fail ;
@@ -240,8 +252,8 @@
    then
    nsy @ dup 1+ nsy ! ;
 
-\ odefine  start the record of a function (kind 1, or 3 for a local one);
-\ its symbol, or 0 if the name is defined already.
+\ odefine  start the record of a function (kind 1, or 3 for a local one)
+\ or of a global (4, or 5); its symbol, or 0 if the name is defined already.
 : odefine  ( name len kind -- sym )
    -rot 2dup ofind
    drop dup if
@@ -289,6 +301,13 @@
    cn @ cb @ - cln @ !  80000000 lit or cln @ 4 lit + !  cln @ 8 lit + cln !
    0 lit cw,  0 lit cw, ;
 
+\ oasite  append the loading of a global's address into a0: an address
+\ site (the index's next-to-top bit set) and its 8 zero bytes.
+: oasite  ( index -- )
+   cln @ 8 lit + cllim @ u> if ebig then
+   cn @ cb @ - cln @ !  40000000 lit or cln @ 4 lit + !  cln @ 8 lit + cln !
+   0 lit cw,  0 lit cw, ;
+
 \ ocall  append a call of a function by name.
 : ocall  ( name len -- )   0 lit oref osite ;
 
@@ -303,7 +322,7 @@
       0 lit nn @ c!  nn @ 1+ nn !
    repeat
    4F4D4146 lit putw                         \ FAMO
-   2 lit putw
+   3 lit putw
    syn @ syb @ -  cln @ clb @ - +  cn @ cb @ - +  nn @ nb @ - +  1C lit + putw
    nsy @ putw
    cln @ clb @ - 3 lit rshift putw
@@ -382,7 +401,7 @@
    repeat drop
    clb @ begin dup cln @ u< while            \ each call site: follow a 0x200
       dup 4 lit + @
-      dup 80000000 lit and  swap 7FFFFFFF lit and
+      dup C0000000 lit and  swap 3FFFFFFF lit and
       dup 4 lit lshift swap 2 lit lshift + syb @ +
       dup @ 200 lit = if
          C lit + @ or over 4 lit + !
@@ -505,7 +524,8 @@
    "return" is if syntax then   "assert" is if syntax then
    "while" is if syntax then    "fn" is if syntax then
    "if" is if syntax then       "let" is if syntax then
-   "asm" is if syntax then      "else" is if syntax then ;
+   "asm" is if syntax then      "else" is if syntax then
+   "const" is if syntax then ;
 
 \ chkdeep  stop, with a message, before calls nested too deep stop us.
 : chkdeep  ( -- )   rfree 800 lit u< if edeep then ;
@@ -559,6 +579,51 @@
       rot or swap 1+
    repeat
    drop ;
+
+
+\ ---- constants and globals ------------------------------------------------
+
+\ The file's constants and globals, 16 bytes each: name, length, 0 for a
+\ constant or 1 for a global, and the constant's value or the index of the
+\ global's symbol.
+: gb     variable ;
+: gn     variable ;
+: glim   variable ;
+
+\ gfind  the entry of a name (0: none).
+: gfind  ( name len -- entry )
+   gb @
+   begin dup gn @ u< while
+      dup 4 lit + @ 2 lit pick = if
+         dup @ 3 lit pick 3 lit pick same if nip nip exit then
+      then
+      10 lit +
+   repeat
+   drop 2drop 0 lit ;
+
+: gadd  ( name len kind value -- )
+   gn @ dup 10 lit + glim @ u> if ebig then
+   tuck C lit + !  tuck 8 lit + !  tuck 4 lit + !  tuck !
+   10 lit + gn ! ;
+
+\ constval  read [ "-" ] ( NUMBER | NAME ): a number, or a constant's.
+: constval  ( -- value )
+   lex
+   0 lit
+   kind @ 3 lit =  tl @ 1 lit =  and if
+      tk @ c@ 2D lit = if drop 1 lit lex then
+   then
+   kind @ 2 lit = if
+      parsenum
+   else
+      kind @ 1 lit <> if syntax then
+      tk @ tl @ 2dup gfind
+      dup 0= if drop eunknown then
+      nip nip
+      dup 8 lit + @ if syntax then           \ a global is not a constant
+      C lit + @
+   then
+   swap if 0 lit swap - then ;
 
 
 \ ---- a function's frame ---------------------------------------------------
@@ -785,6 +850,14 @@
 :M stmt    0 lit 3 lit parse ;
 
 : tslot  variable ;
+: qn     variable ;    \ the name after a `module .`,
+: ql     variable ;    \   and its length
+
+\ gstore  append the storing of a0 in the global of a symbol.
+: gstore  ( index -- )
+   00050393 lit cw,                          \ mv t2, a0
+   oasite
+   00752023 lit cw, ;                        \ sw t2, 0(a0)
 
 : parse  ( arg which -- )
    chkdeep
@@ -882,20 +955,35 @@
                then
                4 lit parse exit
             then
-            dup 2E lit = if                  \ module . name (
-               drop
+            dup 2E lit = if                  \ module . name: a call if (
+               drop                          \   follows, else a global
                2dup chkmod
                lex chkident
-               tk @ tl @ join 0 lit oref 0 lit
-               28 lit expect
-               4 lit parse exit
+               tk @ tl @ join 0 lit oref
+               lex
+               kind @ 3 lit = if tk @ c@ 28 lit = else 0 lit then if
+                  0 lit 4 lit parse exit
+               then
+               tk @ cur !
+               oasite  00052503 lit cw,      \ lw a0, 0(a0)
+               exit
             then
             7B lit = if                      \ bytes { ... } ?
                2dup "bytes" zeq if 2drop ebytes exit then
             then
          then
-         tk @ cur !                          \ else a local
-         lfind A lit elw
+         tk @ cur !                          \ else a local, a global or a
+         2dup llook dup 0< 0= if             \   constant
+            nip nip A lit elw exit
+         then
+         drop
+         2dup gfind dup 0= if drop eunknown then
+         nip nip
+         dup 8 lit + @ if
+            C lit + @ oasite  00052503 lit cw,          \ lw a0, 0(a0)
+         else
+            C lit + @ lia0
+         then
          exit
       then
       kind @ 0= if syntax then
@@ -999,11 +1087,38 @@
             drop
             2dup tl ! tk !  1 lit kind !
             chkident
-            lfind
-            1 lit expr
-            3B lit expect
-            A lit esw
+            2dup llook dup 0< if             \ not a local: a global
+               drop
+               2dup gfind dup 0= if drop eunknown then
+               nip nip
+               dup 8 lit + @ 0= if econst then
+               C lit + @
+               1 lit expr
+               3B lit expect
+               gstore
+            else
+               nip nip
+               1 lit expr
+               3B lit expect
+               A lit esw
+            then
             exit
+         then
+         kind @ 3 lit =  tl @ 1 lit =  and if tk @ c@ 2E lit = else 0 lit then if
+            lex                              \ module . NAME = ... ?
+            kind @ 1 lit = if
+               tk @ qn !  tl @ ql !
+               lex
+               kind @ 3 lit =  tl @ 1 lit =  and if tk @ c@ 3D lit = else 0 lit then if
+                  drop
+                  2dup chkmod
+                  qn @ ql @ join 0 lit oref
+                  1 lit expr
+                  3B lit expect
+                  gstore
+                  exit
+               then
+            then
          then
          line !  drop  cur !                 \ an expression: back to the name
       else
@@ -1084,6 +1199,7 @@
    oend ;
 
 : pslot  variable ;
+: gkind  variable ;    \ the kind of the global being defined: 4, or 5 local
 
 \ top  one thing at the top of a file.  Its first token is read, a name.
 : top  ( -- )
@@ -1140,11 +1256,37 @@
       fnbegin block fnend
       exit
    then
+   "const" is if                             \ const NAME = value ;
+      lex chkident
+      tk @ tl @
+      2dup gfind if edup then
+      3D lit expect
+      constval
+      3B lit expect
+      0 lit swap gadd
+      exit
+   then
    3 lit                                     \ a local function, unless pub
    "pub" is if
       drop 1 lit
       lex
       kind @ 1 lit <> if syntax then
+   then
+   "let" is if                               \ [ pub ] let NAME = value ;
+      1 lit = if 4 lit else 5 lit then gkind !
+      lex chkident
+      tk @ tl @
+      2dup gfind if edup then
+      2dup qualify 2dup gkind @ odefine
+      dup 0= if drop edup then
+      nip nip
+      syb @ - 14 lit /                       \ name len index
+      3D lit expect
+      constval cw,                           \ its record: the one word
+      3B lit expect
+      oend
+      1 lit swap gadd
+      exit
    then
    "fn" is 0= if syntax then
    lex chkident
@@ -1186,6 +1328,7 @@
    1000000 lit need dup cb ! dup cn !  1000000 lit + clim !
    10000 lit need dup lbase ! dup ltop !  10000 lit + llim !
    10000 lit need dup ibase ! dup itop !  10000 lit + ilim !
+   40000 lit need dup gb ! dup gn !  40000 lit + glim !
    400 lit need scr !
    40000 lit need hn !
    4000 lit need dup hb !

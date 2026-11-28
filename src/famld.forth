@@ -13,6 +13,8 @@
 \      the functions it calls.  A function nothing reaches is left out.
 \   3. Writes the init records, in the order given, as the code the binary
 \      starts with.
+\   4. Writes the data the code written refers to, after all the code, and
+\      fills in the places that load its addresses.
 \
 \ The binary never has a jalr.  A call puts a number, its return id, just
 \ under the stack of return ids (s10 floor, s11 pointer) and jumps to the
@@ -60,8 +62,10 @@
 \    +0  name, +4 its length
 \    +8  the object that defines it (0: none yet; 1: it is the dispatcher)
 \   +12  its symbol there
-\   +16  0 not written, 1 being written, 2 written
-\   +20  its word (below), once it is being written
+\   +16  0 not written, 1 being written, 2 written (data: 2 once it has
+\        a place)
+\   +20  its word (below), once it is being written (data: how far into
+\        the binary's data it is)
 \   +24  its stub's word, if it has a stub
 \   +28  its function id (0: none)
 : symb    variable ;
@@ -91,6 +95,19 @@
 : in      variable ;
 : ilim    variable ;
 
+\ The data that is used: 4 bytes each, the symbol, in the order it goes
+\ into the binary.
+: db      variable ;
+: dn      variable ;
+: dlim    variable ;
+: dsize   variable ;   \ how many bytes of data that is so far
+
+\ The places that load an address of data: 8 bytes each, where the two
+\ instructions are, and the symbol.
+: pb      variable ;
+: pn      variable ;
+: plim    variable ;
+
 : nids    variable ;   \ how many functions have an id
 : curfn   variable ;   \ the symbol of the function being written (0: none)
 : depth   variable ;   \ how many functions are being written at once
@@ -102,6 +119,9 @@
    100000 lit need dup wb ! dup wn !  100000 lit + wlim !
    100000 lit need dup sb ! dup sn !  100000 lit + slim !
    10000 lit need dup ib ! dup in !  10000 lit + ilim !
+   40000 lit need dup db ! dup dn !  40000 lit + dlim !
+   100000 lit need dup pb ! dup pn !  100000 lit + plim !
+   0 lit dsize !
    20000 lit need hn !
    4000 lit need dup hb !
    dup 4000 lit + swap begin 2dup u> while 0 lit over ! 4 lit + repeat 2drop
@@ -296,6 +316,9 @@
    0 lit over 8 lit + !    0 lit over C lit + !   0 lit over 10 lit + !
    0 lit over 14 lit + !   0 lit over 18 lit + !  0 lit over 1C lit + ! ;
 
+\ local?  is a symbol of this kind one that only its own object can name?
+: local?  ( kind -- flag )   dup 3 lit = swap 5 lit = or ;
+
 \ While an object is being checked:
 : o       variable ;   \ the object
 : nsym    variable ;   \ how many symbols it has,
@@ -320,7 +343,7 @@
 \ second word, which was the offset of its name, is the address of its
 \ symbol here (for a function or an external).
 : dosym  ( L -- )
-   dup @ 3 lit u> if bad then
+   dup @ 5 lit u> if bad then
    dup @ 2 lit = if                          \ an init record
       dup chkcode
       in @ dup ilim @ u>= if oom then
@@ -333,14 +356,14 @@
    dup 4 lit + @ over 8 lit + @ + namesz @ u> if bad then
    dup 4 lit + @ o @ 8 lit + @ + codesz @ +  \ L name
    over 8 lit + @                            \ L name len
-   2 lit pick @ 3 lit = if                   \ a local function: a symbol
-      0 lit                                  \   of its own, whatever
+   2 lit pick @ local? if                    \ local: a symbol of its own,
+      0 lit                                  \   whatever
    else
       2dup find
    then
    dup 0= if                                 \ a new name
       drop newsym
-      over @ 3 lit <> if dup hadd then
+      over @ local? 0= if dup hadd then
    else
       nip nip
    then                                      \ L sym
@@ -357,18 +380,21 @@
 : hole  ( start end -- )
    begin 2dup u< while over @ if bad then swap 4 lit + swap repeat 2drop ;
 
-\ dosite  check one call site of the object.  A function whose id is taken
-\ (a site with the top bit of its index set) gets an id.
+\ dosite  check one call site of the object.  The top two bits of its
+\ index say what it is: 0 a call, 1 (the lower bit) an address site, 2 an
+\ id site.  A function whose id is taken gets an id.
 : dosite  ( C -- )
    dup @
    dup 3 lit and if bad then
    dup pend @ u< if bad then
    dup codesz @ u> if bad then
-   over 4 lit + @ 0< if 8 lit else 10 lit then +
+   over 4 lit + @ 1E lit rshift
+   dup 3 lit = if bad then
+   if 8 lit else 10 lit then +
    dup codesz @ u> if bad then
    dup pend !
    over @ o @ 8 lit + @ +  swap o @ 8 lit + @ +  hole
-   dup 4 lit + @ 7FFFFFFF lit and
+   dup 4 lit + @ 3FFFFFFF lit and
    dup nsym @ u>= if bad then
    lsym                                      \ C L
    dup @ 2 lit = if bad then
@@ -418,7 +444,7 @@
    dup @ 04040404 lit = if drop 0 lit exit then
    dup @ 4F4D4146 lit <> if "famld: the input is not a fam object" err then
    dup 4 lit + over C lit + rd
-   dup 4 lit + @ 2 lit <> if "famld: unknown object version" err then
+   dup 4 lit + @ 3 lit <> if "famld: unknown object version" err then
    dup 8 lit + @                             \ O size
    dup 1C lit u< if bad then
    dup 3 lit and if bad then
@@ -447,7 +473,7 @@
 
 \ csym  the symbol a call site of an object names.
 : csym  ( O C -- sym )
-   4 lit + @ 7FFFFFFF lit and
+   4 lit + @ 3FFFFFFF lit and
    dup 4 lit lshift swap 2 lit lshift + + 20 lit + @ ;
 
 : name.  ( sym -- )   dup @ swap 4 lit + @ type ;
@@ -458,6 +484,32 @@
    curfn @ dup if " in " puts name. else drop then
    fail ;
 
+\ data?  is a symbol defined, and as data?
+: data?  ( sym -- flag )
+   dup 8 lit + @ 2 lit u< if drop 0 lit exit then
+   C lit + @ @ 4 lit u>= ;
+
+: notfn    ( sym -- )   "famld: not a function: " puts name. fail ;
+: notdata  ( sym -- )   "famld: not a variable: " puts name. fail ;
+
+\ addr,  append the two instructions that load the address of a symbol's
+\ data into a0 -- as zeros, to be filled in when the data has been written
+\ (`data,`, below) -- and note the place.  The first time, the data gets
+\ its place in the binary's data.
+: addr,  ( sym -- )
+   dup 8 lit + @ 0= if undef then
+   dup data? 0= if notdata then
+   dup 10 lit + @ 0= if
+      2 lit over 10 lit + !
+      dsize @ over 14 lit + !
+      dup C lit + @ 10 lit + @ dsize @ + dsize !
+      dn @ dup dlim @ u>= if oom then
+      2dup !  4 lit + dn !
+   then
+   pn @ dup plim @ u>= if oom then
+   op @ over !  tuck 4 lit + !  8 lit + pn !
+   0 lit w,  0 lit w, ;
+
 \ outcall  append a call of a function: of its stub, if it is still being
 \ written (and is not the one this code is in).
 : outcall  ( sym -- )
@@ -466,7 +518,8 @@
    call, ;
 
 \ emitcode  append a record's code: its words as they are, a call for each
-\ call site, and for each id site the two instructions that load the id.
+\ call site, for each id site the two instructions that load the id, and
+\ for each address site the two that load the address.
 : eo     variable ;    \ the object
 : eoff   variable ;    \ how far through its code
 : eend   variable ;    \ where the record's code ends
@@ -477,16 +530,25 @@
    eo @ eoff @ 1stcall ecall !
    begin eoff @ eend @ u< while
       ecall @ eo @ 8 lit + @ u<  ecall @ @ eoff @ =  and if
-         ecall @ 4 lit + @ 0< if             \ an id site
+         ecall @ 4 lit + @ 1E lit rshift
+         dup 2 lit = if                      \ an id site
+            drop
             eoff @ 8 lit + dup eend @ u> if bad then eoff !
-            eo @ ecall @ csym 1C lit + @
+            eo @ ecall @ csym
+            dup data? if notfn then
+            1C lit + @
             dup 800 lit + C lit rshift C lit lshift 537 lit or w,    \ lui a0
             14 lit lshift 50513 lit or w,                             \ addi a0, a0
-         else                                \ a call site
-            eoff @ 10 lit + dup eend @ u> if bad then eoff !
-            eo @ ecall @ csym
-            dup 8 lit + @ 0= if undef then
-            outcall
+         else
+            if                               \ an address site
+               eoff @ 8 lit + dup eend @ u> if bad then eoff !
+               eo @ ecall @ csym addr,
+            else                             \ a call site
+               eoff @ 10 lit + dup eend @ u> if bad then eoff !
+               eo @ ecall @ csym
+               dup 8 lit + @ 0= if undef then
+               outcall
+            then
          then
          ecall @ 8 lit + ecall !
       else
@@ -563,8 +625,8 @@
       rot                                    \ oldend oldcur O
       begin dup 8 lit + @ ccur @ u>  ccur @ @ cend @ u<  and while
          ccur @ dup 8 lit + ccur !
-         dup 4 lit + @ 0< if                 \ an id site calls nothing
-            drop
+         dup 4 lit + @ C0000000 lit and if   \ an id or address site calls
+            drop                             \   nothing
          else
             over swap csym 0 lit 0 lit go
          then
@@ -575,6 +637,7 @@
    then
    drop
    dup 8 lit + @ 0= if undef then
+   dup data? if notfn then
    dup curfn @ = if drop exit then
    dup 10 lit + @ 2 lit = if drop exit then
    dup 10 lit + @ 1 lit = if mkstub exit then
@@ -626,11 +689,42 @@
    obase @ 8 lit + retent !
    0 lit prevchk !  0 lit fwdslot !  0 lit seglo ! ;
 
+\ data,  write the data that is used, in the order it was first used, and
+\ fill in every place that loads an address of it: `auipc a0` and `addi
+\ a0, a0`, from that place to the data.
+: dstart  variable ;   \ where the data starts in the binary
+: dobj    variable ;   \ for one piece of data: its object,
+: doff    variable ;   \   how far through its bytes there,
+: dlast   variable ;   \   and where they end
+: data,  ( -- )
+   op @ dstart !
+   db @ begin dup dn @ u< while
+      dup @ dup 8 lit + @ dobj !  C lit + @
+      dup C lit + @ doff !
+      10 lit + @ doff @ + dlast !
+      dobj @ doff @ 1stcall                  \ no site may be in data
+      dup dobj @ 8 lit + @ u< if dup @ dlast @ u< if bad then then
+      drop
+      begin doff @ dlast @ u< while
+         dobj @ 8 lit + @ doff @ + @ w,
+         doff @ 4 lit + doff !
+      repeat
+      4 lit +
+   repeat drop
+   pb @ begin dup pn @ u< while
+      dup 4 lit + @ 14 lit + @ dstart @ +
+      over @ -                               \ from the place to the data
+      dup 800 lit + C lit rshift C lit lshift 517 lit or  2 lit pick @ !
+      14 lit lshift 50513 lit or  over @ 4 lit + !
+      8 lit +
+   repeat drop ;
+
 \ finish  how it ends: a jump to itself, in case the program runs off its
-\ end; the last island; and the two instructions of the header.
+\ end; the last island; the data; and the two instructions of the header.
 : finish  ( -- )
    op @ jal,
    1 lit island
+   data,
    op @ obase @ 10 lit + -                   \ from the auipc to the end
    dup 800 lit + C lit rshift C lit lshift 197 lit or  obase @ 10 lit + !
    14 lit lshift 18193 lit or  obase @ 14 lit + ! ;

@@ -1,0 +1,3 @@
+module counter;
+let calls = 0;
+pub fn add() { calls = calls + 1; return calls; }

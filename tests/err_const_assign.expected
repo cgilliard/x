@@ -1,0 +1,2 @@
+tests/err_const_assign.fam:3: cannot assign to a constant
+exit 1

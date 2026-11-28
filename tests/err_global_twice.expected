@@ -1,0 +1,2 @@
+tests/err_global_twice.fam:2: defined twice: a
+exit 1

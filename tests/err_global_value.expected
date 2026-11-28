@@ -1,0 +1,2 @@
+tests/err_global_value.fam:2: unexpected +
+exit 1

@@ -1,0 +1,16 @@
+// Another module's global is module.name, to read and to assign.
+import counter;
+
+let total = 100;                    // this file's own; counter has another
+
+fn main() {
+    print_int(counter.total); putc(32);
+    counter.add(5);
+    print_int(counter.total); putc(32);
+    counter.total = 7;
+    print_int(counter.total); putc(32);
+    print_int(counter.add(1)); putc(32);
+    print_int(counter.total + 1); putc(32);
+    print_int(total); putc(10);
+    return 0;
+}

@@ -1,4 +1,4 @@
-# fam object format, version 2 (draft)
+# fam object format, version 3 (draft)
 
 Status: a draft, implemented by `src/famc.forth` (the front end) and
 `src/famld.forth` (the linker and back end). Parts listed under "Open
@@ -14,8 +14,8 @@ lib/rtmain.fam ─famc▶ rtmain.o ─┘
 ```
 
 - The **front end** (`famc`) compiles one source file to one object.
-- An **object** is binary: machine code, the names it defines and calls,
-  and where the calls are.
+- An **object** is binary: machine code and data, the names it defines and
+  uses, and where the uses are.
 - The **linker** (`famld`) reads the objects one after another and writes
   the binary: every function the program uses, each placed before its
   first caller, with the calls and returns filled in.
@@ -32,9 +32,9 @@ with no gaps:
 | Part | Size in bytes | Contents |
 |---|---|---|
 | Header | 28 | see below |
-| Symbols | 20 each | the names the object defines or calls, and its init records |
-| Call sites | 8 each | where the code calls a symbol |
-| Code | a multiple of 4 | the code of all the records |
+| Symbols | 20 each | the names the object defines or uses, and its init records |
+| Call sites | 8 each | where the code calls a symbol, or takes its id or its address |
+| Code | a multiple of 4 | the code and the data of all the records |
 | Names | a multiple of 4 | the bytes of the names, zero-padded at the end |
 
 ### Header
@@ -42,7 +42,7 @@ with no gaps:
 | Word | Contents |
 |---|---|
 | 0 | the magic: the bytes `F` `A` `M` `O` |
-| 1 | the version: 2 |
+| 1 | the version: 3 |
 | 2 | the size of the whole object in bytes |
 | 3 | the number of symbols |
 | 4 | the number of call sites |
@@ -60,7 +60,7 @@ show it.
 
 | Word | Contents |
 |---|---|
-| 0 | the kind: 0 external, 1 function, 2 init, 3 local function |
+| 0 | the kind: 0 external, 1 function, 2 init, 3 local function, 4 data, 5 local data |
 | 1 | where the name starts, as an offset into the names |
 | 2 | the length of the name in bytes |
 | 3 | where the record's code starts, as an offset into the code |
@@ -70,8 +70,12 @@ show it.
   function's body.
 - A **local function** is the same, but only this object's call sites can
   reach it. Other objects may have a function of the same name.
-- An **external** is a name this object calls and does not define. Its code
-  fields are zero.
+- **Data** is bytes the program reads and writes while it runs: a global
+  variable. Its "code" is its bytes as they are when the program starts.
+  **Local data** is the same, but only this object can name it. Functions
+  and data share one set of names.
+- An **external** is a name this object uses and does not define, a
+  function's or data's. Its code fields are zero.
 - An **init** record is code run once at startup. It has no name; its name
   fields are zero.
 
@@ -84,7 +88,7 @@ that is not `pub` a local one.
 | Word | Contents |
 |---|---|
 | 0 | where the call is, as an offset into the code |
-| 1 | the index of the symbol called: a function, a local function or an external |
+| 1 | the index of the symbol, in the low 30 bits; the top two bits say what the site is |
 
 A call site is 16 bytes of code, all zero in the object. That is the size
 of the call sequence the linker puts there. So the code in an object is
@@ -103,6 +107,15 @@ An **id site** is an entry of the same table with the top bit of word 1
 set. It is 8 bytes of code, all zero in the object, where the linker puts
 the two instructions (`lui a0` and `addi a0`) that load the function's id:
 see "Function ids".
+
+An **address site** is an entry with the bit below that set. It is 8 bytes
+of code, all zero in the object, where the linker puts the two
+instructions (`auipc a0` and `addi a0`) that load the address of the
+symbol's data. The front end follows it with a load or a store.
+
+Both bits set is an error. So is a call or an id site whose symbol turns
+out to be data, and an address site whose symbol turns out to be a
+function. No site may lie inside data.
 
 ### Code
 
@@ -137,7 +150,9 @@ of four `0x04` bytes. It:
    is written go to the stub, and the jump is pointed at the function when
    it is written. A function calling itself needs no stub.
 4. Writes those functions, then every init record, in input order, as the
-   code the binary starts running. So the runtime (`lib/rt.fam`, which
+   code the binary starts running, and after all the code the data that
+   code refers to, in the order it is first referred to. Data nothing
+   written refers to is left out. So the runtime (`lib/rt.fam`, which
    begins with the startup code) goes first and the object that calls
    `main` (`lib/rtmain.fam`) last, with the init records of the program's
    objects in between; `tools/famc` sees to that. In a test build each
@@ -153,6 +168,8 @@ Link errors are reported as text in place of the binary, with exit code 1:
 - a call, in a function that is kept, to a name no object defines (naming
   the caller)
 - a name defined by two objects
+- a call of something that is data, or the address of something that is a
+  function
 - functions that call each other ending up over 1 MiB apart
 - input that is not an object, or an object whose contents are inconsistent
 - not enough memory for the link
@@ -169,6 +186,7 @@ auipc gp, 0 ; addi gp, gp, 0     gp = the address just past the binary
 <the init records>           where the program starts running
 j .
 <the last island>
+<the data>
 ```
 
 It runs at whatever address it is loaded: every jump in it is relative.
@@ -265,11 +283,15 @@ The deviations:
 - **`s10` and `s11` are reserved** for that return-id stack, where the
   standard has them as callee-saved registers.
 
-## Not in version 2
+**Data** comes last, each piece as its bytes are in its object. Code is
+never after it, so the two can be told apart by one address, and a machine
+that can protect memory can make the code unwritable and the data
+unrunnable.
 
-- **Shared data.** Globals and constants visible to other objects. Until
-  there is a data part, an object exposes data through a function that
-  returns its address.
+## Not in version 3
+
+- **Data that refers to things.** A piece of data cannot hold the address
+  of other data or a function's id; there are no sites in data.
 - **Interfaces.** Types, constants and inlinable definitions exported for
   other compilations.
 - **Debug information.** Source files and lines.

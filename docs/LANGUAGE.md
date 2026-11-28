@@ -59,6 +59,29 @@ backslash and `\"` a quote. A string must end on the line it starts on.
 hex digits, two for each byte, grouped any way. There is no zero byte at
 the end, and the program has to know the length.
 
+## Constants and globals
+
+```
+const LIMIT = 4096;
+let count = 0;
+pub let total = LIMIT;
+```
+
+A **constant** is a name for a number, in the file that defines it.
+
+A **global** is a variable outside any function: one 32-bit value, which
+starts as given and lasts as long as the program runs. Functions read and
+assign it by name, like a local. A local or parameter of the same name
+hides it.
+
+- What follows the `=` is a number or the name of a constant, with a `-`
+  in front if wanted. It is not an expression.
+- Both must be defined above where they are used.
+- A global belongs to its file's module, as a function does: only that file
+  can use it unless it is `pub`, and another file names it `module.name`.
+  A constant cannot be `pub`.
+- A global the program never uses is left out of the binary.
+
 ## Functions
 
 ```
@@ -102,7 +125,7 @@ fn main() {
 | Statement | Meaning |
 |---|---|
 | `let NAME = EXPR;` | A new local. It lasts to the end of its block and may hide an outer one of the same name. |
-| `NAME = EXPR;` | Assign to a local or parameter. |
+| `NAME = EXPR;` | Assign to a local, a parameter or a global. `MODULE.NAME = EXPR;` assigns to another module's global. |
 | `if EXPR { ... } else if EXPR { ... } else { ... }` | The `else` parts are optional. Zero is false; anything else is true. |
 | `while EXPR { ... }` | Loop while the expression is not zero. |
 | `return EXPR;` | Return a value. `return;` returns 0. |
@@ -312,7 +335,8 @@ prog.fam:3: unknown variable y
 
 - Types other than the 32-bit integer; arrays, pointers, structs.
 - Character literals.
-- Global variables and constants; giving memory back.
+- Globals of more than one word, or that start as anything but a number;
+  constants shared between files; giving memory back.
 - Checking the number of arguments of a call.
 - Nested modules; importing single names; checking at compile time that
   an imported function exists.

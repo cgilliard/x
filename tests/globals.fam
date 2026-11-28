@@ -1,0 +1,33 @@
+// Constants and global variables.
+const LIMIT = 3;
+const NEG = -5;
+const SAME = LIMIT;
+const BIG = 0x12345678;
+
+let count = 0;
+let start = LIMIT;
+let low = -LIMIT;
+
+fn bump() {
+    count = count + 1;
+    return count;
+}
+
+fn main() {
+    print_int(LIMIT); putc(32);
+    print_int(NEG); putc(32);
+    print_int(SAME); putc(32);
+    print_int(BIG == 305419896); putc(10);
+
+    print_int(count); putc(32);
+    bump();
+    bump();
+    print_int(count); putc(32);
+    print_int(start); putc(32);
+    print_int(low); putc(10);
+
+    let count = 9;                  // a local hides the global
+    print_int(count); putc(32);
+    print_int(bump()); putc(10);    // bump still means the global
+    return 0;
+}

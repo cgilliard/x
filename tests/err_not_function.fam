@@ -1,0 +1,5 @@
+// A global cannot be called.
+let g = 1;
+fn main() {
+    return g();
+}
