@@ -1,0 +1,22 @@
+// a normal build passes over tests and what is only for them
+#[cfg(test)]
+{
+    use nowhere::nothing;
+    const BIG = 1000;
+    fn helper() { this is { not } read; }
+    #[test]
+    fn t() { assert(helper() == BIG, "x"); }
+}
+
+#[test]
+fn alone() { assert(0); }
+
+#[cfg(test)]
+let only_for_tests = 1;
+
+#[cfg(test)] #[test] fn both() { }
+
+fn main() {
+    print("no tests here\n");
+    return 0;
+}

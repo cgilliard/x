@@ -1,0 +1,2 @@
+tests/err_attribute.fam:2: unknown attribute inline
+exit 1

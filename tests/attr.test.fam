@@ -1,0 +1,62 @@
+fn add(a, b) { return a + b; }
+
+#[test]
+fn alone() {
+    assert(add(2, 3) == 5);
+}
+
+#[cfg(test)]
+{
+    const BIG = 1000;
+    let calls = 0;
+
+    fn helper(n) {
+        calls = calls + 1;
+        return n + BIG;
+    }
+
+    #[test]
+    fn adds() {
+        assert(add(2, 3) == 5, "two and three");
+        assert_eq(add(-1, 1), 0);
+        assert_eq(helper(1), 1001, "the helper");
+    }
+
+    #[test]
+    fn fails_with_a_reason() {
+        assert(add(2, 2) == 5, "two and two are not five");
+        assert(0, "not reached");
+    }
+
+    #[test]
+    fn fails_without() {
+        assert(add(2, 2) == 5);
+    }
+
+    #[test]
+    fn differs() {
+        assert_eq(add(2, 2), helper(4), "four and a thousand and four");
+    }
+
+    #[test]
+    fn differs_without() {
+        let x = 3;
+        if x == 3 { assert_eq(x, -3); }
+    }
+
+    #[test]
+    fn the_reason_is_only_computed_on_failure() {
+        assert(1, helper(0));
+        assert_eq(calls, 2);
+    }
+}
+
+#[cfg(test)]
+fn unused() { return 1; }
+
+#[cfg(other)]
+fn not_compiled() { this is not fam at all; }
+
+test "the old kind still works" {
+    assert add(1, 1) == 2;
+}

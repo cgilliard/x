@@ -1,0 +1,3 @@
+// no such attribute
+#[inline]
+fn main() { return 0; }

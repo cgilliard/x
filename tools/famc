@@ -11,6 +11,8 @@
 #                                   directory src and the directories in it
 #   famc --test                     the same for the current directory
 #   famc --test src -o t            build them as `t`; do not run them
+#   famc --cfg NAME ...             set a flag, for `#[cfg(NAME)]` in the
+#                                   source; --test sets the flag `test`
 # Run a binary with tools/q32.
 #
 # A file is taken by its ending: .fam is fam source, .o an object
@@ -44,19 +46,20 @@ zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
-        echo "usage: famc [-c] [-o OUTPUT] FILE...
-       famc --test [-o OUTPUT] [FILE or DIRECTORY]...
+        echo "usage: famc [-c] [-o OUTPUT] [--cfg NAME]... FILE...
+       famc --test [-o OUTPUT] [--cfg NAME]... [FILE or DIRECTORY]...
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
 die() { echo "famc: $*" >&2; exit 1; }
 
-only=; testing=; out=; mode=build; files=
+only=; testing=; out=; mode=build; files=; cfgs=
 while [ $# -gt 0 ]; do
         case $1 in
         -c)     only=1 ;;
         -o)     [ $# -ge 2 ] || usage; out=$2; shift ;;
         --test) testing=1 ;;
+        --cfg)  [ $# -ge 2 ] || usage; cfgs="$cfgs $2"; shift ;;
         --pack) mode=pack ;;
         -*)     usage ;;
         *)      case $1 in *" "*) die "no spaces in file names: $1" ;; esac
@@ -142,12 +145,14 @@ others() {
 # file, after a line that is the byte 0x02 (or 0x01, to ask for the tests)
 # and its name; and after it, the same way, every other .fam file in its
 # directory and the directories in that, which are the files it may `use`.
+# Before all that, a line for each --cfg flag: the byte 0x03 and its name.
 compile() {
         c_src=$1
         c_dir=.; c_strip=./
         case $1 in */*) c_dir=${1%/*}; c_strip= ;; esac
         c_mark='\002'; [ -z "$testing" ] || c_mark='\001'
-        { printf "$c_mark%s\n" "$1"; cat "$1"
+        { for c_flag in $cfgs; do printf '\003%s\n' "$c_flag"; done
+          printf "$c_mark%s\n" "$1"; cat "$1"
           # a file with no "use" anywhere in it uses nothing: send no more
           # (what a program reads from the serial port, it reads slowly)
           case $(cat "$1") in *use*) others "$c_dir" ;; esac

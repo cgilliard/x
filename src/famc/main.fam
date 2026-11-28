@@ -32,11 +32,15 @@
 //     obj     the object being written, and the names of modules
 //     emit    a function's frame, and the instructions written
 //     parse   the language, but for what controls flow
-//     std     `if`, `while`, `return`, `||` and `&&`, as macros
+//     std     the macros: `if`, `while`, `return`, `||`, `&&`, and
+//             `#[cfg]`, `#[test]`, `assert`, `assert_eq`
 //
 // The language (every value is a 32-bit integer):
 //     program   = [ "module" NAME ";" ]
-//                 { import | use | constant | global | function | test | init }
+//                 { item }
+//     item      = import | use | constant | global | function | test | init
+//               | "#" "[" NAME ...              an attribute: a macro says
+//                                               what follows (std.fam)
 //     import    = "import" NAME ";"
 //     use       = "use" NAME { "::" NAME } ";"  another file, or something in it
 //     constant  = [ "pub" ] "const" NAME "=" value ";"    a name for a number

@@ -341,6 +341,25 @@ let hb = 0;
 let hn = 0;
 let hlim = 0;
 
+// The flags that are set (`tools/famc --cfg NAME`), 8 bytes each: name,
+// length.  `test` is set by asking for the tests, and is not listed.
+let gb = 0;
+let gn = 0;
+let glim = 0;
+
+// flag(name, len): is the flag of that name set?
+pub fn flag(name, len) {
+    if zeq(name, len, "test") { return mode; }
+    let p = gb;
+    while p < gn {
+        if load32(p + 4) == len {
+            if same(load32(p), name, len) { return 1; }
+        }
+        p = p + 8;
+    }
+    return 0;
+}
+
 fn addfile(name, nend, from, to) {
     if fn_top + 32 > flim { ebig(); }
     store32(fn_top, name);
@@ -432,7 +451,8 @@ pub fn lookup(path, len) {
 // Each file starts with the byte 0x01 or 0x02 and a line that is its name,
 // as tools/famc sends it, and runs to the next such byte.  0x01 on the
 // first asks for the tests.  If the first byte is neither, everything is
-// one file with no name.
+// one file with no name.  Before the files there may be lines that start
+// with the byte 0x03: each is the name of a flag that is set.
 pub fn read() {
     fb = alloc(0x10000);
     fn_top = fb;
@@ -440,6 +460,9 @@ pub fn read() {
     hb = alloc(0x1000);
     hn = hb;
     hlim = hb + 0x1000;
+    gb = alloc(0x1000);
+    gn = gb;
+    glim = gb + 0x1000;
 
     let room = 0x2000000;
     let p = alloc(room);
@@ -455,6 +478,22 @@ pub fn read() {
     let to = p;
 
     p = from;
+    let flags = 1;
+    while flags {                               // the flags, a line each
+        flags = 0;
+        if p < to { flags = load8(p) == 3; }
+        if flags {
+            if gn + 8 > glim { ebig(); }
+            let q = p + 1;
+            p = q;
+            while p < to && load8(p) != 10 { p = p + 1; }
+            store32(gn, q);
+            store32(gn + 4, p - q);
+            gn = gn + 8;
+            if p < to { p = p + 1; }
+        }
+    }
+    from = p;
     let named = 0;
     if p < to {
         c = load8(p);

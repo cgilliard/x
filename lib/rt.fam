@@ -367,6 +367,10 @@ pub fn __test_begin(name, file) {
     store32(v + 16, 0);
 }
 pub fn __test_fail(line) {
+    __test_failed(line);
+    putc(10);
+}
+fn __test_failed(line) {
     let v = __vars();
     print("FAIL  ");
     print(load32(v + 8));
@@ -374,8 +378,32 @@ pub fn __test_fail(line) {
     print(load32(v + 12));
     putc(58);                                   // :
     print_int(line);
-    print(")\n");
+    print(")");
     store32(v + 16, 1);
+}
+
+// A `#[test] fn name() { ... }` is the same, and its asserts may give a
+// reason (0: none): `assert(x, reason)` calls __test_why if x is zero, and
+// `assert_eq(a, b, reason)` calls __test_differ if a is not b.
+pub fn __test_why(line, reason) {
+    __test_failed(line);
+    if reason {
+        print(": ");
+        print(reason);
+    }
+    putc(10);
+}
+pub fn __test_differ(line, reason, left, right) {
+    __test_failed(line);
+    print(": ");
+    print_int(left);
+    print(" is not ");
+    print_int(right);
+    if reason {
+        print(": ");
+        print(reason);
+    }
+    putc(10);
 }
 pub fn __test_end() {
     let v = __vars();

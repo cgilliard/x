@@ -19,8 +19,9 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// std -- what controls flow, as macros: `if`, `while`, `return`, `||` and
-// `&&`.
+// std -- the macros every file has: what controls flow (`if`, `while`,
+// `return`, `||`, `&&`), and tests (`#[cfg(...)]`, `#[test]`, `assert`,
+// `assert_eq`).
 //
 // Part of the fam compiler written in fam (src/famc/): see main.fam.
 //
@@ -101,7 +102,116 @@ fn and_macro(level) {
     emit.place(past);
 }
 
+// #[cfg(NAME)] item: the item, or the items in { }, are there only if the
+// flag is set (`tools/famc --cfg NAME`; `--test` sets `test`).
+fn cfg_macro() {
+    lex.expect(40);
+    lex.next();
+    if lex.kind != 1 { lex.syntax(); }
+    let on = lex.flag(lex.tk, lex.tl);
+    lex.expect(41);
+    lex.expect(93);
+    if on { parse.item(); } else { parse.skip_item(); }
+}
+
+// #[test] fn NAME() block: a test.  If the tests are wanted it becomes an
+// init record, so it runs at startup, in order (lib/rt.fam has the
+// functions):
+//         __test_begin(name, file)
+//         the block: a failed assert reports and jumps to the end, as
+//         `return` does
+//         __test_end()
+// Otherwise it is passed over.
+fn test_macro() {
+    lex.expect(93);
+    if lex.flag("test", 4) == 0 {
+        parse.skip_item();
+        return;
+    }
+    lex.next();
+    if lex.kind != 1 { lex.syntax(); }
+    if lex.is("fn") == 0 { lex.syntax(); }
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    lex.expect(40);
+    lex.expect(41);
+    obj.init();
+    emit.begin();
+    emit.vtest = 2;
+    emit.string(lex.file, lex.fend);
+    obj.word(0x00050593);                       // mv a1, a0
+    emit.string(name, name + len);
+    obj.call("__test_begin", 12);
+    parse.block();
+    emit.end();
+}
+
+// reason(): [ , expr ] ) : the reason given for a failure, into a1 (0: none
+// is given).
+fn reason() {
+    lex.next();
+    if lex.punct(44) {
+        parse.expression();
+        obj.word(0x00050593);                   // mv a1, a0
+        lex.expect(41);
+    } else {
+        if lex.punct(41) == 0 { lex.syntax(); }
+        obj.word(0x00000593);                   // li a1, 0
+    }
+}
+
+// assert(expr [, reason]); in a test: the test fails, and stops, if the
+// expression is zero.  The reason is a string; it is only computed then.
+fn assert_macro() {
+    if emit.vtest == 0 { lex.error("assert outside a test"); }
+    let line = lex.line;
+    let ok = emit.label();
+    lex.expect(40);
+    parse.expression();
+    emit.jump_if_nonzero(ok);
+    reason();
+    emit.li(line);
+    obj.call("__test_why", 10);                 // (line, reason)
+    emit.jump(emit.exit_label());
+    emit.place(ok);
+    lex.expect(59);
+}
+
+// assert_eq(expr, expr [, reason]); in a test: the test fails, and stops,
+// if the two are not equal.
+fn assert_eq_macro() {
+    if emit.vtest == 0 { lex.error("assert outside a test"); }
+    let line = lex.line;
+    let ok = emit.label();
+    lex.expect(40);
+    parse.expression();
+    let left = emit.slot();
+    emit.sw(left, 10);
+    lex.expect(44);
+    parse.expression();
+    let right = emit.slot();
+    emit.sw(right, 10);
+    emit.lw(left, 11);
+    obj.word(0x40A58533);                       // sub a0, a1, a0
+    emit.jump_if_zero(ok);
+    reason();
+    emit.lw(left, 12);
+    emit.lw(right, 13);
+    emit.li(line);
+    obj.call("__test_differ", 13);              // (line, reason, left, right)
+    emit.jump(emit.exit_label());
+    emit.drop(2);
+    emit.place(ok);
+    lex.expect(59);
+}
+
 init {
+    parse.attribute("cfg", &cfg_macro);
+    parse.attribute("test", &test_macro);
+    parse.define("assert", &assert_macro);
+    parse.define("assert_eq", &assert_eq_macro);
     parse.define("||", &or_macro);
     parse.define("&&", &and_macro);
     parse.define("if", &if_macro);

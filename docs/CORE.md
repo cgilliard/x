@@ -9,7 +9,9 @@ the labels and jumps of `src/famc/emit.fam`, with the checks on jumps
 below. They are functions registered by name; there is no `macro` keyword
 yet. `use` is built (`docs/LANGUAGE.md`, "Using other files"), beside
 `module` and `import`, which the compiler's own source still needs: the
-stage compiler has to compile it. Nothing else here is built.
+stage compiler has to compile it. Attributes are built, with `#[cfg]`,
+`#[test]`, `assert` and `assert_eq` as macros in `src/famc/std.fam`, and
+`famc --cfg`. Nothing else here is built.
 
 The compiler runs on a bare machine and cannot open a file. So
 `tools/famc` sends it, after the file to compile, every other `.fam` file
@@ -194,5 +196,5 @@ fn packed_size(input, n) {
    compiling today's language to the same bytes. (Done.)
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
-3. `use` (done), attributes, flags and tests.
+3. `use`, attributes, flags and tests. (Done.)
 4. Types, and operators as library functions.

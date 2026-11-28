@@ -69,7 +69,7 @@ let gb = 0;
 let gn = 0;
 let glim = 0;
 
-// What item() found: what the name is, as above, and its value.
+// What member() found: what the name is, as above, and its value.
 let ikind = 0;
 let ivalue = 0;
 
@@ -81,8 +81,9 @@ let pb = 0;
 // How deep statements and expressions are nested.
 let depth = 0;
 
-// The macros, 12 bytes each: name, length, and the function to call when a
-// statement starts with that name, or for that operator.
+// The macros, 16 bytes each: name, length, the function to call, and
+// where the name calls it: 0 where a statement starts with it or as an
+// operator, 1 as an attribute, `#[name ...]`.
 let mb = 0;
 let mn = 0;
 let mlim = 0;
@@ -104,28 +105,42 @@ pub fn setup() {
 // right() for its right side.
 // Macros are defined in init blocks, before anything is compiled.
 pub fn define(name, f) {
+    madd(name, f, 0);
+}
+
+// attribute(name, f): a macro that is called as an attribute: `#[name`
+// where a function or another thing at the top of a file can start.  f
+// reads the rest, to the `]` and on, and says what becomes of the item
+// that follows: item() compiles it, skip_item() passes over it.
+pub fn attribute(name, f) {
+    madd(name, f, 1);
+}
+
+fn madd(name, f, place) {
     if mb == 0 {
         mb = alloc(0x1000);
         mn = mb;
         mlim = mb + 0x1000;
     }
-    if mn + 12 > mlim { lex.ebig(); }
+    if mn + 16 > mlim { lex.ebig(); }
     let len = 0;
     while load8(name + len) { len = len + 1; }
     store32(mn, name);
     store32(mn + 4, len);
     store32(mn + 8, f);
-    mn = mn + 12;
+    store32(mn + 12, place);
+    mn = mn + 16;
 }
 
-// macro(): the function of the macro the token names (0: it names none).
-fn macro() {
+// macro(place): the function of the macro the token names, for that place
+// (0: it names none).
+fn macro(place) {
     let p = mb;
     while p < mn {
-        if load32(p + 4) == lex.tl {
+        if load32(p + 4) == lex.tl && load32(p + 12) == place {
             if lex.same(load32(p), lex.tk, lex.tl) { return load32(p + 8); }
         }
-        p = p + 12;
+        p = p + 16;
     }
     return 0;
 }
@@ -205,11 +220,11 @@ fn gstore(index) {
 
 // ---- names in other files --------------------------------------------------
 
-// item(f, name, len): what a name is in the file f, which this file uses:
+// member(f, name, len): what a name is in the file f, which this file uses:
 // ikind and ivalue.  It must be `pub` there.  If f is still being compiled
 // (it uses this file, and this file it) and has not defined the name yet,
 // the name is taken for a function, to be checked at the end.
-fn item(f, name, len) {
+fn member(f, name, len) {
     let e = gin(f, name, len);
     let what = -1;
     if e { what = load32(e + 8); }
@@ -331,7 +346,7 @@ fn use() {
     if whole {
         gadd(name, len, 3, f, 0);
     } else {
-        item(f, name, len);
+        member(f, name, len);
         gadd(name, len, ikind, ivalue, 0);
     }
 }
@@ -357,7 +372,7 @@ fn fnref() {
         let f = used(name, len);
         lex.next();
         lex.chkident();
-        item(f, lex.tk, lex.tl);
+        member(f, lex.tk, lex.tl);
         if ikind != 2 { lex.error_name("not a function: ", lex.tk, lex.tl); }
         return ivalue;
     }
@@ -544,7 +559,7 @@ fn named(name, len) {
             lex.chkident();
             let qn = lex.tk;
             let ql = lex.tl;
-            item(f, qn, ql);
+            member(f, qn, ql);
             let what = ikind;
             let value = ivalue;
             lex.next();
@@ -637,7 +652,7 @@ fn operators(min) {
     while bprec != 0 && bprec >= min {
         let p = bprec;
         if p < 3 {                              // || and && are macros: they
-            let m = macro();                    //   may skip their right side
+            let m = macro(0);                   //   may skip their right side
             if m == 0 { lex.syntax(); }
             m(p + 1);
         } else {
@@ -744,7 +759,10 @@ fn stmt1() {
         emit.sw(s, 10);
         return;
     }
-    let m = macro();
+    let m = 0;                                  // a macro?  (In a `test`
+    if emit.vtest != 1 || lex.is("assert") == 0 {       // block, `assert` is
+        m = macro(0);                           //   the statement below.)
+    }
     if m {
         m();
         return;
@@ -802,7 +820,7 @@ fn stmt1() {
             let ql = lex.tl;
             lex.next();
             if lex.punct1(61) {
-                item(used(name, len), qn, ql);
+                member(used(name, len), qn, ql);
                 if ikind == 0 { lex.error("cannot assign to a constant"); }
                 if ikind != 1 { eunknown(qn, ql); }
                 let index = ivalue;
@@ -973,13 +991,62 @@ fn top() {
     if public { function(1); } else { function(3); }
 }
 
+// item1(): one thing at the top of a file, or an attribute and what it
+// makes of the thing after it.  Its first token is read.
+fn item1() {
+    if lex.punct1(35) {                         // #[ NAME ...
+        lex.expect(91);
+        lex.next();
+        if lex.kind != 1 { lex.syntax(); }
+        let m = macro(1);
+        if m == 0 { lex.error_name("unknown attribute ", lex.tk, lex.tl); }
+        m();
+        return;
+    }
+    if lex.kind != 1 { lex.syntax(); }
+    top();
+}
+
+// item(): compile the next thing at the top of a file; or, if it is a `{`,
+// all the things up to its `}`.  For attributes.
+pub fn item() {
+    lex.next();
+    if lex.punct1(123) == 0 {
+        item1();
+        return;
+    }
+    lex.next();
+    while lex.punct1(125) == 0 {
+        if lex.kind == 0 { lex.syntax(); }
+        item1();
+        lex.next();
+    }
+}
+
+// skip_item(): pass over what item() would compile, unread but for its
+// braces: to the `;` that ends it or to the `}` of its block.
+pub fn skip_item() {
+    let open = 0;
+    let more = 1;
+    while more {
+        lex.next();
+        if lex.kind == 0 { lex.syntax(); }
+        if lex.punct1(123) { open = open + 1; }
+        if lex.punct1(125) {
+            open = open - 1;
+            if open < 0 { lex.syntax(); }
+            if open == 0 { more = 0; }
+        }
+        if lex.punct1(59) && open == 0 { more = 0; }
+    }
+}
+
 // file(): the whole file.  The same for a file that the one being compiled
 // uses.
 pub fn file() {
     lex.next();
     while lex.kind {
-        if lex.kind != 1 { lex.syntax(); }
-        top();
+        item1();
         lex.next();
     }
 }

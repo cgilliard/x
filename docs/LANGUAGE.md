@@ -40,6 +40,7 @@ only the functions the program uses.
 | `famc --test a.fam` | Build the file's tests and run them: see "Tests". |
 | `famc --test src` | The same for every `.fam` file under the directory `src`. |
 | `famc --test` | The same for the current directory. |
+| `famc --cfg NAME ...` | Set a flag, for `#[cfg(NAME)]`. |
 | `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
 
 Both run QEMU (`qemu-system-riscv32`), and need `scripts/build.sh` to have
@@ -243,7 +244,53 @@ with its own.
 
 ## Tests
 
-A `test` block sits next to the code it tests:
+A test is a function marked `#[test]`, next to the code it tests:
+
+```
+fn add(a, b) { return a + b; }
+
+#[cfg(test)]
+{
+    fn big() { return 1000; }           // only there in a test build
+
+    #[test]
+    fn adds() {
+        assert(add(2, 3) == 5);
+        assert(add(2, 2) == 4, "two and two");
+        assert_eq(add(big(), 1), 1001, "a big one");
+    }
+}
+```
+
+```
+$ tools/famc --test math.fam
+ok    adds
+FAIL  subtracts (math.fam:21): 3 is not 4: three less one
+
+1 passed, 1 failed
+```
+
+- **`#[test] fn NAME() { ... }`** is a test, named by its function. A
+  normal build passes over it.
+- **`assert(EXPR);`** fails the test if the expression is zero, and the
+  test stops there; the other tests still run. **`assert_eq(A, B);`** fails
+  it if the two differ, and says what they were. Both take a reason, a
+  string, as a last argument; it is only computed if the test fails. They
+  are only allowed in a test.
+- **`#[cfg(NAME)]`** before a function, a `let`, a `const`, a `use`, or
+  several of them in `{ }`, keeps them only if the flag NAME is set.
+  `famc --test` sets the flag `test`, and `famc --cfg NAME` sets any. What
+  is not kept is not read, but for its braces: a mistake in it shows only
+  in a build with the flag. The braces group; they are not a scope.
+- The rest is as for `test` blocks, below.
+
+`#[cfg]`, `#[test]`, `assert` and `assert_eq` are not part of the compiler
+proper but macros (`src/famc/std.fam`).
+
+### `test` blocks
+
+The older form, which the runtime's own tests still use (the stage compiler
+has to read that file). A `test` block sits next to the code it tests:
 
 ```
 fn add(a, b) { return a + b; }
@@ -280,7 +327,7 @@ FAIL  add handles big numbers (math.fam:14)
 - `famc --test math.fam -o t` keeps the test binary as `t` and does not
   run it; `tools/q32 t` runs it later.
 - A normal build (without `--test`) skips test blocks.
-- `assert` is only allowed in a test block.
+- In a `test` block the form is `assert EXPR;`, with no reason.
 - A panic or a trap in a test ends the whole run.
 
 ## The runtime library
