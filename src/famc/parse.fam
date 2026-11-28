@@ -69,7 +69,7 @@ let glim = 0;
 let depth = 0;
 
 // The macros, 12 bytes each: name, length, and the function to call when a
-// statement starts with that name.
+// statement starts with that name, or for that operator.
 let mb = 0;
 let mn = 0;
 let mlim = 0;
@@ -84,6 +84,9 @@ pub fn setup() {
 // define(name, f): a macro.  The name is a text that ends with a zero
 // byte.  A statement that starts with it is compiled by calling f, which
 // reads what follows the name and says what to emit (docs/CORE.md).
+// If the name is `||` or `&&`, f is called where that operator stands,
+// with its left side's value in a0, and is given the level to pass to
+// right() for its right side.
 // Macros are defined in init blocks, before anything is compiled.
 pub fn define(name, f) {
     if mb == 0 {
@@ -243,7 +246,8 @@ fn bytes() {
 // binop(): is the token a binary operator?  Its precedence (0: it is not
 // one) and its one or two instructions, which compute a0 from a1 (the left
 // side) and a0 (the right); the second is 0 if there is only one.  For
-// * / % the first is 1, 2, 3: they are calls.
+// * / % the first is 1, 2, 3: they are calls.  || and && have none: what
+// they do is a macro's to say.
 let bprec = 0;
 let bw1 = 0;
 let bw2 = 0;
@@ -430,17 +434,10 @@ fn operators(min) {
     binop();
     while bprec != 0 && bprec >= min {
         let p = bprec;
-        if p < 3 {                              // || and && skip their right side
-            if p == 1 {
-                obj.word(0x00A03533);           // snez a0, a0
-                obj.word(0x00050463);           // beqz a0, +8
-            } else {
-                obj.word(0x00051463);           // bnez a0, +8
-            }
-            let at = emit.hole();               // j <past the right side>
-            expr(p + 1);
-            obj.word(0x00A03533);               // snez a0, a0
-            emit.here(at);
+        if p < 3 {                              // || and && are macros: they
+            let m = macro();                    //   may skip their right side
+            if m == 0 { lex.syntax(); }
+            m(p + 1);
         } else {
             let w1 = bw1;
             let w2 = bw2;
@@ -470,6 +467,12 @@ fn expr(min) {
     unary();
     operators(min);
     depth = depth - 1;
+}
+
+// right(level): compile the right side of an operator, for the macro of
+// that operator, which is given the level: its value is left in a0.
+pub fn right(level) {
+    expr(level);
 }
 
 // expression(): compile an expression: its value is left in a0.

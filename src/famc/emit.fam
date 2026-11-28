@@ -43,6 +43,7 @@
 //     place(l)            the label is here
 //     jump(l)             go to the label
 //     jump_if_zero(l)     go to the label if a0 is zero
+//     jump_if_nonzero(l)  go to the label if a0 is not zero
 //     exit_label()        the label at the function's end
 // A label belongs to the function and the block it was made in, at the
 // point it was made:
@@ -308,6 +309,12 @@ pub fn jump(l) {
 // jump_if_zero(l): append a jump to the label, taken if a0 is zero.
 pub fn jump_if_zero(l) {
     obj.word(0x00051463);                       // bnez a0, +8
+    jump(l);
+}
+
+// jump_if_nonzero(l): append a jump to the label, taken if a0 is not zero.
+pub fn jump_if_nonzero(l) {
+    obj.word(0x00050463);                       // beqz a0, +8
     jump(l);
 }
 

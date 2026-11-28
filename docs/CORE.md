@@ -3,8 +3,8 @@
 Status: a plan, of which the start is built. `src/famc/` is a compiler
 written in fam that compiles today's language (`docs/LANGUAGE.md`) to the
 same bytes as `src/famc.forth`, which builds it and is frozen;
-`scripts/test_compilers.sh` checks that. In it `if`, `while` and `return`
-are already macros (`src/famc/std.fam`), built from the labels and jumps of
+`scripts/test_compilers.sh` checks that. In it `if`, `while`, `return`,
+`||` and `&&` are already macros (`src/famc/std.fam`), built from the labels and jumps of
 `src/famc/emit.fam`, with the checks on jumps below. They are functions
 registered by name; there is no `macro` keyword yet, and nothing else here
 is built.
@@ -97,7 +97,7 @@ they can be written with the things they define.
 |---|---|---|
 | Reading | `peek` `next` `accept` `expect` | looking at and taking tokens |
 | Compiling | `expr` `block` `statement` | compiling the next piece; `expr` gives its type and leaves the value in the result register |
-| Flow | `label` `place` `jump` `jump_if_zero` `exit_label` | all of control flow |
+| Flow | `label` `place` `jump` `jump_if_zero` `jump_if_nonzero` `exit_label` | all of control flow |
 | Deferral | `capture` `replay` `at_scope_exit` | reading a statement without compiling it, and compiling it later, as often as needed |
 | Other | `flag` `error` `register` | build flags, errors, and code to run at start-up |
 
@@ -185,6 +185,6 @@ fn packed_size(input, n) {
 1. This compiler, written in fam and built by the stage compiler, first
    compiling today's language to the same bytes. (Done: `bin/famc2`.)
 2. The interface for macros, then `if`, the loops and `return` moved out
-   to the library. (Done for statements, as `src/famc/std.fam`.)
+   to the library. (Done, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests.
 4. Types, and operators as library functions.

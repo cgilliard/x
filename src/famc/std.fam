@@ -19,15 +19,16 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// std -- the statements that control flow, as macros: `if`, `while` and
-// `return`.
+// std -- what controls flow, as macros: `if`, `while`, `return`, `||` and
+// `&&`.
 //
 // Part of the fam compiler written in fam (src/famc/): see main.fam.
 //
 // The compiler proper does not know these words.  Each is a function here
-// that is called when a statement starts with the word: it reads what
-// follows, has the compiler compile the expressions and blocks in it, and
-// joins them with labels and jumps (emit.fam, docs/CORE.md).
+// that is called when a statement starts with the word, or where the
+// operator stands: it reads what follows, has the compiler compile the
+// expressions and blocks in it, and joins them with labels and jumps
+// (emit.fam, docs/CORE.md).
 
 module std;
 
@@ -79,7 +80,30 @@ fn return_macro() {
     emit.jump(emit.exit_label());
 }
 
+// left || right: 1 if either side is not zero.  The right side is skipped
+// if the left decides.
+fn or_macro(level) {
+    let past = emit.label();
+    obj.word(0x00A03533);                       // snez a0, a0
+    emit.jump_if_nonzero(past);
+    parse.right(level);
+    obj.word(0x00A03533);                       // snez a0, a0
+    emit.place(past);
+}
+
+// left && right: 1 if both sides are not zero.  The right side is skipped
+// if the left decides.
+fn and_macro(level) {
+    let past = emit.label();
+    emit.jump_if_zero(past);
+    parse.right(level);
+    obj.word(0x00A03533);                       // snez a0, a0
+    emit.place(past);
+}
+
 init {
+    parse.define("||", &or_macro);
+    parse.define("&&", &and_macro);
     parse.define("if", &if_macro);
     parse.define("while", &while_macro);
     parse.define("return", &return_macro);

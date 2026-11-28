@@ -32,7 +32,7 @@
 //     obj     the object being written, and the names of modules
 //     emit    a function's frame, and the instructions written
 //     parse   the language, but for what controls flow
-//     std     `if`, `while` and `return`, as macros
+//     std     `if`, `while`, `return`, `||` and `&&`, as macros
 //
 // The language (every value is a 32-bit integer):
 //     program   = [ "module" NAME ";" ]
