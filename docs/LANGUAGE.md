@@ -37,6 +37,7 @@ holds only the functions the program uses.
 | `famc -c a.fam` | Compile only, to `a.o`. |
 | `famc --test a.fam` | Build the tests of the file, and of the files it uses, and run them: see "Tests". |
 | `famc --cfg NAME ...` | Set a flag, for `#[cfg(NAME)]`. |
+| `famc --macros FILE ...` | Compile with the macros of FILE too: see "Macros". |
 | `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
 
 `famc` is given one file. The files that one uses are found from it: see
@@ -57,6 +58,7 @@ Every value has a type, and nothing is converted that is not told to be.
 | `*T` | a pointer: the address of a `T` |
 | `[T; N]` | an array: `N` values of type `T`, one after another |
 | a struct's name | a struct: see "Structs and arrays" |
+| an enum's name | one of several variants: see "Enums and match" |
 | `fn(T, ...) -> T` | a function, as a value: see "Function values" |
 
 - **Arithmetic wraps** at the size of the type: a `u8` holding 250, plus
@@ -165,10 +167,46 @@ fn main() -> i32 {
 - A function's locals have about 2000 bytes between them: a larger array
   is a global, or comes from `alloc`.
 
+## Enums and match
+
+```
+enum Shape { Circle(u32), Rect(Point), Empty }
+
+fn area(s: *Shape) -> u32 {
+    match *s {
+        Circle(r) => { return 3 * r * r; }
+        Rect(p) => { return (p.x * p.y) as u32; }
+        Empty => { return 0; }
+    }
+    return 0;
+}
+
+fn main() -> i32 {
+    let s = Shape::Circle(2);
+    s = Shape::Empty;
+    return area(&s) as i32;
+}
+```
+
+- **An enum** is one of its variants at a time. A variant may have a value
+  that goes with it, of any type. In memory it is a word that says which
+  variant, and then that value.
+- **`Shape::Circle(2)`** and **`Shape::Empty`** are values of the enum.
+- **`match EXPR { ... }`** runs the block of the variant the enum is. A
+  name in `( )` after the variant is a new local in that block: a copy of
+  the value that goes with it.
+- **Every variant must be named**, or the last arm be `_ => { ... }`, which
+  is for all the others. Leaving one out is an error.
+- Like a struct, an enum is copied by assignment, passed by pointer, and
+  has no operators of its own. `match` is a statement, not an expression,
+  and a function that gives a value still ends with a `return`.
+
 ## Operators that are functions
 
-A function marked `#[operator(OP)]` is what the operator does for a struct
-(or an array):
+Every operator is a function. Those of the integers are in the library
+(`lib/ops.fam`), and a program can give its structs their own. A function
+marked `#[operator(OP)]` is what the operator does for a struct (or an
+array):
 
 ```
 pub struct u64 { lo: u32, hi: u32 }
@@ -201,8 +239,21 @@ sides are of that type, in any file.
 - The result of such an operator is kept in the function's frame until the
   statement ends, so `a * b + c` works, and `let d = a * b + c;` copies
   it out.
-- The operators of integers, `bool`s and pointers are the compiler's own,
-  and cannot be given this way yet.
+- **The integers' operators are functions too**, of the shapes
+  `fn(a: T, b: T) -> T`, `fn(a: T, b: T) -> bool` and `fn(a: T) -> T`.
+  `lib/ops.fam` has them, and the runtime uses that file, so every program
+  has them:
+
+  ```
+  #[operator(+)] fn add_u8(a: u8, b: u8) -> u8 { asm { 3305B500 1375F50F } }
+  ```
+
+  A function like that, which is nothing but a few words of `asm`, is not
+  called: the compiler writes its words where the operator stands. A
+  program compiled without the runtime has no `+` until it says what `+`
+  is.
+- Only comparing `bool`s, pointers and function values, and adding a
+  number to a pointer, are the compiler's own.
 
 ## The library
 
@@ -299,6 +350,10 @@ lasts as long as the program runs. Its type is `i32` if none is written.
 | `*P = EXPR;` `P[I] = EXPR;` `S.F = EXPR;` | Store where a pointer points, or in an element or a field. |
 | `if EXPR { ... } else if EXPR { ... } else { ... }` | The `else` parts are optional. The expression is a `bool`. |
 | `while EXPR { ... }` | Loop while the `bool` is true. |
+| `loop { ... }` | Loop until a `break` or a `return`. |
+| `break;` `continue;` | Leave the innermost loop; go on with its next turn. |
+| `match EXPR { ... }` | See "Enums and match". |
+| `defer STATEMENT` | Do the statement, or a `{ }` block, when the block this is in ends, however it ends: at its `}`, or at a `return`, `break` or `continue` that leaves it. The latest deferred is done first. A `return`'s value is computed before. |
 | `return EXPR;` `return;` | Leave the function, with its value if it gives one. |
 | `EXPR;` | Compute and discard, usually a call. |
 | `asm { HEXWORD ... }` | Put machine code in the function: see below. |
@@ -419,11 +474,39 @@ FAIL  subtracts (math.fam:21): 3 is not 4: three less one
 
 ## Macros
 
-`if`, `while`, `return`, `||`, `&&`, `#[cfg]`, `#[test]`, `#[operator]`,
-`assert` and `assert_eq` are not part of the compiler proper. Each is a macro: a
-function in `src/famc/std.fam` that the compiler calls where the word
-stands, which reads what follows and says what code to write, with labels
-and jumps (`docs/CORE.md`). A program cannot define its own yet.
+`if`, `match`, `while`, `loop`, `break`, `continue`, `return`, `defer`,
+`||`, `&&`, `#[cfg]`, `#[test]`, `#[operator]`, `assert` and `assert_eq`
+are not part of the compiler proper. Each is a macro: a function in
+`src/famc/std.fam` that the compiler calls where the word stands, which
+reads what follows and says what code to write, with labels and jumps
+(`docs/CORE.md`).
+
+A program can bring its own:
+
+```
+tools/famc --macros unless.fam prog.fam -o prog
+```
+
+```
+// unless.fam: `unless EXPR { ... }` is `if` turned round
+module unless;
+import lex; import emit; import parse;
+
+fn unless_macro() {
+    let past = emit.label();
+    parse.condition();
+    emit.jump_if_nonzero(past);
+    parse.block();
+    emit.place(past);
+}
+init { parse.define("unless", &unless_macro); }
+```
+
+A macro is part of the compiler, so it is written as the compiler is: in
+the older fam with no types that the stage compiler compiles
+(`src/famc/main.fam`), not in the language this document describes.
+`famc --macros` compiles the file, links it with the compiler's own
+parts, and compiles the program with that.
 
 ## The runtime library
 
@@ -518,8 +601,9 @@ prog.fam:7: expected u8, found i32
 
 ## Not yet
 
-- Tagged unions and `match`.
 - Integers of 64 bits with a sign, and dividing those without one.
+- `match` as an expression; a function that gives a struct or an enum
+  (so no `Result` yet); types with parameters.
 - Writing a struct or an array out as a value; passing one to a function
   other than by pointer; checking an index against an array's length.
 - Character literals.
@@ -527,6 +611,6 @@ prog.fam:7: expected u8, found i32
   back.
 - Checking that every path through a function that gives a value ends in
   a `return`.
-- Macros defined by a program; `defer`; loops other than `while`.
-- The operators of integers as library functions: what `+` does for a
-  `u32` is still in the compiler.
+- Macros written in the language itself, with a `macro` keyword: they
+  wait for the compiler to be written in it. `for` loops; naming a loop
+  to `break` out of an outer one.

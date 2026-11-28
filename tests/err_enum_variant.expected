@@ -1,0 +1,2 @@
+tests/err_enum_variant.fam:3: no variant D
+exit 1

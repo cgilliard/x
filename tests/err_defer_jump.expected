@@ -1,0 +1,2 @@
+tests/err_defer_jump.fam:3: a jump out of deferred code
+exit 1

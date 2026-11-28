@@ -15,8 +15,12 @@
 //                address must be a multiple of, and how far it has got: 0
 //                named, 1 its fields being read, 2 laid out (40 bytes)
 //     array      4, the type of each element, how many there are
+//     enum       5, and then as a struct, and how many variants it has
 // A struct's fields are in a table of their own, 20 bytes each: the struct,
-// name, length, type, and where it is in the struct.
+// name, length, type, and where it is in the struct.  An enum's variants
+// are there too: the enum, name, length, the type of the value that goes
+// with it (8: none), and its number, from 0.  In memory an enum is a word
+// that is the number of the variant it is, and then that value.
 
 module types;
 
@@ -44,7 +48,7 @@ fn after(p) {
     let k = load32(p);
     if k == 1 { return p + 8; }
     if k == 2 { return p + 12 + (load32(p + 8) << 2); }
-    if k == 3 { return p + 40; }
+    if k == 3 || k == 5 { return p + 40; }
     return p + 12;
 }
 
@@ -86,6 +90,11 @@ pub fn is_struct(t) {
     return load32(t) == 3;
 }
 
+pub fn is_enum(t) {
+    if simple(t) { return 0; }
+    return load32(t) == 5;
+}
+
 pub fn is_array(t) {
     if simple(t) { return 0; }
     return load32(t) == 4;
@@ -104,7 +113,7 @@ pub fn size(t) {
     if t == 2 || t == 5 { return 2; }
     if t == 8 { return 0; }
     if simple(t) { return 4; }
-    if load32(t) == 3 { return load32(t + 12); }
+    if load32(t) == 3 || load32(t) == 5 { return load32(t + 12); }
     if load32(t) == 4 { return load32(t + 8) * size(load32(t + 4)); }
     return 4;
 }
@@ -112,7 +121,7 @@ pub fn size(t) {
 // align(t): what the address of a value of the type must be a multiple of.
 pub fn align(t) {
     if simple(t) { return size(t); }
-    if load32(t) == 3 { return load32(t + 16); }
+    if load32(t) == 3 || load32(t) == 5 { return load32(t + 16); }
     if load32(t) == 4 { return align(load32(t + 4)); }
     return 4;
 }
@@ -216,7 +225,38 @@ pub fn strukt(name, len) {
     return p;
 }
 
-// state(t), set_state(t, s): how far a struct has got.
+// enumeration(name, len): a new enum of that name, with no variants yet.
+pub fn enumeration(name, len) {
+    let p = strukt(name, len);
+    store32(p, 5);
+    store32(p + 12, 4);
+    store32(p + 16, 4);
+    store32(p + 24, 0);
+    return p;
+}
+
+// add_variant(t, name, len, with): the next variant of an enum, and the
+// type of the value that goes with it (8: none).
+pub fn add_variant(t, name, len, with) {
+    if field(t, name, len) { lex.error_name("defined twice: ", name, len); }
+    if fn_top + 20 > flim { lex.ebig(); }
+    store32(fn_top, t);
+    store32(fn_top + 4, name);
+    store32(fn_top + 8, len);
+    store32(fn_top + 12, with);
+    store32(fn_top + 16, load32(t + 24));
+    fn_top = fn_top + 20;
+    store32(t + 24, load32(t + 24) + 1);
+    let n = 4 + ((size(with) + 3) & -4);
+    if n > load32(t + 12) { store32(t + 12, n); }
+}
+
+// variants(t): how many variants an enum has.
+pub fn variants(t) {
+    return load32(t + 24);
+}
+
+// state(t), set_state(t, s): how far a struct or an enum has got.
 pub fn state(t) {
     return load32(t + 20);
 }
@@ -244,13 +284,19 @@ pub fn add_field(t, name, len, ft) {
 // close(t): a struct has all its fields: its size is a multiple of what
 // its address must be.
 pub fn close(t) {
+    if load32(t) == 5 {
+        store32(t + 20, 2);
+        return;
+    }
     let a = load32(t + 16);
     store32(t + 12, (load32(t + 12) + a - 1) & (0 - a));
     store32(t + 20, 2);
 }
 
-// field(t, name, len): the field of that name of a struct: its entry (0:
-// none).  field_type and field_at say what it is and where.
+// field(t, name, len): the field of that name of a struct, or the variant
+// of that name of an enum: its entry (0: none).  field_type and field_at
+// say what it is and where (for a variant: the type of its value, and its
+// number).
 pub fn field(t, name, len) {
     let p = fb;
     while p < fn_top {
@@ -306,7 +352,7 @@ pub fn show(t) {
         show(load32(t + 4));
         return;
     }
-    if load32(t) == 3 {
+    if load32(t) == 3 || load32(t) == 5 {
         lex.write(load32(t + 4), load32(t + 8));
         return;
     }

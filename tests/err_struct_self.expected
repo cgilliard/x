@@ -1,2 +1,2 @@
-tests/err_struct_self.fam:2: a struct cannot hold itself: A
+tests/err_struct_self.fam:2: a struct or an enum cannot hold itself: A
 exit 1

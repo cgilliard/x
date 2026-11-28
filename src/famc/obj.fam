@@ -227,6 +227,13 @@ pub fn idsite(index) { note(index | 0x80000000, 2); }
 // address site (the index's next-to-top bit set) and its 8 zero bytes.
 pub fn asite(index) { note(index | 0x40000000, 2); }
 
+// sites(): where the list of sites ends now.  site_at(p) and site_of(p):
+// of the site at p in that list, where its code is and what it is for (the
+// symbol's index, and the two bits on top).
+pub fn sites() { return cln; }
+pub fn site_at(p) { return load32(p) + cb; }
+pub fn site_of(p) { return load32(p + 4); }
+
 // call(name, len): append a call of a function by name.
 pub fn call(name, len) { site(ref(name, len, 0)); }
 

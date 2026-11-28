@@ -11,6 +11,9 @@
 #
 # The macros, like the compiler, are in the stage compiler's language, and
 # bin/famc0 compiles them.
+#
+# Then one check of `tools/famc --macros`, which does the same for a
+# program that brings macros of its own.
 
 cd "$(dirname "$0")/.." || exit 1
 sh scripts/build.sh || exit 1
@@ -86,7 +89,42 @@ expect "a label is placed twice" \
 expect "a label is never placed" \
         'fn f() { fwd; }'
 
-rm -f bin/test.in bin/test.out bin/test.famc bin/test.wrong.o
+# A program's own macros: tools/famc --macros.  `unless` is `if` turned
+# round.
+cat > bin/test.macros.fam <<'END'
+module unless;
+import lex; import emit; import parse;
+fn unless_macro() {
+    let past = emit.label();
+    parse.condition();
+    emit.jump_if_nonzero(past);
+    parse.block();
+    emit.place(past);
+}
+init { parse.define("unless", &unless_macro); }
+END
+cat > bin/test.unless.fam <<'END'
+fn main() -> i32 {
+    unless 1 > 2 { return 7; }
+    return 0;
+}
+END
+tools/famc --macros bin/test.macros.fam bin/test.unless.fam -o bin/test.bin &&
+        tools/q32 bin/test.bin
+if [ $? -eq 7 ]; then
+        pass=$((pass + 1)); echo "ok    famc --macros: unless"
+else
+        fail=$((fail + 1)); echo "FAIL  famc --macros: unless"
+fi
+got=$(tools/famc bin/test.unless.fam -o bin/test.bin 2>&1)
+if [ "$got" = "bin/test.unless.fam:2: unknown variable unless" ]; then
+        pass=$((pass + 1)); echo "ok    without --macros: no unless"
+else
+        fail=$((fail + 1)); echo "FAIL  without --macros: no unless"; echo "        got: $got"
+fi
+
+rm -f bin/test.in bin/test.out bin/test.famc bin/test.wrong.o bin/test.bin \
+      bin/test.macros.fam bin/test.unless.fam
 
 echo
 echo "$pass passed, $fail failed"

@@ -1,0 +1,45 @@
+// defer: a statement that is done when its block ends, however it ends.
+fn say(s: *u8) { print(s); putc(32); }
+
+fn early(n: i32) -> i32 {
+    defer say("out");
+    if n > 0 {
+        defer say("inner");
+        return n * 2;                   // inner, then out; and the value is kept
+    }
+    say("zero");
+    return 0;
+}
+
+fn order() {
+    defer say("first-deferred");
+    defer { say("second-deferred"); say("(a block)"); }
+    say("body");
+}
+
+fn in_loop() {
+    let i = 0;
+    while i < 5 {
+        defer say("tick");              // at the end of every turn
+        i = i + 1;
+        if i == 2 { continue; }
+        if i == 3 { break; }
+        print_int(i); putc(32);
+    }
+}
+
+fn sees() {
+    let x = 1;
+    defer print_int(x);                 // the x of here, whatever comes later,
+    x = 5;                              //   with the value it has then
+    let x = 100;
+}
+
+fn main() -> i32 {
+    print_int(early(21)); putc(10);
+    print_int(early(0)); putc(10);
+    order(); putc(10);
+    in_loop(); putc(10);
+    sees(); putc(10);
+    return 0;
+}

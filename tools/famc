@@ -9,6 +9,8 @@
 #   famc --test math.fam -o t       build them as `t`; do not run them
 #   famc --cfg NAME ...             set a flag, for `#[cfg(NAME)]` in the
 #                                   source; --test sets the flag `test`
+#   famc --macros FILE ...          compile with the macros of FILE too:
+#                                   see below
 # Run a binary with tools/q32.
 #
 # It is given one source file.  The other .fam files in that file's
@@ -19,6 +21,12 @@
 #
 # With --test the tests are those of the file and of every file it uses,
 # and `main` is not called.
+#
+# Macros.  A macro is a function that is part of the compiler (docs/CORE.md).
+# --macros FILE gives the compiler more of them for this run: FILE is
+# compiled and linked with the compiler's own objects, and that compiler is
+# used.  FILE is written as the compiler is, in the stage compiler's
+# language (src/famc/main.fam), and bin/famc0 compiles it.
 #
 # One more thing it does:
 #   famc --pack BINARY -o PACKED    pack a fam binary into one that unpacks itself
@@ -38,20 +46,21 @@ zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
-        echo "usage: famc [-c] [-o OUTPUT] [--cfg NAME]... FILE
-       famc --test [-o OUTPUT] [--cfg NAME]... FILE
+        echo "usage: famc [-c] [-o OUTPUT] [--cfg NAME]... [--macros FILE]... FILE
+       famc --test [-o OUTPUT] [--cfg NAME]... [--macros FILE]... FILE
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
 die() { echo "famc: $*" >&2; exit 1; }
 
-only=; testing=; out=; mode=build; src=; cfgs=; input=
+only=; testing=; out=; mode=build; src=; cfgs=; input=; macros=
 while [ $# -gt 0 ]; do
         case $1 in
         -c)     only=1 ;;
         -o)     [ $# -ge 2 ] || usage; out=$2; shift ;;
         --test) testing=1 ;;
         --cfg)  [ $# -ge 2 ] || usage; cfgs="$cfgs $2"; shift ;;
+        --macros) [ $# -ge 2 ] || usage; macros="$macros $2"; shift ;;
         --pack) mode=pack ;;
         -*)     usage ;;
         *)      case $1 in *" "*) die "no spaces in file names: $1" ;; esac
@@ -90,6 +99,26 @@ fi
 case $src in *.fam) ;; *) die "$src: not a .fam file" ;; esac
 [ -r "$src" ] || die "cannot read $src"
 
+# --macros: a compiler with those too, in place of bin/famc
+famc=$bin/famc
+if [ -n "$macros" ]; then
+        n=0; objs=
+        for m in $macros; do
+                n=$((n + 1))
+                { cat "$m"; printf '\004'; } > "$tmp/in" || exit 1
+                qemu "$bin/famc0" || { cat "$tmp/result" >&2; die "$m: its macros do not compile"; }
+                cat "$tmp/result" > "$tmp/macros$n.o"
+                objs="$objs $tmp/macros$n.o"
+        done
+        cat "$bin/famc0.rt.o" "$bin/famc.lex.o" "$bin/famc.obj.o" \
+            "$bin/famc.types.o" "$bin/famc.emit.o" "$bin/famc.parse.o" \
+            "$bin/famc.std.o" $objs "$bin/famc.main.o" "$bin/famc0.rtmain.o" \
+            "$bin/end.bin" > "$tmp/in"
+        qemu "$bin/famld" || { cat "$tmp/result" >&2; exit 1; }
+        cat "$tmp/result" > "$tmp/famc"
+        famc=$tmp/famc
+fi
+
 # others DIRECTORY -- write every .fam file in the directory and in the
 # directories in it, but for $src: each after a line that is the byte 0x02
 # and its name.
@@ -112,9 +141,10 @@ others() {
 #   - the runtime, lib/rt.fam, after the byte 0x05 (0x06: with its tests)
 #   - the source file, after the byte 0x02, or 0x01 to ask for the tests
 #   - every other .fam file in its directory and the directories in that,
-#     and the library's files (lib/*.fam), after 0x02: the files it may
-#     `use`.  A file with no "use" anywhere in it uses nothing, and then
-#     they are not sent.
+#     after 0x02: the files it may `use`.  A file with no "use" anywhere in
+#     it uses nothing, and then they are not sent.
+#   - the library's files (lib/*.fam), after 0x02: any file may `use`
+#     those, and the runtime does.
 dir=.; strip=./
 case $src in */*) dir=${src%/*}; strip= ;; esac
 mark='\002'; [ -z "$testing" ] || mark='\001'
@@ -122,21 +152,21 @@ mark='\002'; [ -z "$testing" ] || mark='\001'
   if [ -n "$testing" ] && [ "$src" -ef "$root/lib/rt.fam" ]; then
           # the runtime's own tests: it is the prelude, with its tests
           # wanted (the byte 0x06), of a program that has nothing else
-          printf '\006%s\n' "$src"; cat "$src"
+          printf '\006%s\n' "$root/lib/rt.fam"; cat "$src"
           printf '\001%s\n' "$src"
   else
           printf '\005%s\n' "$root/lib/rt.fam"; cat "$root/lib/rt.fam"
           printf "$mark%s\n" "$src"; cat "$src"
-          case $(cat "$src") in *use*)
-                  others "$dir"
-                  # and the library: the files beside the runtime
-                  for lib in "$root"/lib/*.fam; do
-                          [ "$dir" -ef "$root/lib" ] && break     # sent already
-                          [ "$lib" -ef "$root/lib/rt.fam" ] && continue
-                          printf '\002%s\n' "$lib"; cat "$lib"
-                  done ;;
-          esac
+          if ! [ "$dir" -ef "$root/lib" ]; then
+                  case $(cat "$src") in *use*) others "$dir" ;; esac
+          fi
   fi
+  # and the library: the files beside the runtime, which uses one itself
+  for lib in "$root"/lib/*.fam; do
+          [ "$lib" -ef "$root/lib/rt.fam" ] && continue
+          [ "$lib" -ef "$src" ] && continue
+          printf '\002%s\n' "$lib"; cat "$lib"
+  done
   printf '\004'
 } > "$tmp/in"
 # bin/famc looks for all that in memory first, after the bytes "FAMI"
@@ -146,7 +176,7 @@ if [ "$MEM" = 128M ]; then
         { printf 'FAMI'; cat "$tmp/in"; } > "$tmp/mem"
         input="-device loader,file=$tmp/mem,addr=0x87000000,force-raw=on"
 fi
-if ! qemu "$bin/famc"; then
+if ! qemu "$famc"; then
         cat "$tmp/result" >&2
         exit 1
 fi

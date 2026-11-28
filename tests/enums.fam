@@ -1,0 +1,68 @@
+// Enums: a value is one of several variants, some with a value of their own.
+struct Point { x: i32, y: i32 }
+enum Shape { Circle(u32), Rect(Point), Empty, Tall(u8) }
+enum Found { No, Yes(i32) }
+
+fn show(n: i32) { print_int(n); putc(32); }
+
+fn area(s: *Shape) -> i32 {
+    match *s {
+        Circle(r) => { return (3 * r * r) as i32; }
+        Rect(p) => {
+            p.x = p.x * p.y;            // p is a copy: the shape keeps its own
+            return p.x;
+        }
+        Empty => { return 0; }
+        _ => { return -1; }
+    }
+    return -2;
+}
+
+// find(p, n, want, out): where `want` is among n numbers.
+fn find(p: *i32, n: i32, want: i32, out: *Found) {
+    let i = 0;
+    while i < n {
+        if p[i] == want {
+            *out = Found::Yes(i);
+            return;
+        }
+        i = i + 1;
+    }
+    *out = Found::No;
+}
+
+fn main() -> i32 {
+    show(size_of(Shape) as i32);        // a word, and the largest value
+    let s = Shape::Circle(2);
+    show(area(&s));
+    let p: Point;
+    p.x = 6;
+    p.y = 7;
+    s = Shape::Rect(p);
+    show(area(&s)); show(area(&s));
+    s = Shape::Empty;
+    show(area(&s));
+    s = Shape::Tall(200);
+    show(area(&s));
+    print("| ");
+
+    let nums: [i32; 4];
+    nums[2] = 50;
+    let f: Found;
+    find(&nums[0], 4, 50, &f);
+    match f {
+        Yes(at) => { show(at); }
+        No => { show(-1); }
+    }
+    find(&nums[0], 4, 99, &f);
+    match f {
+        Yes(at) => { show(at); }
+        No => { print("none "); }
+    }
+    let count = 0;                      // the arms of a match are skipped
+    match f { No => { count = count + 1; }, _ => { count = 100; } }
+    match f { Yes(n) => { count = 100; }, _ => { count = count + 1; } }
+    show(count);
+    putc(10);
+    return 0;
+}

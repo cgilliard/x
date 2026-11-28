@@ -60,15 +60,17 @@ compile() {
 }
 
 # program OBJECT SOURCE -- compile a fam program with bin/famc, which is
-# given the runtime (lib/rt.fam, the prelude) and then the source, each
-# after a line that says what it is and its name (src/famc/lex.fam,
+# given the runtime (lib/rt.fam, the prelude), the source, and the file
+# the runtime uses (lib/ops.fam), each after a line that says what it is
+# and its name (src/famc/lex.fam,
 # "reading the source").  The object is the whole program: the linker
 # makes the binary of it alone.
 program() {
         out=$1; src=$2
-        if fresh "$out" bin/famc lib/rt.fam "$src"; then return 0; fi
+        if fresh "$out" bin/famc lib/rt.fam lib/ops.fam "$src"; then return 0; fi
         echo "Building $src → $out" >&2
         printf '\005lib/rt.fam\n' > bin/build.rt
+        printf '\002lib/ops.fam\n' > bin/build.ops
         printf '\002%s\n' "$src" > bin/build.name
         # the same in memory, after "FAMI", which is where bin/famc looks
         # first (src/famc/rt.fam, getc): the serial port is slow
@@ -76,10 +78,11 @@ program() {
         if [ "$MEM" = 128M ]; then
                 printf 'FAMI' > bin/build.fami
                 cat bin/build.fami bin/build.rt lib/rt.fam bin/build.name "$src" \
-                        bin/end.bin > bin/build.mem
+                        bin/build.ops lib/ops.fam bin/end.bin > bin/build.mem
                 input="-device loader,file=bin/build.mem,addr=0x87000000,force-raw=on"
         fi
-        if ! run bin/famc "$out" bin/build.rt lib/rt.fam bin/build.name "$src"; then
+        if ! run bin/famc "$out" bin/build.rt lib/rt.fam bin/build.name "$src" \
+                        bin/build.ops lib/ops.fam; then
                 echo "build.sh: $out: error:" >&2
                 cat "$out" >&2
                 : > "$out"

@@ -1,0 +1,33 @@
+// loop, break and continue.
+fn show(n: i32) { print_int(n); putc(32); }
+fn main() -> i32 {
+    let i = 0;
+    loop {
+        i = i + 1;
+        if i == 3 { continue; }         // not 3
+        if i > 5 { break; }
+        show(i);
+    }
+    print("| ");
+    let rows = 0;
+    while rows < 3 {                    // break leaves the inner loop only
+        let n = 0;
+        loop {
+            if n == rows { break; }
+            n = n + 1;
+        }
+        show(n);
+        rows = rows + 1;
+    }
+    print("| ");
+    let sum = 0;
+    let k = 0;
+    while k < 10 {
+        k = k + 1;
+        if k & 1 == 0 { continue; }     // the odd ones
+        sum = sum + k;
+    }
+    show(sum);
+    putc(10);
+    return 0;
+}

@@ -6,21 +6,25 @@ the language is today):
 - The compiler, `src/famc/`. It is written in an older fam with no types,
   which the stage compiler, `src/famc.forth`, compiles; that one is frozen.
   The compiler does not compile its own source.
-- `if`, `while`, `return`, `||` and `&&` as macros (`src/famc/std.fam`),
-  built from the labels and jumps of `src/famc/emit.fam`, with the checks
-  on jumps below. A macro is a function registered by name; there is no
-  `macro` keyword yet.
-- `use`, with one compilation for a file and all it uses.
-- Attributes, with `#[cfg]`, `#[test]`, `assert` and `assert_eq` as macros,
-  and `famc --cfg`.
-- Types: the integers, `bool`, pointers, function types, structs and
-  arrays, checked, with no conversion that is not written. A struct or an
-  array is handled by its address and copied by a call.
-- Operators as functions, for structs: `#[operator(+)]`. `u64` is a struct
-  in the library (`lib/u64.fam`) with its operators written that way. The
-  operators of the integers themselves are still in the compiler.
-- A library: a `use` that names no file of the program names one in
-  `lib/`.
+- Macros (`src/famc/std.fam`): `if`, `match`, `while`, `loop`, `break`,
+  `continue`, `return`, `defer`, `||`, `&&`, `assert`, `assert_eq`, and
+  the attributes `#[cfg]`, `#[test]` and `#[operator]`. They are built
+  from the labels and jumps of `src/famc/emit.fam`, with the checks on
+  jumps below, and what is deferred is done on every jump that leaves its
+  block. A macro is a function registered by name, in the compiler's own
+  language; `tools/famc --macros FILE` links a program's macros into the
+  compiler for one run. There is no `macro` keyword: that waits for the
+  compiler to be written in the language it compiles.
+- `use`, with one compilation for a file and all it uses, and a library
+  (`lib/`) for what a program does not have itself.
+- Types: the integers, `bool`, pointers, function types, structs, arrays
+  and enums, checked, with no conversion that is not written. A struct, an
+  array or an enum is handled by its address and copied by a call.
+- Operators as functions: `#[operator(+)]`. Those of the integers are in
+  `lib/ops.fam`, a word or two of `asm` each, which the compiler writes in
+  place; `u64` is a struct in `lib/u64.fam` with its operators in fam. The
+  compiler's own are only the comparing of `bool`s, pointers and function
+  values, and pointer arithmetic.
 
 The compiler runs on a bare machine and cannot open a file. So
 `tools/famc` sends it, after the file to compile, every other `.fam` file
@@ -206,6 +210,5 @@ fn packed_size(input, n) {
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests. (Done.)
-4. Types (integers, `bool`, pointers, structs, arrays, and `u64` in the
-   library: done), and operators as library functions (done for structs;
-   not yet for the integers).
+4. Types, and operators as library functions. (Done, but for types with
+   parameters and functions that give a struct, which `Result` needs.)

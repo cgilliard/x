@@ -34,10 +34,12 @@
 // The code:
 //   - An expression leaves its value in a0, as 32 bits whatever its type
 //     (emit.fam, "values by their type").
-//   - An operator saves its left side in a temporary, computes the right
-//     side, and reloads the left into a1.
-//   - `*`, `/` and `%` are calls of __mul, __div, __rem, __udiv and __urem
-//     (lib/rt.fam): the CPU has no instructions for them.
+//   - An operator saves its left side in a temporary and computes the
+//     right side.  What it does then is a function's to say, one marked
+//     `#[operator(...)]` (lib/ops.fam has those of the integers): the two
+//     sides go into a0 and a1, and the function is called, or, if it is a
+//     few words of asm, those are written here.  Only the comparing of
+//     bools, pointers and function values is the compiler's own.
 //   - `&f` is an id site: the linker fills in the two instructions that
 //     load f's id.  A call `p(...)` where p is a local is a call through an
 //     id: a call of __call, which the linker writes, with the id in t2.
@@ -110,15 +112,29 @@ let place = 0;
 let pkind = 0;
 let pslot = 0;
 
-// The operators that are functions, 20 bytes each: which operator (as
-// binop numbers them; 17 is `~x` and 18 is `-x`), the types of its left
-// and right sides, the index of the function's symbol, and 1 if it gives
-// a bool, not a struct.
+// The operators, each of which is a function, 24 bytes each: which
+// operator (as binop numbers them; 17 is `~x` and 18 is `-x`), the types
+// of its left and right sides, the index of the function's symbol, 1 if it
+// gives a bool, and what to write in place of a call of it (0: a call).
+// That is for a function that is nothing but a few words of asm: how many
+// items, and for each a 0 and a word, or a 1 and the index of the symbol
+// of a function to call.
 let ob = 0;
 let on = 0;
 let olim = 0;
+let ib = 0;             // room for those items,
+let in_top = 0;         //   and where the next go
+let ilim = 0;
 
 let lastfn = 0;         // the function taken down last in pass 1: its entry
+
+// The statements that are deferred in the blocks that are open, 20 bytes
+// each: how deep the block is (emit.depth), where the statement starts,
+// its line and its file, and what emit.names() was there.
+let db = 0;
+let dn = 0;
+let dlim = 0;
+let replaying = 0;      // 1 while a deferred statement is compiled
 
 // What binop() found: see there.
 let bprec = 0;
@@ -151,6 +167,12 @@ pub fn setup() {
     ob = alloc(0x10000);
     on = ob;
     olim = ob + 0x10000;
+    ib = alloc(0x10000);
+    in_top = ib;
+    ilim = ib + 0x10000;
+    db = alloc(0x10000);
+    dn = db;
+    dlim = db + 0x10000;
 }
 
 // ---- macros ----------------------------------------------------------------
@@ -437,9 +459,9 @@ fn layout(t) {
         layout(types.element(t));
         return;
     }
-    if types.is_struct(t) == 0 { return; }
+    if types.is_struct(t) == 0 && types.is_enum(t) == 0 { return; }
     if types.state(t) == 2 { return; }
-    if types.state(t) == 1 { etype("a struct cannot hold itself: ", t); }
+    if types.state(t) == 1 { etype("a struct or an enum cannot hold itself: ", t); }
     types.set_state(t, 1);
     let s = sb;
     while load32(s) != t { s = s + 16; }
@@ -452,11 +474,25 @@ fn layout(t) {
         lex.chkident();
         let name = lex.tk;
         let len = lex.tl;
-        lex.expect(58);
-        let ft = type();
-        if ft == 8 { lex.syntax(); }
-        layout(ft);
-        types.add_field(t, name, len, ft);
+        if types.is_enum(t) {                   // NAME [ ( type ) ]
+            let with = 8;
+            lex.next();
+            if lex.punct1(40) {
+                with = type();
+                if with == 8 { lex.syntax(); }
+                layout(with);
+                lex.expect(41);
+            } else {
+                lex.cur = lex.tk;
+            }
+            types.add_variant(t, name, len, with);
+        } else {                                // NAME : type
+            lex.expect(58);
+            let ft = type();
+            if ft == 8 { lex.syntax(); }
+            layout(ft);
+            types.add_field(t, name, len, ft);
+        }
         lex.next();
         if lex.punct1(44) { lex.next(); } else {
             if lex.punct1(125) == 0 { lex.syntax(); }
@@ -713,33 +749,53 @@ fn operand(t) {
 }
 
 // overload(op): the function taken down last is what the operator does,
-// for the types its parameters say.  It is one of:
-//     fn(to: *T, a: *T, b: U)       a op b, giving a T
-//     fn(a: *T, b: U) -> bool       a op b, for == and <: the other
-//                                   comparisons are made of those two
+// for the types its parameters say.  For integers it is one of:
+//     fn(a: T, b: T) -> T           a op b
+//     fn(a: T, b: T) -> bool        a comparison
+//     fn(a: T) -> T                 -a and ~a
+// and for a struct or an array T, which is not passed but by pointer:
+//     fn(to: *T, a: *T, b: U)       a op b, giving a T where `to` points
+//     fn(a: *T, b: U) -> bool       a comparison
 //     fn(to: *T, a: *T)             -a and ~a
-// where T is a struct or an array; U is passed by pointer if it is one too.
+// where U is passed by pointer if it is a struct or an array too.  Of the
+// comparisons, == and < are enough: the others are made of those two if
+// they are not given.
 pub fn overload(op) {
     let ft = load32(lastfn + 24);
     let n = types.count(ft);
     let gives = types.gives(ft);
-    let ok = n >= 2;
+    let ok = n >= 1;
     let lt = 0;
     let rt = 0;
     let truth = 0;
     if ok {
         lt = operand(types.param(ft, 0));
-        ok = types.wide(lt);
+        ok = types.wide(lt) || types.is_int(lt);
     }
-    if ok {
-        if gives == 7 {
-            ok = n == 2 && (op == 1 || op == 3);
-            rt = operand(types.param(ft, 1));
+    if ok && types.is_int(lt) {
+        if n == 1 {
+            ok = gives == lt && (op == 13 || op == 17);
+            if op == 13 { op = 18; }
+        } else {
+            rt = types.param(ft, 1);
+            ok = n == 2 && rt == lt;
+            if gives == 7 {
+                ok = ok && op <= 6;
+                truth = 1;
+            } else {
+                ok = ok && gives == lt && op >= 7 && op <= 16;
+            }
+        }
+    } else {
+        if ok && gives == 7 {
+            ok = n == 2 && op <= 6;
+            if ok { rt = operand(types.param(ft, 1)); }
             truth = 1;
         } else {
-            ok = gives == 8 && types.param(ft, 1) == types.param(ft, 0);
-            if n == 2 {
-                ok = ok && (op == 13 || op == 17);
+            ok = ok && n >= 2 && gives == 8;
+            if ok { ok = types.param(ft, 1) == types.param(ft, 0); }
+            if ok && n == 2 {
+                ok = op == 13 || op == 17;
                 if op == 13 { op = 18; }
             } else {
                 ok = ok && n == 3 && op >= 7 && op <= 16;
@@ -749,13 +805,14 @@ pub fn overload(op) {
     }
     if ok == 0 { lex.error("not the parameters of that operator"); }
     if oplook(op, lt, rt) { lex.error("that operator is defined already"); }
-    if on + 20 > olim { lex.ebig(); }
+    if on + 24 > olim { lex.ebig(); }
     store32(on, op);
     store32(on + 4, lt);
     store32(on + 8, rt);
     store32(on + 12, load32(lastfn + 12));
     store32(on + 16, truth);
-    on = on + 20;
+    store32(on + 20, 0);
+    on = on + 24;
 }
 
 // oplook(op, lt, rt): the entry of the function for an operator on those
@@ -768,21 +825,93 @@ fn oplook(op, lt, rt) {
             if load32(o + 8) == rt { return o; }
             if rt == 9 && types.is_int(load32(o + 8)) { return o; }
         }
-        o = o + 20;
+        o = o + 24;
     }
     return 0;
 }
 
-// overloaded(op, lt, rt): append what an operator does that is a function.
-// Its left side, a struct of type lt, has its address in the slot taken
-// last; its right side, of type rt, is in a0, by its address if it is a
-// struct too.  It gives the type of the result, whose address, if it is a
-// struct, is that of room that lasts to the end of the statement.
-fn overloaded(op, lt, rt) {
-    let base = op;                              // != > <= >= are made of
-    if op == 2 { base = 1; }                    //   == and <
-    if op >= 4 && op <= 6 { base = 3; }
-    let o = oplook(base, lt, rt);
+// isop(index): is the function of that symbol an operator?
+fn isop(index) {
+    let o = ob;
+    while o < on {
+        if load32(o + 12) == index { return 1; }
+        o = o + 24;
+    }
+    return 0;
+}
+
+// inline(index, from, sites): the function of that symbol is an operator,
+// and its body is nothing but the asm whose code starts at `from` and
+// whose sites start at `sites` in their list.  If that is four things or
+// fewer, words or calls, they are written from now on in place of a call
+// of the function.
+fn inline(index, from, sites) {
+    let items = in_top;
+    if items + 36 > ilim { return; }
+    let n = 0;
+    let at = from;
+    while at < obj.cn {
+        if n == 4 { return; }
+        if sites < obj.sites() && obj.site_at(sites) == at {
+            let what = obj.site_of(sites);
+            if what & 0xC0000000 { return; }    // not a call: no
+            store32(items + 4 + (n << 3), 1);
+            store32(items + 8 + (n << 3), what);
+            at = at + 16;
+            sites = sites + 8;
+        } else {
+            store32(items + 4 + (n << 3), 0);
+            store32(items + 8 + (n << 3), load32(at));
+            at = at + 4;
+        }
+        n = n + 1;
+    }
+    store32(items, n);
+    in_top = items + 4 + (n << 3);
+    let o = ob;
+    while o < on {
+        if load32(o + 12) == index { store32(o + 20, items); }
+        o = o + 24;
+    }
+}
+
+// apply(o): append what the function of an operator's entry does, its
+// arguments being in a0, a1 and a2 as for a call: a call, or what is
+// written in place of one.
+fn apply(o) {
+    let items = load32(o + 20);
+    if items == 0 {
+        obj.site(load32(o + 12));
+        return;
+    }
+    let n = load32(items);
+    let i = 0;
+    while i < n {
+        if load32(items + 4 + (i << 3)) {
+            obj.site(load32(items + 8 + (i << 3)));
+        } else {
+            obj.word(load32(items + 8 + (i << 3)));
+        }
+        i = i + 1;
+    }
+}
+
+// operate(op, lt, rt): append what an operator does.  Its left side, of
+// type lt, waits in the slot taken last; its right side, of type rt, is in
+// a0.  (A struct or an array is there by its address.)  It gives 7 for a
+// comparison and 0 for another operator.  A comparison that is not given
+// is made of == or <:  a != b is !(a == b),  a > b is b < a,  a <= b is
+// !(b < a),  a >= b is !(a < b).
+fn operate(op, lt, rt) {
+    let o = oplook(op, lt, rt);
+    let swap = 0;
+    let turn = 0;
+    if o == 0 && op >= 2 && op <= 6 {
+        if op == 2 { o = oplook(1, lt, rt); } else { o = oplook(3, lt, rt); }
+        swap = op == 4 || op == 5;
+        turn = op != 4;
+        if swap && lt != rt { o = 0; }
+    }
     if o == 0 {
         lex.complain();
         print("no such operator on ");
@@ -792,39 +921,46 @@ fn overloaded(op, lt, rt) {
         lex.stop();
     }
     need(rt, load32(o + 8));
-    if op <= 6 {
-        if op == 4 || op == 5 {                 // a > b is b < a: a1 = a, a0 = b
-            if lt != rt { etype("no such order on ", lt); }
+    if load32(o + 16) {                         // a comparison: f(a, b)
+        if swap {
             emit.lw(emit.drop(1), 11);
         } else {
             obj.word(0x00050593);               // mv a1, a0
             emit.lw(emit.drop(1), 10);
         }
-        obj.site(load32(o + 12));
-        if op == 2 || op == 5 || op == 6 { obj.word(0x00154513); }      // xori a0, a0, 1
+        apply(o);
+        if turn { obj.word(0x00154513); }       // xori a0, a0, 1
         return 7;
     }
-    obj.word(0x00050613);                       // mv a2, a0
-    emit.lw(emit.drop(1), 11);
-    let k = emit.temp(types.size(lt));
-    emit.temp_address(k);
-    obj.site(load32(o + 12));
-    emit.temp_address(k);
-    return lt;
+    if types.wide(lt) {                         // f(to, a, b): the result is in
+        obj.word(0x00050613);                   //   room that lasts to the end
+        emit.lw(emit.drop(1), 11);              //   of the statement
+        let k = emit.temp(types.size(lt));
+        emit.temp_address(k);
+        apply(o);
+        emit.temp_address(k);
+        return 0;
+    }
+    obj.word(0x00050593);                       // f(a, b): mv a1, a0
+    emit.lw(emit.drop(1), 10);
+    apply(o);
+    return 0;
 }
 
-// overloaded1(op, t): the same for -a (18) and ~a (17): the struct's
-// address is in a0.
-fn overloaded1(op, t) {
+// operate1(op, t): the same for -a (18) and ~a (17), a being in a0.
+fn operate1(op, t) {
     let o = oplook(op, t, 0);
     if o == 0 { etype("no such operator on ", t); }
-    obj.word(0x00050593);                       // mv a1, a0
-    let k = emit.temp(types.size(t));
-    emit.temp_address(k);
-    obj.site(load32(o + 12));
-    emit.temp_address(k);
+    if types.wide(t) {                          // f(to, a)
+        obj.word(0x00050593);                   // mv a1, a0
+        let k = emit.temp(types.size(t));
+        emit.temp_address(k);
+        apply(o);
+        emit.temp_address(k);
+    } else {
+        apply(o);                               // f(a)
+    }
     place = 0;
-    return t;
 }
 
 // ---- operators -------------------------------------------------------------
@@ -886,7 +1022,10 @@ fn combine(op, lt, rt, lv, lk) {
         if op == 12 { obj.word(0x00A58533); } else { obj.word(0x40A58533); }
         return lt;
     }
-    if types.wide(lt) { return overloaded(op, lt, rt); }
+    if types.wide(lt) {                         // what a function says
+        if operate(op, lt, rt) { return 7; }
+        return lt;
+    }
     let t = lt;
     if lt == 9 && rt == 9 {
         litk = 0;                               // two numbers: still a number
@@ -912,49 +1051,25 @@ fn combine(op, lt, rt, lv, lk) {
             }
         }
     }
-    let number = types.is_int(t) || t == 9;
-    if types.wide(t) { etype("no operators on ", t); }
-    if op > 6 && number == 0 { etype("no arithmetic on ", t); }
-    if op > 2 && op <= 6 && number == 0 && types.is_ptr(t) == 0 { etype("no order on ", t); }
-    if t == 8 { etype("nothing to compare: ", t); }
-    let sign = types.signed(t);
-    if op >= 14 {                               // * / %: a call, left side in
-        obj.word(0x00050593);                   //   a0 and right in a1
-        emit.lw(emit.drop(1), 10);
-        if op == 14 { obj.call("__mul", 5); }
-        if op == 15 {
-            if sign { obj.call("__div", 5); } else { obj.call("__udiv", 6); }
-        }
-        if op == 16 {
-            if sign { obj.call("__rem", 5); } else { obj.call("__urem", 6); }
-        }
-        emit.fit(t);
+    if types.is_int(t) || t == 9 {              // integers: what a function
+        let of = t;                             //   says too; two numbers
+        if t == 9 { of = 3; }                   //   are taken as i32
+        if operate(op, of, of) { return 7; }
         return t;
     }
+    // bool, pointers, function values: == and !=, and for pointers the
+    // order of their addresses.  These are the compiler's own.
+    if op > 6 { etype("no arithmetic on ", t); }
+    if op > 2 && types.is_ptr(t) == 0 { etype("no order on ", t); }
+    if t == 8 { etype("nothing to compare: ", t); }
     emit.lw(emit.drop(1), 11);                  // the left side, into a1
-    let less = 0x00A5B533;                      // sltu a0, a1, a0
-    let more = 0x00B53533;                      // sltu a0, a0, a1
-    if sign {
-        less = 0x00A5A533;                      // slt a0, a1, a0
-        more = 0x00B52533;                      // slt a0, a0, a1
-    }
-    if op == 1 { obj.word(0x40A58533); obj.word(0x00153513); return 7; }   // sub ; seqz
-    if op == 2 { obj.word(0x40A58533); obj.word(0x00A03533); return 7; }   // sub ; snez
-    if op == 3 { obj.word(less); return 7; }
-    if op == 4 { obj.word(more); return 7; }
-    if op == 5 { obj.word(more); obj.word(0x00154513); return 7; }         // xori a0, a0, 1
-    if op == 6 { obj.word(less); obj.word(0x00154513); return 7; }
-    if op == 7 { obj.word(0x00A5E533); }        // or  a0, a1, a0
-    if op == 8 { obj.word(0x00A5C533); }        // xor a0, a1, a0
-    if op == 9 { obj.word(0x00A5F533); }        // and a0, a1, a0
-    if op == 10 { obj.word(0x00A59533); }       // sll a0, a1, a0
-    if op == 11 {
-        if sign { obj.word(0x40A5D533); } else { obj.word(0x00A5D533); }   // sra, srl
-    }
-    if op == 12 { obj.word(0x00A58533); }       // add a0, a1, a0
-    if op == 13 { obj.word(0x40A58533); }       // sub a0, a1, a0
-    emit.fit(t);
-    return t;
+    if op == 1 { obj.word(0x40A58533); obj.word(0x00153513); }      // sub ; seqz
+    if op == 2 { obj.word(0x40A58533); obj.word(0x00A03533); }      // sub ; snez
+    if op == 3 { obj.word(0x00A5B533); }                            // sltu a0, a1, a0
+    if op == 4 { obj.word(0x00B53533); }                            // sltu a0, a0, a1
+    if op == 5 { obj.word(0x00B53533); obj.word(0x00154513); }      // ... ; xori a0, a0, 1
+    if op == 6 { obj.word(0x00A5B533); obj.word(0x00154513); }
+    return 7;
 }
 
 // ---- expressions -----------------------------------------------------------
@@ -1039,6 +1154,43 @@ fn called(e, name, len) {
     return args(load32(e + 24), load32(e + 12), 0);
 }
 
+// variant(t): NAME [ ( expr ) ] after an enum's name and `::`: a value of
+// the enum, that variant of it, in room that lasts to the end of the
+// statement.
+fn variant(t) {
+    lex.next();
+    if lex.kind != 1 { lex.syntax(); }
+    let name = lex.tk;
+    let len = lex.tl;
+    let v = types.field(t, name, len);
+    if v == 0 { lex.error_name("no variant ", name, len); }
+    let with = types.field_type(v);
+    let k = emit.temp(types.size(t));
+    emit.temp_address(k);
+    emit.lir(11, types.field_at(v));
+    obj.word(0x00B52023);                       // sw a1, 0(a0): which variant
+    lex.next();
+    if lex.punct(40) {
+        if with == 8 { lex.error_name("no value goes with ", name, len); }
+        emit.further(4);
+        emit.sw(emit.slot(), 10);               // where its value goes
+        need(expr(1), with);
+        lex.expect(41);
+        if types.wide(with) {
+            copy(with);
+        } else {
+            emit.lw(emit.drop(1), 11);
+            emit.put(with);
+        }
+    } else {
+        if with != 8 { lex.error_name("a value goes with ", name, len); }
+        lex.cur = lex.tk;
+    }
+    emit.temp_address(k);
+    place = 0;
+    return t;
+}
+
 // named(name, len): what starts with a name, which is read, as is the
 // token after it.
 fn named(name, len) {
@@ -1060,8 +1212,14 @@ fn named(name, len) {
             }
             return called(find(name, len), name, len);
         }
-        if colons() {                           // file :: name
-            let f = used(name, len);
+        if colons() {
+            let en = find(name, len);           // enum :: variant ?
+            if en {
+                if load32(en + 8) == 6 {
+                    if types.is_enum(load32(en + 12)) { return variant(load32(en + 12)); }
+                }
+            }
+            let f = used(name, len);            // file :: name
             lex.next();
             lex.chkident();
             let qn = lex.tk;
@@ -1217,12 +1375,8 @@ fn prefix() {
         let c = load8(lex.tk);
         if c == 45 {
             let t = prefix();
-            if types.wide(t) { return overloaded1(18, t); }
-            if types.is_int(t) == 0 && t != 9 { etype("no arithmetic on ", t); }
-            obj.word(0x40A00533);               // neg a0, a0
-            emit.fit(t);
+            if t == 9 { operate1(18, 3); } else { operate1(18, t); }
             litv = 0 - litv;
-            place = 0;
             return t;
         }
         if c == 33 {
@@ -1234,12 +1388,8 @@ fn prefix() {
         }
         if c == 126 {
             let t = prefix();
-            if types.wide(t) { return overloaded1(17, t); }
-            if types.is_int(t) == 0 && t != 9 { etype("no arithmetic on ", t); }
-            obj.word(0xFFF54513);               // not a0, a0
-            emit.fit(t);
+            if t == 9 { operate1(17, 3); } else { operate1(17, t); }
             litv = ~litv;
-            place = 0;
             return t;
         }
         if c == 42 {
@@ -1358,6 +1508,64 @@ pub fn condition() {
 
 // ---- statements ------------------------------------------------------------
 
+// defer_here(): the statement that follows is not compiled here but put
+// aside, to be compiled where the block it is in ends, and before every
+// jump that leaves that block.
+pub fn defer_here() {
+    if replaying { lex.error("defer in deferred code"); }
+    if dn + 20 > dlim { lex.ebig(); }
+    store32(dn, emit.depth());
+    store32(dn + 4, lex.cur);
+    store32(dn + 8, lex.line);
+    store32(dn + 12, lex.unit);
+    store32(dn + 16, emit.names());
+    dn = dn + 20;
+    skip_item();
+}
+
+// replay(d): compile a deferred statement here, as it was meant where it
+// was written: the locals named since are not seen.
+fn replay(d) {
+    lex.push();
+    lex.enter(load32(d + 12));
+    lex.cur = load32(d + 4);
+    lex.line = load32(d + 8);
+    emit.deferring(load32(d + 16));
+    replaying = 1;
+    lex.peek();                                 // a statement, or a block
+    if lex.punct1(123) { block(); } else { statement(); }
+    replaying = 0;
+    emit.deferred();
+    lex.pop();
+}
+
+// leaving(to): a jump is about to leave blocks, to where the open blocks
+// are `to` deep: what was deferred in the blocks it leaves is done first,
+// the latest first.  a0 is kept: it may be what a `return` gives.
+pub fn leaving(to) {
+    let d = dn;
+    let kept = -1;
+    while d > db && load32(d - 20) > to {
+        d = d - 20;
+        if kept < 0 {
+            kept = emit.slot();
+            emit.sw(kept, 10);
+        }
+        replay(d);
+    }
+    if kept >= 0 { emit.lw(emit.drop(1), 10); }
+}
+
+// closing(): the innermost block ends: what was deferred in it is done,
+// the latest first.
+fn closing() {
+    while dn > db && load32(dn - 20) == emit.depth() {
+        dn = dn - 20;
+        replay(dn);
+    }
+    emit.close();
+}
+
 // block(): "{" { statement } "}".  The locals and slots of its `let`s go
 // when it ends.
 pub fn block() {
@@ -1369,7 +1577,7 @@ pub fn block() {
         statement();
         lex.next();
     }
-    emit.close();
+    closing();
 }
 
 // body(gives): what the block compiled next gives, as a function's body:
@@ -1621,10 +1829,29 @@ fn function(public) {
     }
     let what = 3;                               // a local symbol, unless pub
     if public { what = 1; }
-    if obj.define(obj.qname, obj.qlen, what) < 0 { edup(name, len); }
+    let index = obj.define(obj.qname, obj.qlen, what);
+    if index < 0 { edup(name, len); }
+    dn = db;
     emit.begin();
     rettype = types.gives(signature(1));
-    block();
+    lex.expect(123);                            // its block
+    emit.open();
+    lex.next();
+    let bare = 0;
+    if lex.kind == 1 { bare = lex.is("asm"); }
+    if bare && isop(index) {                     // an operator that is nothing
+        let from = obj.cn;                      //   but asm may be written in
+        let sites = obj.sites();                //   place of a call of it
+        asmbody();
+        lex.next();
+        if lex.punct(125) { inline(index, from, sites); }
+    }
+    while lex.punct(125) == 0 {
+        lex.cur = lex.tk;
+        statement();
+        lex.next();
+    }
+    closing();
     emit.end();
 }
 
@@ -1675,10 +1902,11 @@ fn global(public) {
     obj.end();
 }
 
-// structure(public): [ pub ] struct NAME { NAME : type , ... } (the struct
-// is read).  Its fields are read later, when every struct has a name:
-// layout.
-fn structure(public) {
+// structure(public, variants): [ pub ] struct NAME { NAME : type , ... }
+// (the struct is read), or, if `variants`, [ pub ] enum NAME { NAME [ (
+// type ) ] , ... }.  What is in the braces is read later, when every
+// struct and enum has a name: layout.
+fn structure(public, variants) {
     lex.next();
     lex.chkident();
     let name = lex.tk;
@@ -1687,7 +1915,8 @@ fn structure(public) {
     if pass == 1 {
         if gin(lex.unit, name, len) { edup(name, len); }
         if types.named(name, len) { edup(name, len); }
-        let t = types.strukt(name, len);
+        let t = 0;
+        if variants { t = types.enumeration(name, len); } else { t = types.strukt(name, len); }
         gadd(name, len, 6, t, public, 0);
         if sn + 16 > slim { lex.ebig(); }
         store32(sn, t);
@@ -1759,7 +1988,11 @@ fn top() {
         return;
     }
     if lex.is("struct") {
-        structure(public);
+        structure(public, 0);
+        return;
+    }
+    if lex.is("enum") {
+        structure(public, 1);
         return;
     }
     if lex.is("fn") == 0 { lex.syntax(); }

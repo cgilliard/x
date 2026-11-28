@@ -19,8 +19,9 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// std -- the macros every file has: what controls flow (`if`, `while`,
-// `return`, `||`, `&&`), tests (`#[cfg(...)]`, `#[test]`, `assert`,
+// std -- the macros every file has: what controls flow (`if`, `match`,
+// `while`, `loop`, `break`, `continue`, `return`, `defer`, `||`, `&&`),
+// tests (`#[cfg(...)]`, `#[test]`, `assert`,
 // `assert_eq`), and `#[operator(...)]`.
 //
 // Part of the fam compiler (src/famc/): see main.fam.
@@ -57,6 +58,23 @@ fn if_macro() {
     }
 }
 
+// The loops that are open, 8 bytes each: the label at its top and the one
+// past its end.  `continue` jumps to the first and `break` to the second,
+// of the innermost.
+let loops = 0;
+let loop_top = 0;
+
+fn enter_loop(top, end) {
+    if loops == 0 {
+        loops = alloc(0x8000);
+        loop_top = loops;
+    }
+    if loop_top + 8 > loops + 0x8000 { lex.error("nested too deep"); }
+    store32(loop_top, top);
+    store32(loop_top + 4, end);
+    loop_top = loop_top + 8;
+}
+
 // while expr block
 fn while_macro() {
     let top = emit.label();
@@ -64,9 +82,41 @@ fn while_macro() {
     emit.place(top);
     parse.condition();
     emit.jump_if_zero(end);
+    enter_loop(top, end);
     parse.block();
+    loop_top = loop_top - 8;
     emit.jump(top);
     emit.place(end);
+}
+
+// loop block: again and again, until a `break` or a `return`.
+fn loop_macro() {
+    let top = emit.label();
+    let end = emit.label();
+    emit.place(top);
+    enter_loop(top, end);
+    parse.block();
+    loop_top = loop_top - 8;
+    emit.jump(top);
+    emit.place(end);
+}
+
+// break ;  and  continue ;
+fn break_macro() {
+    lex.expect(59);
+    if loop_top == loops { lex.error("break outside a loop"); }
+    emit.jump(load32(loop_top - 4));
+}
+fn continue_macro() {
+    lex.expect(59);
+    if loop_top == loops { lex.error("continue outside a loop"); }
+    emit.jump(load32(loop_top - 8));
+}
+
+// defer statement: the statement is done when the block it is in ends,
+// however it ends.
+fn defer_macro() {
+    parse.defer_here();
 }
 
 // return [ expr ] ;
@@ -102,6 +152,82 @@ fn and_macro(level, left) {
     parse.check(parse.right(level), types.bool());
     emit.place(past);
     return types.bool();
+}
+
+// match expr { NAME [ ( NAME ) ] => block ... } of an enum: the block of
+// the variant that it is runs.  A name in ( ) is a new local in that
+// block, a copy of the value that goes with the variant.  `_` is for every
+// variant not named; without it, every variant must be.
+fn match_macro() {
+    let t = parse.expression();
+    if types.is_enum(t) == 0 { lex.error("match takes an enum"); }
+    let s = emit.slot();                        // where the enum is
+    emit.sw(s, 10);
+    let end = emit.label();
+    let seen = 0;                               // the variants named, a bit each
+    let all = 0;
+    lex.expect(123);
+    lex.next();
+    while lex.punct(125) == 0 {
+        if lex.kind != 1 { lex.syntax(); }
+        let other = emit.label();
+        emit.open();
+        if lex.is("_") {
+            all = 1;
+        } else {
+            let v = types.field(t, lex.tk, lex.tl);
+            if v == 0 { lex.error_name("no variant ", lex.tk, lex.tl); }
+            let i = types.field_at(v);
+            if i > 31 { lex.error("match names the first 32 variants only"); }
+            if seen & (1 << i) { lex.error_name("named twice: ", lex.tk, lex.tl); }
+            seen = seen | (1 << i);
+            emit.lw(s, 10);
+            emit.fetch(types.u32());            // which variant it is
+            if i { obj.word(((0 - i) << 20) | 0x00050513); }    // addi a0, a0, -i
+            emit.jump_if_nonzero(other);
+            let with = types.field_type(v);
+            lex.peek();
+            if lex.punct(40) {                  // ( NAME ): its value
+                if with == types.void() { lex.error("no value goes with that variant"); }
+                lex.next();
+                lex.next();
+                lex.chkident();
+                let name = lex.tk;
+                let len = lex.tl;
+                lex.expect(41);
+                if types.wide(with) {
+                    let to = emit.slots((types.size(with) + 3) >> 2);
+                    emit.lw(s, 11);
+                    obj.word(0x00458593);       // addi a1, a1, 4
+                    emit.address(to);
+                    emit.lir(12, types.size(with));
+                    obj.call("__copy", 6);
+                    emit.local(name, len, to, with);
+                } else {
+                    emit.lw(s, 10);
+                    emit.further(4);
+                    emit.fetch(with);
+                    let to = emit.slot();
+                    emit.local(name, len, to, with);
+                    emit.sw(to, 10);
+                }
+            }
+        }
+        lex.expect(61);                         // =>
+        lex.expect(62);
+        parse.block();
+        emit.close();
+        emit.jump(end);
+        emit.place(other);
+        lex.next();
+        if lex.punct(44) { lex.next(); }
+    }
+    if all == 0 {
+        let n = types.variants(t);
+        if n > 31 || seen != (1 << n) - 1 { lex.error("match leaves a variant out"); }
+    }
+    emit.place(end);
+    emit.drop(1);
 }
 
 // #[cfg(NAME)] item: the item, or the items in { }, are there only if the
@@ -237,6 +363,11 @@ init {
     parse.define("||", &or_macro);
     parse.define("&&", &and_macro);
     parse.define("if", &if_macro);
+    parse.define("match", &match_macro);
     parse.define("while", &while_macro);
+    parse.define("loop", &loop_macro);
+    parse.define("break", &break_macro);
+    parse.define("continue", &continue_macro);
+    parse.define("defer", &defer_macro);
     parse.define("return", &return_macro);
 }

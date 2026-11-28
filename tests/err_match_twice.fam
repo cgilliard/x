@@ -1,0 +1,10 @@
+enum E { A, B(i32) }
+fn main() -> i32 {
+    let e = E::A;
+    match e {
+        A => { }
+        A => { }
+        _ => { }
+    }
+    return 0;
+}

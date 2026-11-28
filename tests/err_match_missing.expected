@@ -1,0 +1,2 @@
+tests/err_match_missing.fam:7: match leaves a variant out
+exit 1

@@ -1,0 +1,44 @@
+// An operator is a function.  This program gives a struct its own, one of
+// them through a function that is not a few words of asm, and uses the
+// integers' through their ids, which only a function has.
+struct Pair { a: i32, b: i32 }
+
+#[operator(+)]
+fn add(to: *Pair, x: *Pair, y: *Pair) {
+    to.a = x.a + y.a;
+    to.b = x.b + y.b;
+}
+
+#[operator(*)]
+fn scale(to: *Pair, x: *Pair, n: i32) {
+    to.a = x.a * n;
+    to.b = x.b * n;
+}
+
+#[operator(-)]
+fn flip(to: *Pair, x: *Pair) {
+    to.a = x.b;
+    to.b = x.a;
+}
+
+#[operator(==)]
+fn same(x: *Pair, y: *Pair) -> bool { return x.a == y.a && x.b == y.b; }
+
+#[operator(<)]
+fn less(x: *Pair, y: *Pair) -> bool { return x.a + x.b < y.a + y.b; }
+
+fn show(p: *Pair) { print_int(p.a); putc(44); print_int(p.b); putc(32); }
+fn yes(b: bool) { if b { putc(121); } else { putc(110); } }
+
+fn main() -> i32 {
+    let p: Pair;
+    p.a = 1;
+    p.b = 2;
+    let q = p + p * 10;                 // * before +, as for numbers
+    show(&q);
+    let r = -(p + q) * 2 + p;
+    show(&r);
+    yes(p == p); yes(p != p); yes(p < q); yes(p > q); yes(p <= p); yes(q >= p);
+    putc(10);
+    return 0;
+}

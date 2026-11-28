@@ -1,0 +1,2 @@
+tests/err_enum_value.fam:3: expected i32, found bool
+exit 1

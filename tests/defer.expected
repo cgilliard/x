@@ -1,0 +1,6 @@
+inner out 42
+zero out 0
+body second-deferred (a block) first-deferred 
+1 tick tick tick 
+5
+exit 0

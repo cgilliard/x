@@ -56,6 +56,7 @@ module emit;
 import lex;
 import obj;
 import types;
+import parse;
 
 // ---- a function's frame ----------------------------------------------------
 
@@ -70,6 +71,11 @@ let lbase = 0;
 let ltop = 0;
 let llim = 0;
 pub let ltype = 0;      // the type of the local that look found last
+let hfrom = 0;          // locals that look does not see, while deferred
+let hto = 0;            //   code is compiled: from here to there
+let fence = 0;          // while deferred code is compiled: the labels made
+                        //   before this one cannot be jumped to (0: no
+                        //   such code is being compiled)
 
 // The blocks that are open, 12 bytes each: the locals and the slots in use
 // when it opened, and its number.  Each function, and each block as it
@@ -190,7 +196,7 @@ pub fn look(name, len) {
     let p = ltop;
     while p > lbase {
         p = p - 16;
-        if load32(p + 4) == len {
+        if load32(p + 4) == len && (p < hfrom || p >= hto) {
             if lex.same(load32(p), name, len) {
                 ltype = load32(p + 12);
                 return load32(p + 8);
@@ -217,6 +223,29 @@ pub fn close() {
     vcur = load32(stop + 4);
 }
 
+// depth(): how many blocks are open, times 12.
+pub fn depth() {
+    return stop - sbase;
+}
+
+// deferring(names): deferred code is compiled from here on (parse.fam):
+// the locals named since `names` (which is what names() gave when the
+// code was deferred) are not seen, and no jump leaves the code.
+// deferred() ends that.
+pub fn names() {
+    return ltop;
+}
+pub fn deferring(since) {
+    hfrom = since;
+    hto = ltop;
+    fence = labn;
+}
+pub fn deferred() {
+    hfrom = 0;
+    hto = 0;
+    fence = 0;
+}
+
 // inside(): the number of the innermost open block (the function's: none
 // is open).
 fn inside() {
@@ -224,16 +253,17 @@ fn inside() {
     return load32(stop - 4);
 }
 
-// isopen(number): is that the number of an open block, or of the function
-// being compiled?
-fn isopen(number) {
-    if number == whole { return 1; }
+// level(number): how many blocks are open when the block of that number
+// is the innermost, times 12; 0 for the number of the function being
+// compiled; -1 if no such block is open.
+fn level(number) {
+    if number == whole { return 0; }
     let p = stop;
     while p > sbase {
         p = p - 12;
-        if load32(p + 8) == number { return 1; }
+        if load32(p + 8) == number { return p + 12 - sbase; }
     }
-    return 0;
+    return -1;
 }
 
 // ---- writing instructions --------------------------------------------------
@@ -414,11 +444,15 @@ pub fn place(l) {
     settle(l);
 }
 
-// jump(l): append a jump to the label.
+// jump(l): append a jump to the label.  If it leaves blocks, what was
+// deferred in them is done first.
 pub fn jump(l) {
-    if isopen(load32(l + 8)) == 0 || vcur < load32(l + 12) {
+    let to = level(load32(l + 8));
+    if to < 0 || vcur < load32(l + 12) {
         lex.error("a jump into a block, past a let, or to another function");
     }
+    if fence != 0 && l < fence { lex.error("a jump out of deferred code"); }
+    if to < stop - sbase { parse.leaving(to); }
     let at = hole();
     if load32(l) {
         patch(at, load32(l));

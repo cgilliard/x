@@ -37,12 +37,13 @@
 //     types   what a value can be
 //     emit    a function's frame, and the instructions written
 //     parse   the language, but for what the macros say
-//     std     the macros: `if`, `while`, `return`, `||`, `&&`, and
-//             `#[cfg]`, `#[test]`, `assert`, `assert_eq`
+//     std     the macros: `if`, `match`, `while`, `loop`, `break`,
+//             `continue`, `return`, `defer`, `||`, `&&`, `assert`,
+//             `assert_eq`, `#[cfg]`, `#[test]`, `#[operator]`
 //
 // The language:
 //     program   = { item }
-//     item      = use | constant | global | struct | function | init
+//     item      = use | constant | global | struct | enum | function | init
 //               | "#" "[" NAME ...              an attribute: a macro says
 //                                               what follows (std.fam)
 //     use       = "use" NAME { "::" NAME } ";"  another file, or something in it
@@ -50,6 +51,8 @@
 //     global    = [ "pub" ] "let" NAME [ ":" type ] [ "=" value ] ";"
 //     struct    = [ "pub" ] "struct" NAME "{" [ NAME ":" type { "," NAME ":" type } [ "," ] ] "}"
 //     value     = [ "-" ] ( NUMBER | NAME ) | "true" | "false"
+//     enum      = [ "pub" ] "enum" NAME "{" [ variant { "," variant } [ "," ] ] "}"
+//     variant   = NAME [ "(" type ")" ]
 //     function  = [ "pub" ] "fn" NAME "(" [ NAME ":" type { "," NAME ":" type } ] ")"
 //                 [ "->" type ] block
 //     init      = "init" block                  run at startup, in order
@@ -66,7 +69,8 @@
 //                                               variable, *p, p[i] or s.f
 //               | "asm" "{" { HEXWORD | "@" fname | "&" fname } "}"
 //               | expr ";"
-//               | what a macro reads: if, while, return, assert, assert_eq
+//               | what a macro reads: if, match, while, loop, break,
+//                 continue, return, defer, assert, assert_eq
 //     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 //                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 //                   * / %
@@ -76,6 +80,7 @@
 //                                               a function's id
 //               | primary { "[" expr "]" | "." NAME }
 //     primary   = NUMBER | STRING | "true" | "false" | fname
+//               | NAME "::" NAME [ "(" expr ")" ]       a variant of an enum
 //               | "size_of" "(" type ")"
 //               | "bytes" "{" { HEXBYTES } "}"  data: its value is its address
 //               | fname "(" [ expr { "," expr } ] ")"

@@ -1,0 +1,2 @@
+tests/err_operator_twice.fam:2: that operator is defined already
+exit 1

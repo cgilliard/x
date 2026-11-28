@@ -1,0 +1,2 @@
+tests/err_break.fam:2: break outside a loop
+exit 1

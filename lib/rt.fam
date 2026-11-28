@@ -10,6 +10,8 @@
 // The machine is QEMU's virt: a UART at 0x10000000 for output and the test
 // finisher at 0x100000 to leave.
 
+use ops;        // what the operators do for the integers
+
 // ---- startup ----------------------------------------------------------------
 
 //   image | variables | guard page | return ids | guard page | heap > ... < stack | device tree

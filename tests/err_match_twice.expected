@@ -1,0 +1,2 @@
+tests/err_match_twice.fam:6: named twice: A
+exit 1
