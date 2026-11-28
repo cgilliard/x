@@ -2,20 +2,20 @@
 # s2fam0 -- convert a RISC-V assembly file into the fam0 hex format that
 # fam0.seed compiles, keeping the comments.
 #
-# Two programs are written in assembly: src/fam.S (the core) and src/famc.S
-# (the compiler's front end).  Each has a .fam0 beside it,
-# made by this script and committed.  scripts/build.sh reads only the .fam0
-# files, so building needs neither this script nor an assembler; this is for
-# whoever changes a .S file, or wants to see that a .fam0 is what its .S
-# says.  (src/fam0.fam0, the seed's own source, is written by hand in hex.)
+# One program is written in assembly: src/fam.S, the core.  It has a .fam0
+# beside it, made by this script and committed.  scripts/build.sh reads
+# only the .fam0, so building needs neither this script nor an assembler;
+# this is for whoever changes the .S, or wants to see that the .fam0 is
+# what the .S says.  (src/fam0.fam0, the seed's own source, is written by
+# hand in hex.  Everything else is compiled by the core.)
 #
 # The fam0 format is one instruction a line, as its 4 bytes lowest first:
 #     13 0B A0 00 # addi s6,zero,10
 # Lines starting with # and blank lines are ignored by fam0.
 #
 # Usage:
-#   s2fam0.py src/famc.S -o src/famc.fam0       convert one file
-#   s2fam0.py src/famc.S                        the same, to standard output
+#   s2fam0.py src/fam.S -o src/fam.fam0         convert one file
+#   s2fam0.py src/fam.S                         the same, to standard output
 #   s2fam0.py --all                             convert every src/*.S
 #   s2fam0.py --check                           convert every src/*.S and say
 #                                               whether each committed .fam0

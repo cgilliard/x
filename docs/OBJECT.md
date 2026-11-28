@@ -1,6 +1,6 @@
 # fam object format, version 1 (draft)
 
-Status: a draft, implemented by `src/famc.S` (the front end) and
+Status: a draft, implemented by `src/famc.forth` (the front end) and
 `src/famld.forth` (the linker and back end). Parts listed under "Open
 questions" are the ones most likely to change.
 
@@ -281,9 +281,9 @@ Each of these is a new part or a new symbol kind, under a new version.
 - The linker is its own program and its own pass, and it is the back end
   too: it writes the binary. `tools/famc` is the driver that compiles or
   links depending on what it is given, the way `gcc` does.
-- The compiler's own programs are written in the Forth of
-  `lib/compiler.lib` and compiled by the core (`src/fam.S`), which the
-  seed builds. The linker is; the front end is still assembly.
+- The compiler's own programs, the front end and the linker, are written
+  in the Forth of `lib/compiler.lib` and compiled by the core
+  (`src/fam.S`), which the seed builds.
 - The program starts in the runtime's init record (in `lib/rt.fam`),
   which lays out memory. The last init record (`lib/rtmain.fam`) calls
   `main`, then `exit` with its result.

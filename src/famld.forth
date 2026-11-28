@@ -67,6 +67,12 @@
 : symn    variable ;   \ the next free one
 : symlim  variable ;
 
+\ For finding a symbol by name, 4096 lists of them: hb is the first of each
+\ list and hn the one after each symbol (0: no more).  Local functions are
+\ in no list.
+: hb      variable ;
+: hn      variable ;
+
 \ The words: every function and every stub written, in the order written.
 \ 8 bytes each: where it starts in the binary, and its relay in the last
 \ island (for calls out of reach of the word itself).
@@ -95,6 +101,9 @@
    100000 lit need dup wb ! dup wn !  100000 lit + wlim !
    100000 lit need dup sb ! dup sn !  100000 lit + slim !
    10000 lit need dup ib ! dup in !  10000 lit + ilim !
+   20000 lit need hn !
+   4000 lit need dup hb !
+   dup 4000 lit + swap begin 2dup u> while 0 lit over ! 4 lit + repeat 2drop
    0 lit nids !  0 lit curfn !  0 lit depth ! ;
 
 
@@ -244,24 +253,33 @@
 : rd  ( dst end -- )
    swap begin 2dup u> while getc over c! 1+ repeat 2drop ;
 
-\ same  are the len bytes at a and at b the same?
-: same  ( a b len -- flag )
+\ Finding a symbol by name: 4096 lists of symbols, a name's hash saying
+\ which list it is in (hb and hn, above).
+
+: hash  ( name len -- n )
+   0 lit -rot
    begin dup while
-      2 lit pick c@ 2 lit pick c@ <> if drop 2drop 0 lit exit then
-      1- rot 1+ rot 1+ rot
+      rot dup 5 lit lshift + 2 lit pick c@ + -rot
+      swap 1+ swap 1-
    repeat
-   drop 2drop -1 lit ;
+   2drop FFF lit and ;
 
 \ find  the symbol of a name, or 0.
 : find  ( name len -- sym )
-   symb @
-   begin dup symn @ u< while
+   2dup hash 2 lit lshift hb @ + @
+   begin dup while
       dup 4 lit + @ 2 lit pick = if
          dup @ 3 lit pick 3 lit pick same if nip nip exit then
       then
-      20 lit +
+      symb @ - 5 lit rshift 2 lit lshift hn @ + @
    repeat
-   drop 2drop 0 lit ;
+   nip nip ;
+
+\ hadd  put a symbol first in its name's list.
+: hadd  ( sym -- )
+   dup @ over 4 lit + @ hash 2 lit lshift hb @ +         \ sym list
+   dup @  2 lit pick symb @ - 5 lit rshift 2 lit lshift hn @ + !
+   ! ;
 
 \ newsym  a new symbol, nothing known of it but its name.
 : newsym  ( name len -- sym )
@@ -314,7 +332,12 @@
    else
       2dup find
    then
-   dup 0= if drop newsym else nip nip then   \ L sym
+   dup 0= if                                 \ a new name
+      drop newsym
+      over @ 3 lit <> if dup hadd then
+   else
+      nip nip
+   then                                      \ L sym
    2dup swap 4 lit + !
    over @ 0= if 2drop exit then              \ an external: nothing more
    dup 8 lit + @ if

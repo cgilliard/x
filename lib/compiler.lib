@@ -1221,6 +1221,23 @@ B3825B00 ,   \ add  t0, s7, t0          ( the call-site table )
 :M u>=  u< 0= ;
 :M u<=  u> 0= ;
 
+\ rfree  ( -- n )   RUNTIME: how many bytes of return ids are left (4 a
+\        call).  For a program that nests calls as deep as its input says,
+\        to stop with a message of its own before the trap does.
+:M rfree
+B382AD41 ,   \ sub  t0, s11, s10
+1301C1FF ,   \ addi sp, sp, -4
+23205100 ,   \ sw   t0, 0(sp)
+;
+
+\ same  ( a b len -- flag )   are the len bytes at a and at b the same?
+: same
+begin dup while
+   2 lit pick c@ 2 lit pick c@ <> if drop 2drop 0 lit exit then
+   1- rot 1+ rot 1+ rot
+repeat
+drop 2drop -1 lit ;
+
 \ type  ( addr len -- )   write len bytes to the console.
 : type
 begin dup while

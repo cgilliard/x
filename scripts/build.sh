@@ -75,10 +75,10 @@ verify() {
 # the core, a minimal macro compiler, built by the seed from its hex
 compile bin/fam   fam0.seed src/fam.fam0
 
-# the fam compiler: the front end (still hex, for now) and the linker and
-# back end, which the core compiles from Forth, the compiler's library first
-compile bin/famc  fam0.seed src/famc.fam0
-compile bin/famld bin/fam   lib/compiler.lib src/famld.forth
+# the fam compiler: the front end, and the linker and back end.  Both are
+# Forth, which the core compiles, the compiler's library first.
+compile bin/famc  bin/fam lib/compiler.lib src/famc.forth
+compile bin/famld bin/fam lib/compiler.lib src/famld.forth
 
 # the runtime, which tools/famc adds to every link: startup and library,
 # and the last step (call main, or report the tests)

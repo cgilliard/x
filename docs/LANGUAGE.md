@@ -1,6 +1,6 @@
 # The fam language (so far)
 
-Status: what `src/famc.S` compiles today. It grows step by step; "Not yet"
+Status: what `src/famc.forth` compiles today. It grows step by step; "Not yet"
 at the end lists what is planned and missing.
 
 ```
