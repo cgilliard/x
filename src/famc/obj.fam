@@ -1,0 +1,375 @@
+// MIT License
+//
+// Copyright (c) 2026 Christopher Gilliard
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// obj -- the object being written (docs/OBJECT.md), and the names of
+// modules.
+//
+// Part of the fam compiler written in fam (src/famc/): see main.fam.
+
+module obj;
+
+import lex;
+
+// Its symbols, 20 bytes each: kind, where its name starts in the names,
+// the name's length, where its code starts in the code, the code's size.
+let syb = 0;
+let syn = 0;            // the next free one
+let sylim = 0;
+let nsy = 0;            // how many there are
+
+// Its call sites, 8 bytes each: where in the code, the symbol's index.
+let clb = 0;
+let cln = 0;
+let cllim = 0;
+
+// Its code.
+let cb = 0;
+pub let cn = 0;         // where the next word goes
+let clim = 0;
+
+// Its names.
+let nb = 0;
+let nn = 0;
+let nlim = 0;
+
+let rec = 0;            // the symbol of the record being written
+
+// Finding a symbol by name: 4096 lists of symbols, a name's hash saying
+// which list it is in.  hb is the first of each list and hn the one after
+// each symbol, both as an index + 1 (0: no more).
+let hb = 0;
+let hn = 0;
+
+// This file's module, and its length (0: the root module).
+let modn = 0;
+pub let modl = 0;
+
+// The modules imported, 8 bytes each: name, length.
+let ibase = 0;
+let itop = 0;
+let ilim = 0;
+
+let scr = 0;            // room to spell one `module.name`
+
+// What join and qualify give: a name and its length.
+pub let qname = 0;
+pub let qlen = 0;
+
+// setup(): room for everything.
+pub fn setup() {
+    syb = alloc(0x100000);  syn = syb;  sylim = syb + 0x100000;
+    clb = alloc(0x100000);  cln = clb;  cllim = clb + 0x100000;
+    nb = alloc(0x200000);   nn = nb;    nlim = nb + 0x200000;
+    cb = alloc(0x1000000);  cn = cb;    clim = cb + 0x1000000;
+    ibase = alloc(0x10000); itop = ibase; ilim = ibase + 0x10000;
+    scr = alloc(0x400);
+    hn = alloc(0x40000);
+    hb = alloc(0x4000);
+    let i = 0;
+    while i < 0x4000 {
+        store32(hb + i, 0);
+        i = i + 4;
+    }
+}
+
+// ---- symbols ---------------------------------------------------------------
+
+fn sym(index) {
+    return syb + (index << 4) + (index << 2);
+}
+
+fn hash(name, len) {
+    let h = 0;
+    let i = 0;
+    while i < len {
+        h = h + (h << 5) + load8(name + i);
+        i = i + 1;
+    }
+    return h & 0xFFF;
+}
+
+// find(name, len): the index of the symbol of a name (-1: none).
+fn find(name, len) {
+    let i = load32(hb + (hash(name, len) << 2));
+    while i {
+        i = i - 1;
+        let s = sym(i);
+        if load32(s + 8) == len {
+            if lex.same(load32(s + 4) + nb, name, len) { return i; }
+        }
+        i = load32(hn + (i << 2));
+    }
+    return -1;
+}
+
+// new(name, len, kind): the index of a new symbol with no code (the length
+// may be 0: no name).
+fn new(name, len, kind) {
+    if syn + 20 > sylim { lex.ebig(); }
+    if nn + len > nlim { lex.ebig(); }
+    store32(syn, kind);
+    store32(syn + 4, nn - nb);
+    store32(syn + 8, len);
+    store32(syn + 12, 0);
+    store32(syn + 16, 0);
+    syn = syn + 20;
+    let i = 0;
+    while i < len {
+        store8(nn + i, load8(name + i));
+        i = i + 1;
+    }
+    nn = nn + len;
+    if len {                                    // first in its list
+        let slot = hb + (hash(name, len) << 2);
+        store32(hn + (nsy << 2), load32(slot));
+        store32(slot, nsy + 1);
+    }
+    nsy = nsy + 1;
+    return nsy - 1;
+}
+
+// define(name, len, kind): start the record of a function (kind 1, or 3 for
+// a local one) or of a global (4, or 5): its symbol's index, or -1 if the
+// name is defined already.
+pub fn define(name, len, kind) {
+    let i = find(name, len);
+    if i < 0 {
+        i = new(name, len, kind);
+    } else {
+        if load32(sym(i)) { return -1; }
+        store32(sym(i), kind);                  // called earlier: now defined
+    }
+    rec = sym(i);
+    store32(rec + 12, cn - cb);
+    return i;
+}
+
+// init(): start an init record.
+pub fn init() {
+    rec = sym(new(0, 0, 2));
+    store32(rec + 12, cn - cb);
+}
+
+// end(): end the record: its code is what was appended since it started.
+pub fn end() {
+    store32(rec + 16, cn - cb - load32(rec + 12));
+    rec = 0;
+}
+
+// ref(name, len, kind): the index of the symbol of a name: a new one, of
+// the kind given (0: external until defined), if the name is new.
+pub fn ref(name, len, kind) {
+    let i = find(name, len);
+    if i < 0 { return new(name, len, kind); }
+    return i;
+}
+
+// bare(name, len): the index of the symbol of a function named without a
+// module.  In a file with a module, which function that is is settled by
+// resolve.
+pub fn bare(name, len) {
+    if modl { return ref(name, len, 0x100); }
+    return ref(name, len, 0);
+}
+
+// ---- code and call sites ---------------------------------------------------
+
+// word(w): append a word to the code.
+pub fn word(w) {
+    if cn >= clim { lex.ebig(); }
+    store32(cn, w);
+    cn = cn + 4;
+}
+
+// note(index, words): a site here for a symbol, and its zero words.
+fn note(index, words) {
+    if cln + 8 > cllim { lex.ebig(); }
+    store32(cln, cn - cb);
+    store32(cln + 4, index);
+    cln = cln + 8;
+    while words {
+        word(0);
+        words = words - 1;
+    }
+}
+
+// site(index): append a call of a symbol: a call site and its 16 zero bytes.
+pub fn site(index) { note(index, 4); }
+
+// idsite(index): append the loading of a function's id into a0: an id site
+// (the index's top bit set) and its 8 zero bytes.
+pub fn idsite(index) { note(index | 0x80000000, 2); }
+
+// asite(index): append the loading of a global's address into a0: an
+// address site (the index's next-to-top bit set) and its 8 zero bytes.
+pub fn asite(index) { note(index | 0x40000000, 2); }
+
+// call(name, len): append a call of a function by name.
+pub fn call(name, len) { site(ref(name, len, 0)); }
+
+// ---- names of other modules ------------------------------------------------
+
+// join(module, mlen, name, len): `module.name`, spelled in the room kept
+// for that: qname and qlen.
+pub fn join(module, mlen, name, len) {
+    if mlen + len > 0xFE { lex.error("name too long"); }
+    let p = scr;
+    let i = 0;
+    while i < mlen {
+        store8(p, load8(module + i));
+        p = p + 1;
+        i = i + 1;
+    }
+    store8(p, 46);
+    p = p + 1;
+    i = 0;
+    while i < len {
+        store8(p, load8(name + i));
+        p = p + 1;
+        i = i + 1;
+    }
+    qname = scr;
+    qlen = p - scr;
+}
+
+// qualify(name, len): the symbol of a name in this file's module:
+// `module.name`, or the name itself in the root module.
+pub fn qualify(name, len) {
+    if modl == 0 {
+        qname = name;
+        qlen = len;
+        return;
+    }
+    join(modn, modl, name, len);
+}
+
+fn nameq(a, alen, b, blen) {
+    if alen != blen { return 0; }
+    return lex.same(a, b, alen);
+}
+
+// chkmod(name, len): a name must be this file's module or one it imports.
+pub fn chkmod(name, len) {
+    if nameq(name, len, modn, modl) { return; }
+    let p = ibase;
+    while p < itop {
+        if nameq(name, len, load32(p), load32(p + 4)) { return; }
+        p = p + 8;
+    }
+    lex.error_name("unknown module ", name, len);
+}
+
+// setmodule(name, len): this file's module.  It must come before anything
+// else, and once.
+pub fn setmodule(name, len) {
+    modn = name;
+    modl = len;
+}
+
+// started(): has the file a module, a symbol, code or an import yet?
+pub fn started() {
+    return modl != 0 || nsy != 0 || cn != cb || itop != ibase;
+}
+
+// imports(name, len): the file imports a module.
+pub fn imports(name, len) {
+    if itop + 8 > ilim { lex.ebig(); }
+    store32(itop, name);
+    store32(itop + 4, len);
+    itop = itop + 8;
+}
+
+// resolve(): at the end of a file with a module: settle the calls by a bare
+// name (symbols of kind 0x100).  If the file defines `module.name`, the
+// calls go to that, and the bare name is left as an external nothing calls;
+// else the bare name is the root's.
+fn resolve() {
+    if modl == 0 { return; }
+    let s = syb;
+    while s < syn {                             // each such symbol: 0x200 and
+        if load32(s) == 0x100 {                 //   the index to use instead,
+            store32(s, 0);                      //   or external
+            qualify(load32(s + 4) + nb, load32(s + 8));
+            let i = find(qname, qlen);
+            if i >= 0 {
+                if load32(sym(i)) {
+                    store32(s, 0x200);
+                    store32(s + 12, i);
+                }
+            }
+        }
+        s = s + 20;
+    }
+    let c = clb;
+    while c < cln {                             // each call site: follow a 0x200
+        let v = load32(c + 4);
+        let t = sym(v & 0x3FFFFFFF);
+        if load32(t) == 0x200 {
+            store32(c + 4, load32(t + 12) | (v & 0xC0000000));
+        }
+        c = c + 8;
+    }
+    s = syb;
+    while s < syn {                             // and the 0x200s become externals
+        if load32(s) == 0x200 {
+            store32(s, 0);
+            store32(s + 12, 0);
+        }
+        s = s + 20;
+    }
+}
+
+// ---- writing the object ----------------------------------------------------
+
+fn putw(w) {
+    putc(w);
+    putc(w >> 8);
+    putc(w >> 16);
+    putc(w >> 24);
+}
+
+fn region(from, to) {
+    while from < to {
+        putc(load8(from));
+        from = from + 1;
+    }
+}
+
+// write(): write the object: header, symbols, call sites, code, names.
+pub fn write() {
+    resolve();
+    while (nn - nb) & 3 {                       // the names: up to a whole word
+        if nn >= nlim { lex.ebig(); }
+        store8(nn, 0);
+        nn = nn + 1;
+    }
+    putw(0x4F4D4146);                           // FAMO
+    putw(3);
+    putw(syn - syb + cln - clb + cn - cb + nn - nb + 28);
+    putw(nsy);
+    putw((cln - clb) >> 3);
+    putw(cn - cb);
+    putw(nn - nb);
+    region(syb, syn);
+    region(clb, cln);
+    region(cb, cn);
+    region(nb, nn);
+}

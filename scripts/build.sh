@@ -93,6 +93,17 @@ compile bin/fampack.o bin/famc  src/fampack.fam
 compile bin/fampack   bin/famld.unpacked bin/rt.o bin/fampack.o bin/rtmain.o
 compile bin/famld     bin/fampack bin/famld.unpacked
 
+# the compiler again, written in fam (src/famc/): the same language and
+# the same objects as the one in Forth, which builds it
+compile bin/famc2.lex.o   bin/famc  src/famc/lex.fam
+compile bin/famc2.obj.o   bin/famc  src/famc/obj.fam
+compile bin/famc2.emit.o  bin/famc  src/famc/emit.fam
+compile bin/famc2.parse.o bin/famc  src/famc/parse.fam
+compile bin/famc2.main.o  bin/famc  src/famc/main.fam
+compile bin/famc2     bin/famld bin/rt.o bin/famc2.lex.o bin/famc2.obj.o \
+                      bin/famc2.emit.o bin/famc2.parse.o bin/famc2.main.o \
+                      bin/rtmain.o
+
 # a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0
 compile bin/same.o    bin/famc  src/same.fam

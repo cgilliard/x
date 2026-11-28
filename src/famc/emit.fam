@@ -1,0 +1,300 @@
+// MIT License
+//
+// Copyright (c) 2026 Christopher Gilliard
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// emit -- a function's frame, its locals, and the instructions written.
+//
+// Part of the fam compiler written in fam (src/famc/): see main.fam.
+//
+// The code (docs/OBJECT.md, "Calling convention"):
+//   - A function keeps a frame, with s0 pointing at its top:
+//         -4(s0)              the caller's s0
+//         -8-4*i(s0)          slot i: a parameter, a local or a temporary
+//         0(sp) ...           the ninth and later arguments of calls it makes
+//     Slots are handed out as a stack while compiling: a `let` takes one
+//     until its block ends, a temporary until it is used.
+//   - An expression leaves its value in a0.
+//   - A string's bytes, and a zero byte, sit in the code where it is used,
+//     behind a `jal a0` that jumps over them and so leaves their address.
+//     `bytes { ... }` is laid down the same way, without the zero byte.
+//   - `return` jumps to the code at the function's end that drops the
+//     frame.  A function that runs off its end returns whatever is in a0.
+
+module emit;
+
+import lex;
+import obj;
+
+// ---- a function's frame ----------------------------------------------------
+
+let vcur = 0;           // slots in use
+let vmax = 0;           // the most slots in use at once in this function
+let vout = 0;           // the most stack arguments a call in it passes
+let vret = 0;           // its last `return` jump, to patch (0: none): each
+                        //   holds the address of the one before
+let vpro = 0;           // where its first three instructions are
+pub let vtest = 0;      // 1 while compiling a test block
+
+// The locals in scope, 12 bytes each: name, length, slot.
+let lbase = 0;
+let ltop = 0;
+let llim = 0;
+
+// setup(): room for the locals.
+pub fn setup() {
+    lbase = alloc(0x10000);
+    ltop = lbase;
+    llim = lbase + 0x10000;
+}
+
+fn elocals() { lex.error("function needs too many locals"); }
+
+// slot(): a new slot.
+pub fn slot() {
+    let s = vcur;
+    vcur = vcur + 1;
+    if vcur > 500 { elocals(); }
+    if vcur > vmax { vmax = vcur; }
+    return s;
+}
+
+// drop(n): give back the last n slots: the lowest of them.
+pub fn drop(n) {
+    vcur = vcur - n;
+    return vcur;
+}
+
+// outgoing(n): a call here passes n arguments.
+pub fn outgoing(n) {
+    if n - 8 > vout { vout = n - 8; }
+}
+
+// local(name, len, s): a name for a slot, from here to the end of its block.
+pub fn local(name, len, s) {
+    if ltop + 12 > llim { lex.ebig(); }
+    store32(ltop, name);
+    store32(ltop + 4, len);
+    store32(ltop + 8, s);
+    ltop = ltop + 12;
+}
+
+// look(name, len): the slot of the local of a name, the latest if several
+// (-1: none).
+pub fn look(name, len) {
+    let p = ltop;
+    while p > lbase {
+        p = p - 12;
+        if load32(p + 4) == len {
+            if lex.same(load32(p), name, len) { return load32(p + 8); }
+        }
+    }
+    return -1;
+}
+
+// open(): a block starts: what close needs to end it.
+pub fn open() {
+    return ltop;
+}
+pub fn slots() {
+    return vcur;
+}
+
+// close(locals, used): a block ends: its locals and their slots go.
+pub fn close(locals, used) {
+    ltop = locals;
+    vcur = used;
+}
+
+// ---- writing instructions --------------------------------------------------
+
+// sw(s, register): append `sw <register>, <slot>(s0)`.  A slot's offset is
+// -8 - 4*slot.
+pub fn sw(s, register) {
+    let off = 0 - ((s << 2) + 8);
+    obj.word((register << 20) | (((off >> 5) & 0x7F) << 25) | ((off & 0x1F) << 7) | 0x00042023);
+}
+
+// lw(s, register): append `lw <register>, <slot>(s0)`.
+pub fn lw(s, register) {
+    let off = 0 - ((s << 2) + 8);
+    obj.word((register << 7) | (off << 20) | 0x00042003);
+}
+
+// swsp(register, off): append `sw <register>, <off>(sp)`, off not negative.
+fn swsp(register, off) {
+    obj.word((register << 20) | ((off >> 5) << 25) | ((off & 0x1F) << 7) | 0x00012023);
+}
+
+// arg(k, s): the value in a slot becomes argument k of a call: in a0 to a7,
+// or at the frame's low end.
+pub fn arg(k, s) {
+    if k < 8 {
+        lw(s, 10 + k);
+    } else {
+        lw(s, 7);                               // lw t2, slot
+        swsp(7, (k - 8) << 2);                  // sw t2, 4*(k-8)(sp)
+    }
+}
+
+// param(k, s): parameter k of the function goes to a slot: from its
+// register, or from the caller's frame.
+pub fn param(k, s) {
+    if k < 8 {
+        sw(s, 10 + k);
+    } else {
+        obj.word(((k - 8) << 22) | 0x00042383);  // lw t2, 4*(k-8)(s0)
+        sw(s, 7);
+    }
+}
+
+// hole(): append a jump to be patched: where it is.
+pub fn hole() {
+    obj.word(0x6F);
+    return obj.cn - 4;
+}
+
+// patchjl(at, target, low): make the instruction at `at` a `jal`, with the
+// low 12 bits given (its register), to an address.
+fn patchjl(at, target, low) {
+    let d = target - at;
+    if d < -0x100000 || d >= 0x100000 { lex.error("function too large"); }
+    store32(at, (((d >> 20) & 1) << 31) | (((d >> 1) & 0x3FF) << 21)
+              | (((d >> 11) & 1) << 20) | (((d >> 12) & 0xFF) << 12) | low);
+}
+
+// patch(at, target): make the hole at `at` a jump to an address.
+pub fn patch(at, target) { patchjl(at, target, 0x6F); }
+
+// here(at): make the hole at `at` a jump to here.
+pub fn here(at) { patchjl(at, obj.cn, 0x6F); }
+
+// li(value): append the code that loads a value into a0: one
+// `addi a0,zero,v` if it fits 12 signed bits, else `lui` and `addi`.
+pub fn li(value) {
+    if value < -2048 || value > 2047 {
+        obj.word((((value + 0x800) >> 12) << 12) | 0x537);
+        obj.word((value << 20) | 0x50513);
+    } else {
+        obj.word((value << 20) | 0x513);
+    }
+}
+
+// leave(): append a jump to the function's end, as `return` does.
+pub fn leave() {
+    let at = hole();
+    store32(at, vret);
+    vret = at;
+}
+
+// Bytes laid down in the code, four to a word.
+let swd = 0;            // the word being filled
+let scnt = 0;           // how many bytes it has
+let sjal = 0;           // the jal over them
+
+pub fn byte(b) {
+    swd = swd | (b << (scnt << 3));
+    scnt = scnt + 1;
+    if scnt == 4 {
+        obj.word(swd);
+        swd = 0;
+        scnt = 0;
+    }
+}
+
+// bytes(): bytes follow: append `jal a0, <past them>`.
+pub fn bytes() {
+    obj.word(0x56F);
+    sjal = obj.cn - 4;
+    swd = 0;
+    scnt = 0;
+}
+
+// endbytes(): no more: zero bytes up to a whole word, and the jal is
+// resolved.  The code so far leaves the address of the bytes in a0.
+pub fn endbytes() {
+    if scnt { obj.word(swd); }
+    patchjl(sjal, obj.cn, 0x56F);
+}
+
+// string(from, to): append the bytes of a string's text (as written, with
+// its \ escapes) and a zero byte: code that leaves the string's address in
+// a0.
+pub fn string(from, to) {
+    bytes();
+    while from < to {
+        let c = load8(from);
+        from = from + 1;
+        if c == 92 {                            // a backslash: the next says what
+            c = load8(from);
+            from = from + 1;
+            if c == 110 { c = 10; } else {
+                if c == 116 { c = 9; } else {
+                    if c == 48 { c = 0; } else {
+                        if c != 92 && c != 34 { lex.error("unknown \\ in a string"); }
+                    }
+                }
+            }
+        }
+        byte(c);
+    }
+    byte(0);
+    endbytes();
+}
+
+// ---- the start and the end of a function -----------------------------------
+
+// begin(): start the code of a function, test or init block: nothing in
+// scope, no slots, and room for the three instructions that make the
+// frame, filled in at the end.
+pub fn begin() {
+    ltop = lbase;
+    vcur = 0;
+    vmax = 0;
+    vout = 0;
+    vret = 0;
+    vtest = 0;
+    vpro = obj.cn;
+    obj.word(0x13);
+    obj.word(0x13);
+    obj.word(0x13);
+}
+
+// end(): after its block: where every `return` jumps, the code that drops
+// the frame, and the three instructions that make it.  The frame is the
+// saved s0, the slots and the outgoing arguments, rounded up to 16 bytes.
+pub fn end() {
+    let at = vret;
+    while at {
+        let before = load32(at);
+        here(at);
+        at = before;
+    }
+    if vtest { obj.call("__test_end", 10); }
+    obj.word(0x00040113);                       // mv sp, s0
+    obj.word(0xFFC12403);                       // lw s0, -4(sp)
+    let frame = (((vmax + vout) << 2) + 19) & -16;
+    if frame > 0x7F0 { elocals(); }
+    store32(vpro, ((0 - frame) << 20) | 0x00010113);        // addi sp, sp, -frame
+    let off = frame - 4;
+    store32(vpro + 4, (8 << 20) | ((off >> 5) << 25) | ((off & 0x1F) << 7) | 0x00012023);
+                                                            // sw s0, frame-4(sp)
+    store32(vpro + 8, (frame << 20) | 0x00010413);          // addi s0, sp, frame
+    obj.end();
+}

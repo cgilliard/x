@@ -1,0 +1,103 @@
+// MIT License
+//
+// Copyright (c) 2026 Christopher Gilliard
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// famc -- the fam compiler's front end, written in fam (docs/LANGUAGE.md,
+// docs/OBJECT.md).
+//
+// Reads one source file from the console (up to the byte 0x04) and writes
+// its object.  On an error it writes a message in place of the object and
+// exits with 1.
+//
+// It compiles the same language to the same bytes as src/famc.forth, the
+// compiler that builds it.  Its parts, each a module:
+//     lex     the source, its tokens, and the error messages
+//     obj     the object being written, and the names of modules
+//     emit    a function's frame, and the instructions written
+//     parse   the language
+//
+// The language (every value is a 32-bit integer):
+//     program   = [ "module" NAME ";" ]
+//                 { import | constant | global | function | test | init }
+//     import    = "import" NAME ";"
+//     constant  = "const" NAME "=" value ";"    a name for a number, in this file
+//     global    = [ "pub" ] "let" NAME "=" value ";"    a variable outside any
+//                                               function, starting at value
+//     value     = [ "-" ] ( NUMBER | NAME )     the name of a constant
+//     function  = [ "pub" ] "fn" NAME "(" [ NAME { "," NAME } ] ")" block
+//     test      = "test" STRING block
+//     init      = "init" block                  run at startup, in order
+//               | "init" "asm" "{" ... "}"      the same, nothing but the code
+//     block     = "{" { statement } "}"
+//     statement = "let" NAME "=" expr ";"
+//               | [ NAME "." ] NAME "=" expr ";"
+//               | "if" expr block [ "else" ( block | if-statement ) ]
+//               | "while" expr block
+//               | "return" [ expr ] ";"
+//               | "asm" "{" { HEXWORD | "@" fname | "&" fname } "}"
+//               | "assert" expr ";"             in a test
+//               | expr ";"
+//     expr      = unary { OPERATOR unary }      by precedence, lowest first:
+//                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
+//                   * / %
+//     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | [ NAME "." ] NAME
+//               | "&" fname                     a function's id
+//               | "bytes" "{" { HEXBYTES } "}"  data: its value is its address
+//               | fname "(" [ expr { "," expr } ] ")"
+//               | "(" expr ")"
+//     fname     = [ NAME "." ] NAME
+//     NAME      = a letter or '_', then letters, digits, '_'
+//     NUMBER    = decimal digits, or 0x and hex digits (up to 32 bits)
+//     STRING    = "..." with \n \t \0 \\ \" for a newline, a tab, a zero
+//                 byte, a backslash and a quote: its value is its address
+//     HEXWORD   = eight uppercase hex digits: four bytes of code
+//     HEXBYTES  = uppercase hex digits, two for each byte
+//     // starts a comment that runs to the end of the line
+//
+// Modules.  A function `f` of a file that says `module m;` is the symbol
+// `m.f`; without a module line it is `f` (the root module).  It is a local
+// symbol, which only this object can call, unless it is `pub` (or is the
+// root's `main`, in a build that is not for the tests).  A call `m.f()` is
+// of the symbol `m.f`, and m must be this file's module or imported.  A
+// call `f()` in module m is of this file's `m.f` if it defines one, else of
+// the root's `f`.  A global `g` is the symbol `m.g` likewise, local unless
+// `pub`.  It must be defined above where it is used by its bare name;
+// another module's is `m.g`, and needs no more.
+//
+// The file's name.  If the source starts with the byte 0x01 or 0x02, that
+// and the rest of its first line are not source: the line is the file's
+// name, as tools/famc sends it.  Errors are then reported as
+// "NAME:LINE: what"; without a name, as "famc: line LINE: what".  0x01
+// also asks for the tests.
+
+import lex;
+import obj;
+import emit;
+import parse;
+
+fn main() {
+    obj.setup();
+    emit.setup();
+    parse.setup();
+    lex.read();
+    parse.file();
+    obj.write();
+    return 0;
+}
