@@ -18,9 +18,11 @@
 \ The first word, above, is the comment: \ to the end of the line.
 \
 \ A program's memory, set up by `init` at the end of this file:
-\     image | return ids | variables | heap > ...   < data stack | loop stack
-\           s10          (16 KiB)    gp (alloc)     sp           s8
+\     image | return ids | variables | heap > ... | guard | < data stack | loop stack
+\           s10          (16 KiB)    gp (alloc)    (4 KiB)   (1 MiB)  sp   (64 KiB)  s8
 \ The data stack is sp, growing down, one word an item, the top at 0(sp).
+\ The guard is a page nothing may touch: a data stack that outgrows its
+\ 1 MiB traps there, and the heap ends there.
 \ ------------------------------------------------------------
 
 \ nxchar  ( C: -- ch )   read next source byte AND advance s1.
@@ -947,14 +949,16 @@ B7128C00 ,   \ lui t0,0x8c1
 
 \ alloc ( n -- ptr )   RUNTIME: bump-allocate n bytes (rounded up to a multiple
 \        of 4) from the heap (gp); returns the old gp. BOUNDS-CHECKED: if the
-\        allocation would meet the data stack (need > sp - gp) it returns 0
-\        (null) and leaves gp unchanged. A negative/huge n aligns to a huge
+\        allocation would meet the guard page under the data stack (its
+\        address is kept in mscratch) it returns 0 (null) and leaves gp
+\        unchanged. A negative/huge n aligns to a huge
 \        unsigned size and so also returns 0. No free.
 :M alloc
 83220100 ,   \ lw   t0, 0(sp)           ( t0 = n )
 93823200 ,   \ addi t0, t0, 3
 93F2C2FF ,   \ andi t0, t0, -4          ( t0 = round n up to a multiple of 4 )
-33033140 ,   \ sub  t1, sp, gp          ( t1 = available bytes = sp - gp )
+73230034 ,   \ csrr t1, mscratch        ( t1 = the guard page )
+33033340 ,   \ sub  t1, t1, gp          ( t1 = available bytes = guard - gp )
 63685300 ,   \ bltu t1, t0, +16         ( need > available -> exhausted )
 23203100 ,   \ sw   gp, 0(sp)           ( ptr = old gp )
 B3815100 ,   \ add  gp, gp, t0          ( gp += t0 )
@@ -974,10 +978,13 @@ B3815100 ,   \ add  gp, gp, t0          ( gp += t0 )
 \          gp  = s10 + 80 KiB: the heap (alloc), after 16 KiB of variables
 \          s8  = the device tree's address: the loop stack's top
 \          sp  = s8 - 64 KiB: the data stack's top
-\        If a1 is not at least 1 MiB above the heap's start (something
-\        other than QEMU started us), 1 MiB is assumed.
+\          mscratch = the guard page: the last whole page 1 MiB under sp.
+\                     A locked PMP entry makes any access to it trap.
+\        If a1 is not at least 4 MiB above the heap's start (something
+\        other than QEMU started us), 4 MiB is assumed.
 \        Then traps: a call nested too deep (the core's call sequence
-\        executes ebreak) or any fault prints "?trap <mcause> at <mepc>",
+\        executes ebreak), a data stack grown into the guard page (mcause
+\        5 or 7) or any other fault prints "?trap <mcause> at <mepc>",
 \        both in hex, and exits with code 1.
 \        Invoked once, at the end of this file, so it runs before the
 \        program's own code.
@@ -992,7 +999,7 @@ B7020100 ,   \ lui t0,0x10
 B38D5100 ,   \ add s11,gp,t0
 B7420100 ,   \ lui t0,0x14
 B3815100 ,   \ add gp,gp,t0
-37031000 ,   \ lui t1,0x100
+37034000 ,   \ lui t1,0x400
 33836100 ,   \ add t1,gp,t1
 63F46500 ,   \ bgeu a1,t1,sized
 93050300 ,   \ mv a1,t1
@@ -1000,6 +1007,18 @@ B3815100 ,   \ add gp,gp,t0
 13FC05FF ,   \ andi s8,a1,-16
 B7020100 ,   \ lui t0,0x10
 33015C40 ,   \ sub sp,s8,t0
+B7021000 ,   \ lui t0,0x100
+B3025140 ,   \ sub t0,sp,t0
+93D2C200 ,   \ srli t0,t0,0xc
+9392C200 ,   \ slli t0,t0,0xc
+37130000 ,   \ lui t1,0x1
+B3826240 ,   \ sub t0,t0,t1
+73900234 ,   \ csrw mscratch,t0
+93D22200 ,   \ srli t0,t0,0x2
+93E2F21F ,   \ ori t0,t0,511           (a 4 KiB region)
+7390023B ,   \ csrw pmpaddr0,t0
+93028009 ,   \ li t0,152               (locked, no read, write or execute)
+7390023A ,   \ csrw pmpcfg0,t0
 97020000 ,   \ auipc t0,0x0
 93820201 ,   \ addi t0,t0,16
 73905230 ,   \ csrw mtvec,t0
