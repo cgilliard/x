@@ -1,9 +1,13 @@
 # The next compiler: a small core and macros
 
-Status: a plan, of which the first step is built. `src/famc/` is a
-compiler written in fam that compiles today's language (`docs/LANGUAGE.md`)
-to the same bytes as `src/famc.forth`, which builds it and is frozen;
-`scripts/test_compilers.sh` checks that. Nothing else here is built.
+Status: a plan, of which the start is built. `src/famc/` is a compiler
+written in fam that compiles today's language (`docs/LANGUAGE.md`) to the
+same bytes as `src/famc.forth`, which builds it and is frozen;
+`scripts/test_compilers.sh` checks that. In it `if`, `while` and `return`
+are already macros (`src/famc/std.fam`), built from the labels and jumps of
+`src/famc/emit.fam`, with the checks on jumps below. They are functions
+registered by name; there is no `macro` keyword yet, and nothing else here
+is built.
 
 The next compiler is written in fam. It understands very little itself:
 definitions, expressions and assignment. Everything that controls flow
@@ -181,6 +185,6 @@ fn packed_size(input, n) {
 1. This compiler, written in fam and built by the stage compiler, first
    compiling today's language to the same bytes. (Done: `bin/famc2`.)
 2. The interface for macros, then `if`, the loops and `return` moved out
-   to the library.
+   to the library. (Done for statements, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests.
 4. Types, and operators as library functions.

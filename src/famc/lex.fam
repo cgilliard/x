@@ -220,6 +220,23 @@ pub fn next() {
     tl = cur - tk;
 }
 
+// peek(): read a token and leave it unread: is, punct and punct1 tell what
+// it is.
+pub fn peek() {
+    next();
+    cur = tk;
+}
+
+// accept(text): read a token if it is this name; else leave it unread.
+pub fn accept(text) {
+    next();
+    if kind == 1 {
+        if is(text) { return 1; }
+    }
+    cur = tk;
+    return 0;
+}
+
 // expect(c): read a token: it must be this punctuation character.
 pub fn expect(c) {
     next();

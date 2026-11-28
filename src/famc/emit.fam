@@ -36,6 +36,19 @@
 //     `bytes { ... }` is laid down the same way, without the zero byte.
 //   - `return` jumps to the code at the function's end that drops the
 //     frame.  A function that runs off its end returns whatever is in a0.
+//
+// Flow.  Nothing here knows `if` or `while`.  What controls flow is built
+// from labels and jumps (docs/CORE.md):
+//     label()             a new label, not yet anywhere
+//     place(l)            the label is here
+//     jump(l)             go to the label
+//     jump_if_zero(l)     go to the label if a0 is zero
+//     exit_label()        the label at the function's end
+// A label belongs to the function and the block it was made in, at the
+// point it was made:
+// it must be placed in that block with no `let` in between, and only code
+// inside that block, after that point, may jump to it.  So a jump leaves
+// blocks or stays in one, never enters one, and never skips a `let`.
 
 module emit;
 
@@ -47,8 +60,6 @@ import obj;
 let vcur = 0;           // slots in use
 let vmax = 0;           // the most slots in use at once in this function
 let vout = 0;           // the most stack arguments a call in it passes
-let vret = 0;           // its last `return` jump, to patch (0: none): each
-                        //   holds the address of the one before
 let vpro = 0;           // where its first three instructions are
 pub let vtest = 0;      // 1 while compiling a test block
 
@@ -57,11 +68,37 @@ let lbase = 0;
 let ltop = 0;
 let llim = 0;
 
-// setup(): room for the locals.
+// The blocks that are open, 12 bytes each: the locals and the slots in use
+// when it opened, and its number.  Each function, and each block as it
+// opens, takes the next number, through the whole file: so a number says
+// which block of which function.
+let sbase = 0;
+let stop = 0;
+let slim = 0;
+let serial = 0;         // the number taken last
+let whole = 0;          // the number of the function being compiled
+
+// The file's labels, 16 bytes each: its address (0: not placed yet), the
+// last jump to it that waits for that (0: none; each holds the address of
+// the one before), the number of the block it was made in (the function's:
+// in none) and the slots in use then.
+let lab = 0;
+let labn = 0;
+let lablim = 0;
+let waiting = 0;        // how many are not placed yet
+let out = 0;            // the label at the function's end
+
+// setup(): room for the locals, the blocks and the labels.
 pub fn setup() {
     lbase = alloc(0x10000);
     ltop = lbase;
     llim = lbase + 0x10000;
+    sbase = alloc(0x10000);
+    stop = sbase;
+    slim = sbase + 0x10000;
+    lab = alloc(0x400000);
+    labn = lab;
+    lablim = lab + 0x400000;
 }
 
 fn elocals() { lex.error("function needs too many locals"); }
@@ -108,18 +145,40 @@ pub fn look(name, len) {
     return -1;
 }
 
-// open(): a block starts: what close needs to end it.
+// open(): a block starts.
 pub fn open() {
-    return ltop;
-}
-pub fn slots() {
-    return vcur;
+    if stop + 12 > slim { lex.error("nested too deep"); }
+    serial = serial + 1;
+    store32(stop, ltop);
+    store32(stop + 4, vcur);
+    store32(stop + 8, serial);
+    stop = stop + 12;
 }
 
-// close(locals, used): a block ends: its locals and their slots go.
-pub fn close(locals, used) {
-    ltop = locals;
-    vcur = used;
+// close(): a block ends: its locals and their slots go.
+pub fn close() {
+    stop = stop - 12;
+    ltop = load32(stop);
+    vcur = load32(stop + 4);
+}
+
+// inside(): the number of the innermost open block (the function's: none
+// is open).
+fn inside() {
+    if stop == sbase { return whole; }
+    return load32(stop - 4);
+}
+
+// isopen(number): is that the number of an open block, or of the function
+// being compiled?
+fn isopen(number) {
+    if number == whole { return 1; }
+    let p = stop;
+    while p > sbase {
+        p = p - 12;
+        if load32(p + 8) == number { return 1; }
+    }
+    return 0;
 }
 
 // ---- writing instructions --------------------------------------------------
@@ -196,11 +255,65 @@ pub fn li(value) {
     }
 }
 
-// leave(): append a jump to the function's end, as `return` does.
-pub fn leave() {
+// ---- labels and jumps ------------------------------------------------------
+
+// label(): a new label, of this block and this point in it.
+pub fn label() {
+    if labn + 16 > lablim { lex.ebig(); }
+    let l = labn;
+    labn = labn + 16;
+    store32(l, 0);
+    store32(l + 4, 0);
+    store32(l + 8, inside());
+    store32(l + 12, vcur);
+    waiting = waiting + 1;
+    return l;
+}
+
+// settle(l): the label is here: the jumps that waited for it are resolved.
+fn settle(l) {
+    store32(l, obj.cn);
+    let at = load32(l + 4);
+    while at {
+        let before = load32(at);
+        here(at);
+        at = before;
+    }
+    waiting = waiting - 1;
+}
+
+// place(l): the label is here.
+pub fn place(l) {
+    if load32(l) { lex.error("a label is placed twice"); }
+    if load32(l + 8) != inside() || load32(l + 12) != vcur {
+        lex.error("a label is placed outside where it was made");
+    }
+    settle(l);
+}
+
+// jump(l): append a jump to the label.
+pub fn jump(l) {
+    if isopen(load32(l + 8)) == 0 || vcur < load32(l + 12) {
+        lex.error("a jump into a block, past a let, or to another function");
+    }
     let at = hole();
-    store32(at, vret);
-    vret = at;
+    if load32(l) {
+        patch(at, load32(l));
+    } else {                                    // it waits, with the others
+        store32(at, load32(l + 4));
+        store32(l + 4, at);
+    }
+}
+
+// jump_if_zero(l): append a jump to the label, taken if a0 is zero.
+pub fn jump_if_zero(l) {
+    obj.word(0x00051463);                       // bnez a0, +8
+    jump(l);
+}
+
+// exit_label(): the label at the function's end, where `return` jumps.
+pub fn exit_label() {
+    return out;
 }
 
 // Bytes laid down in the code, four to a word.
@@ -268,24 +381,24 @@ pub fn begin() {
     vcur = 0;
     vmax = 0;
     vout = 0;
-    vret = 0;
     vtest = 0;
+    stop = sbase;
+    serial = serial + 1;
+    whole = serial;
+    waiting = 0;
+    out = label();
     vpro = obj.cn;
     obj.word(0x13);
     obj.word(0x13);
     obj.word(0x13);
 }
 
-// end(): after its block: where every `return` jumps, the code that drops
-// the frame, and the three instructions that make it.  The frame is the
-// saved s0, the slots and the outgoing arguments, rounded up to 16 bytes.
+// end(): after its block: the label at the end, the code that drops the
+// frame, and the three instructions that make it.  The frame is the saved
+// s0, the slots and the outgoing arguments, rounded up to 16 bytes.
 pub fn end() {
-    let at = vret;
-    while at {
-        let before = load32(at);
-        here(at);
-        at = before;
-    }
+    settle(out);
+    if waiting { lex.error("a label is never placed"); }
     if vtest { obj.call("__test_end", 10); }
     obj.word(0x00040113);                       // mv sp, s0
     obj.word(0xFFC12403);                       // lw s0, -4(sp)

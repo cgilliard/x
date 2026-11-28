@@ -1,0 +1,86 @@
+// MIT License
+//
+// Copyright (c) 2026 Christopher Gilliard
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+// std -- the statements that control flow, as macros: `if`, `while` and
+// `return`.
+//
+// Part of the fam compiler written in fam (src/famc/): see main.fam.
+//
+// The compiler proper does not know these words.  Each is a function here
+// that is called when a statement starts with the word: it reads what
+// follows, has the compiler compile the expressions and blocks in it, and
+// joins them with labels and jumps (emit.fam, docs/CORE.md).
+
+module std;
+
+import lex;
+import obj;
+import emit;
+import parse;
+
+// if expr block [ else ( block | if-statement ) ]
+fn if_macro() {
+    let other = emit.label();
+    parse.expression();
+    emit.jump_if_zero(other);
+    parse.block();
+    if lex.accept("else") {
+        let end = emit.label();
+        emit.jump(end);
+        emit.place(other);
+        lex.peek();
+        if lex.is("if") { parse.statement(); } else { parse.block(); }
+        emit.place(end);
+    } else {
+        emit.place(other);
+    }
+}
+
+// while expr block
+fn while_macro() {
+    let top = emit.label();
+    let end = emit.label();
+    emit.place(top);
+    parse.expression();
+    emit.jump_if_zero(end);
+    parse.block();
+    emit.jump(top);
+    emit.place(end);
+}
+
+// return [ expr ] ;
+fn return_macro() {
+    lex.peek();
+    if lex.punct(59) {
+        lex.next();
+        obj.word(0x00000513);                   // li a0, 0
+    } else {
+        parse.expression();
+        lex.expect(59);
+    }
+    emit.jump(emit.exit_label());
+}
+
+init {
+    parse.define("if", &if_macro);
+    parse.define("while", &while_macro);
+    parse.define("return", &return_macro);
+}

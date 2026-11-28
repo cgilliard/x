@@ -68,11 +68,48 @@ let glim = 0;
 // How deep statements and expressions are nested.
 let depth = 0;
 
+// The macros, 12 bytes each: name, length, and the function to call when a
+// statement starts with that name.
+let mb = 0;
+let mn = 0;
+let mlim = 0;
+
 // setup(): room for the constants and globals.
 pub fn setup() {
     gb = alloc(0x40000);
     gn = gb;
     glim = gb + 0x40000;
+}
+
+// define(name, f): a macro.  The name is a text that ends with a zero
+// byte.  A statement that starts with it is compiled by calling f, which
+// reads what follows the name and says what to emit (docs/CORE.md).
+// Macros are defined in init blocks, before anything is compiled.
+pub fn define(name, f) {
+    if mb == 0 {
+        mb = alloc(0x1000);
+        mn = mb;
+        mlim = mb + 0x1000;
+    }
+    if mn + 12 > mlim { lex.ebig(); }
+    let len = 0;
+    while load8(name + len) { len = len + 1; }
+    store32(mn, name);
+    store32(mn + 4, len);
+    store32(mn + 8, f);
+    mn = mn + 12;
+}
+
+// macro(): the function of the macro the token names (0: it names none).
+fn macro() {
+    let p = mb;
+    while p < mn {
+        if load32(p + 4) == lex.tl {
+            if lex.same(load32(p), lex.tk, lex.tl) { return load32(p + 8); }
+        }
+        p = p + 12;
+    }
+    return 0;
 }
 
 // gfind(name, len): the entry of a name (0: none).
@@ -435,21 +472,25 @@ fn expr(min) {
     depth = depth - 1;
 }
 
+// expression(): compile an expression: its value is left in a0.
+pub fn expression() {
+    expr(1);
+}
+
 // ---- statements ------------------------------------------------------------
 
 // block(): "{" { statement } "}".  The locals and slots of its `let`s go
 // when it ends.
-fn block() {
+pub fn block() {
     lex.expect(123);
-    let locals = emit.open();
-    let used = emit.slots();
+    emit.open();
     lex.next();
     while lex.punct(125) == 0 {
         lex.cur = lex.tk;
-        stmt();
+        statement();
         lex.next();
     }
-    emit.close(locals, used);
+    emit.close();
 }
 
 // assign(name, len): NAME = expr ; (the = is read)
@@ -469,31 +510,8 @@ fn assign(name, len) {
     gstore(load32(e + 12));
 }
 
-// ifstmt(): if expr block [ else ( block | if-statement ) ] (the if is read)
-fn ifstmt() {
-    expr(1);
-    obj.word(0x00051463);                       // bnez a0, +8
-    let at = emit.hole();                       // j <past the block>
-    block();
-    lex.next();
-    let other = 0;
-    if lex.kind == 1 { other = lex.is("else"); }
-    if other {
-        let past = emit.hole();                 // j <past the else part>
-        emit.here(at);
-        lex.next();
-        lex.cur = lex.tk;
-        let again = 0;
-        if lex.kind == 1 { again = lex.is("if"); }
-        if again { stmt(); } else { block(); }
-        emit.here(past);
-    } else {
-        lex.cur = lex.tk;
-        emit.here(at);
-    }
-}
-
-fn stmt() {
+// statement(): compile a statement.
+pub fn statement() {
     deeper();
     stmt1();
     depth = depth - 1;
@@ -520,34 +538,13 @@ fn stmt1() {
         emit.sw(s, 10);
         return;
     }
-    if lex.is("if") {
-        ifstmt();
+    let m = macro();
+    if m {
+        m();
         return;
     }
     if lex.is("asm") {
         asmbody();
-        return;
-    }
-    if lex.is("while") {                        // while expr block
-        let start = obj.cn;
-        expr(1);
-        obj.word(0x00051463);                   // bnez a0, +8
-        let at = emit.hole();                   // j <past the block>
-        block();
-        emit.patch(emit.hole(), start);           // j <the condition>
-        emit.here(at);
-        return;
-    }
-    if lex.is("return") {                       // return [ expr ]
-        lex.next();
-        if lex.punct(59) {
-            obj.word(0x00000513);               // li a0, 0
-        } else {
-            lex.cur = lex.tk;
-            expr(1);
-            lex.expect(59);
-        }
-        emit.leave();                           // j <the end>, patched there
         return;
     }
     if lex.is("assert") {                       // assert expr
@@ -559,7 +556,7 @@ fn stmt1() {
         let at = emit.hole();                   // j <past the failure>
         emit.li(at_line);                       // __test_fail(line)
         obj.call("__test_fail", 11);
-        emit.leave();                           // j <the end>, as `return` does
+        emit.jump(emit.exit_label());           // as `return` does
         emit.here(at);
         return;
     }

@@ -11,6 +11,12 @@
 # Then bin/famc2 compiles its own source, and the compiler linked from
 # that must be bin/famc2 itself, byte for byte.
 #
+# Last, the checks on jumps (src/famc/emit.fam).  No macro the compiler
+# has trips them, so a compiler is linked here with four that can:
+#       mark;   make a label and place it       back;   jump to it
+#       fwd;    make a label and jump to it     land;   place it
+# and given functions that use them wrongly.
+#
 # The comparing is done by bin/same, a fam program.
 
 cd "$(dirname "$0")/.." || exit 1
@@ -55,7 +61,7 @@ echo "ok    $pass files compile the same"
 
 # bin/famc2 compiles itself
 objs=
-for m in lex obj emit parse main; do
+for m in lex obj emit parse std main; do
         { cat src/famc/$m.fam; printf '\004'; } > bin/test.in
         run bin/famc2 bin/test.$m.o || fail=$((fail + 1))
         objs="$objs bin/test.$m.o"
@@ -67,7 +73,63 @@ if same bin/test.famc2 bin/famc2; then
 else
         fail=$((fail + 1)); echo "FAIL  bin/famc2 builds itself"
 fi
-rm -f bin/test.in bin/test.a bin/test.b bin/test.famc2 $objs
+
+# the checks on jumps
+cat > bin/test.in <<'END'
+module wrong;
+import lex; import emit; import parse;
+let l = 0;
+fn mark() { lex.expect(59); l = emit.label(); emit.place(l); }
+fn back() { lex.expect(59); emit.jump(l); }
+fn fwd() { lex.expect(59); l = emit.label(); emit.jump(l); }
+fn land() { lex.expect(59); emit.place(l); }
+init {
+    parse.define("mark", &mark); parse.define("back", &back);
+    parse.define("fwd", &fwd); parse.define("land", &land);
+}
+END
+printf '\004' >> bin/test.in
+run bin/famc2 bin/test.wrong.o || fail=$((fail + 1))
+cat bin/rt.o bin/famc2.lex.o bin/famc2.obj.o bin/famc2.emit.o \
+    bin/famc2.parse.o bin/famc2.std.o bin/test.wrong.o bin/famc2.main.o \
+    bin/rtmain.o bin/end.bin > bin/test.in
+run bin/famld bin/test.famcw || fail=$((fail + 1))
+
+# expect MESSAGE SOURCE -- that compiler, given SOURCE, must fail with
+# exactly MESSAGE; or, if MESSAGE is empty, compile it.
+expect() {
+        printf '%s\n\004' "$2" > bin/test.in
+        run bin/test.famcw bin/test.a
+        got="exit $?: $(cat bin/test.a | tr -d '\000')"
+        case $got in "exit 0: FAMO"*) got="exit 0: " ;; esac
+        want="exit 1: famc: line 1: $1"; [ -n "$1" ] || want="exit 0: "
+        if [ "$got" = "$want" ]; then
+                pass=$((pass + 1)); echo "ok    $2"
+        else
+                fail=$((fail + 1)); echo "FAIL  $2"; echo "        got: $got"
+        fi
+}
+expect "" \
+        'fn f() { mark; back; }'
+expect "" \
+        'fn f() { mark; if 1 { let a = 1; back; } }'
+expect "" \
+        'fn f() { fwd; land; }'
+expect "a jump into a block, past a let, or to another function" \
+        'fn f() { if 1 { mark; } back; }'
+expect "a jump into a block, past a let, or to another function" \
+        'fn f() { mark; } fn g() { back; }'
+expect "a label is placed outside where it was made" \
+        'fn f() { fwd; let x = 1; land; }'
+expect "a label is placed outside where it was made" \
+        'fn f() { fwd; if 1 { land; } }'
+expect "a label is placed twice" \
+        'fn f() { mark; land; }'
+expect "a label is never placed" \
+        'fn f() { fwd; }'
+
+rm -f bin/test.in bin/test.a bin/test.b bin/test.famc2 bin/test.famcw \
+      bin/test.wrong.o $objs
 
 echo
 echo "$pass passed, $fail failed"
