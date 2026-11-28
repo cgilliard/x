@@ -46,6 +46,9 @@ yet.
 1. No word in `src/famc.forth` or `src/famld.forth` takes more off the
    data stack than was put on it.
 2. Every write into a table in those programs is inside the table.
+3. The flow of control in a binary is well nested: every loop has one
+   entry. The next compiler (`docs/CORE.md`) leaves jumps to macros and
+   does not check this itself.
 
 With rule 4 and rule 5, proofs can be about the binary itself, which
 leaves the compiler out of what has to be trusted.
