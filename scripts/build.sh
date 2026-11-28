@@ -75,10 +75,25 @@ verify() {
 # the core, a minimal macro compiler, built by the seed from its hex
 compile bin/fam   fam0.seed src/fam.fam0
 
-# the fam compiler: the front end, and the linker and back end.  Both are
-# Forth, which the core compiles, the compiler's library first.
-compile bin/famc  bin/fam lib/compiler.lib src/famc.forth
+# the stage compiler and the linker (which is the back end too).  Both
+# are Forth, which the core compiles, their library first.  The stage
+# compiler, bin/famc0, is here to build the compiler and nothing else.
+compile bin/famc0 bin/fam lib/compiler.lib src/famc.forth
 compile bin/famld.unpacked bin/fam lib/compiler.lib src/famld.forth
+
+# the fam compiler, written in fam (src/famc/): the stage compiler compiles
+# it and the runtime it is linked with
+compile bin/famc0.rt.o      bin/famc0 lib/rt.fam
+compile bin/famc0.rtmain.o  bin/famc0 lib/rtmain.fam
+compile bin/famc.lex.o      bin/famc0 src/famc/lex.fam
+compile bin/famc.obj.o      bin/famc0 src/famc/obj.fam
+compile bin/famc.emit.o     bin/famc0 src/famc/emit.fam
+compile bin/famc.parse.o    bin/famc0 src/famc/parse.fam
+compile bin/famc.std.o      bin/famc0 src/famc/std.fam
+compile bin/famc.main.o     bin/famc0 src/famc/main.fam
+compile bin/famc  bin/famld.unpacked bin/famc0.rt.o bin/famc.lex.o \
+                  bin/famc.obj.o bin/famc.emit.o bin/famc.parse.o \
+                  bin/famc.std.o bin/famc.main.o bin/famc0.rtmain.o
 
 # the runtime, which tools/famc adds to every link: startup and library,
 # and the last step (call main, or report the tests)
@@ -92,18 +107,6 @@ compile bin/rttest.o  bin/famc lib/rttest.fam
 compile bin/fampack.o bin/famc  src/fampack.fam
 compile bin/fampack   bin/famld.unpacked bin/rt.o bin/fampack.o bin/rtmain.o
 compile bin/famld     bin/fampack bin/famld.unpacked
-
-# the compiler again, written in fam (src/famc/): the same language and
-# the same objects as the one in Forth, which builds it
-compile bin/famc2.lex.o   bin/famc  src/famc/lex.fam
-compile bin/famc2.obj.o   bin/famc  src/famc/obj.fam
-compile bin/famc2.emit.o  bin/famc  src/famc/emit.fam
-compile bin/famc2.parse.o bin/famc  src/famc/parse.fam
-compile bin/famc2.std.o   bin/famc  src/famc/std.fam
-compile bin/famc2.main.o  bin/famc  src/famc/main.fam
-compile bin/famc2     bin/famld bin/rt.o bin/famc2.lex.o bin/famc2.obj.o \
-                      bin/famc2.emit.o bin/famc2.parse.o bin/famc2.std.o \
-                      bin/famc2.main.o bin/rtmain.o
 
 # a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0

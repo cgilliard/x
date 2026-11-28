@@ -14,9 +14,10 @@ change to this file first.
    `tools/`; those are for users. (The tests do run them, as a user would.)
 
 3. **Each step is only strong enough to build the next.** The seed loads
-   hex; the core (`src/fam.S`) is a minimal macro compiler; the compiler
-   and the linker are written in the core's language. A lower step does
-   not grow to make a higher one more convenient.
+   hex; the core (`src/fam.S`) is a minimal macro compiler; the stage
+   compiler and the linker are written in the core's language; the
+   compiler is written in fam, and the stage compiler builds it. A lower
+   step does not grow to make a higher one more convenient.
 
 4. **No `jalr`.** Nothing the toolchain writes contains one: not the
    programs it compiles, and not its own. A call stores a return id and a

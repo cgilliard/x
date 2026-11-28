@@ -19,15 +19,15 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// famc -- the fam compiler's front end, written in fam (docs/LANGUAGE.md,
-// docs/OBJECT.md).
+// famc -- the fam compiler's front end (docs/LANGUAGE.md, docs/OBJECT.md).
 //
 // Reads one source file from the console (up to the byte 0x04) and writes
 // its object.  On an error it writes a message in place of the object and
 // exits with 1.
 //
-// It compiles the same language to the same bytes as src/famc.forth, the
-// compiler that builds it.  Its parts, each a module:
+// It is written in the language it compiles.  src/famc.forth, the stage
+// compiler, compiles the same language to the same bytes, and builds this
+// one from the seed (scripts/build.sh).  Its parts, each a module:
 //     lex     the source, its tokens, and the error messages
 //     obj     the object being written, and the names of modules
 //     emit    a function's frame, and the instructions written

@@ -1,6 +1,6 @@
 # fam object format, version 3 (draft)
 
-Status: a draft, implemented by `src/famc.forth` (the front end) and
+Status: a draft, implemented by `src/famc/` (the front end) and
 `src/famld.forth` (the linker and back end). Parts listed under "Open
 questions" are the ones most likely to change.
 

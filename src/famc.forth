@@ -1,12 +1,15 @@
-\ src/famc.forth -- the fam compiler's front end (docs/LANGUAGE.md,
-\ docs/OBJECT.md).
+\ src/famc.forth -- the stage compiler: the fam compiler's front end
+\ (docs/LANGUAGE.md, docs/OBJECT.md) as it was when the compiler proper,
+\ src/famc/, was first written in fam.  It builds that one and nothing
+\ else, and it does not change: scripts/test_compilers.sh checks that the
+\ two write the same.
 \
 \ Reads one source file from the console (up to the byte 0x04) and writes
 \ its object.  On an error it writes a message in place of the object and
 \ exits with 1.
 \
 \ It is written in the Forth of lib/compiler.lib; scripts/build.sh has the
-\ core compile the two together into bin/famc.
+\ core compile the two together into bin/famc0.
 \
 \ The language (every value is a 32-bit integer):
 \     program   = [ "module" NAME ";" ]

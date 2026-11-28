@@ -1,7 +1,7 @@
 # The fam language (so far)
 
-Status: what `src/famc.forth` compiles today. It grows step by step; "Not yet"
-at the end lists what is planned and missing.
+Status: what the compiler, `src/famc/`, compiles today. It grows step by
+step; "Not yet" at the end lists what is planned and missing.
 
 ```
 fn fib(n) {

@@ -1,15 +1,15 @@
 #!/bin/sh
-# scripts/test_compilers.sh -- check that the compiler written in fam
-# (src/famc/, bin/famc2) writes what the one in Forth (src/famc.forth,
-# bin/famc) writes.  Exit 0 if it does.
+# scripts/test_compilers.sh -- check that the compiler (src/famc/,
+# bin/famc) writes what the stage compiler, the one in Forth that builds
+# it (src/famc.forth, bin/famc0), writes.  Exit 0 if it does.
 #
 # Every .fam file in tests/, src/ and lib/ is given to both, once as
 # tools/famc gives it and once as `tools/famc --test` does.  The two must
 # write the same bytes and exit with the same code: the same object, or
 # the same message for a file that must not compile.
 #
-# Then bin/famc2 compiles its own source, and the compiler linked from
-# that must be bin/famc2 itself, byte for byte.
+# Then bin/famc compiles its own source and its runtime, and the compiler
+# linked from that must be bin/famc itself, byte for byte.
 #
 # Last, the checks on jumps (src/famc/emit.fam).  No macro the compiler
 # has trips them, so a compiler is linked here with four that can:
@@ -46,8 +46,8 @@ pass=0; fail=0
 for f in tests/*.fam tests/*/*.fam src/*.fam src/*/*.fam lib/*.fam; do
         for mark in '\001' '\002'; do
                 { printf "$mark%s\n" "$f"; cat "$f"; printf '\004'; } > bin/test.in
-                run bin/famc  bin/test.a; echo "exit $?" >> bin/test.a
-                run bin/famc2 bin/test.b; echo "exit $?" >> bin/test.b
+                run bin/famc0 bin/test.a; echo "exit $?" >> bin/test.a
+                run bin/famc  bin/test.b; echo "exit $?" >> bin/test.b
                 if same bin/test.a bin/test.b; then
                         pass=$((pass + 1))
                 else
@@ -59,19 +59,19 @@ for f in tests/*.fam tests/*/*.fam src/*.fam src/*/*.fam lib/*.fam; do
 done
 echo "ok    $pass files compile the same"
 
-# bin/famc2 compiles itself
+# bin/famc compiles itself (bin/rt.o and bin/rtmain.o are its work already)
 objs=
 for m in lex obj emit parse std main; do
         { cat src/famc/$m.fam; printf '\004'; } > bin/test.in
-        run bin/famc2 bin/test.$m.o || fail=$((fail + 1))
+        run bin/famc bin/test.$m.o || fail=$((fail + 1))
         objs="$objs bin/test.$m.o"
 done
 cat bin/rt.o $objs bin/rtmain.o bin/end.bin > bin/test.in
-run bin/famld bin/test.famc2 || fail=$((fail + 1))
-if same bin/test.famc2 bin/famc2; then
-        pass=$((pass + 1)); echo "ok    bin/famc2 builds itself"
+run bin/famld bin/test.famc || fail=$((fail + 1))
+if same bin/test.famc bin/famc; then
+        pass=$((pass + 1)); echo "ok    bin/famc builds itself"
 else
-        fail=$((fail + 1)); echo "FAIL  bin/famc2 builds itself"
+        fail=$((fail + 1)); echo "FAIL  bin/famc builds itself"
 fi
 
 # the checks on jumps
@@ -89,9 +89,9 @@ init {
 }
 END
 printf '\004' >> bin/test.in
-run bin/famc2 bin/test.wrong.o || fail=$((fail + 1))
-cat bin/rt.o bin/famc2.lex.o bin/famc2.obj.o bin/famc2.emit.o \
-    bin/famc2.parse.o bin/famc2.std.o bin/test.wrong.o bin/famc2.main.o \
+run bin/famc bin/test.wrong.o || fail=$((fail + 1))
+cat bin/rt.o bin/famc.lex.o bin/famc.obj.o bin/famc.emit.o \
+    bin/famc.parse.o bin/famc.std.o bin/test.wrong.o bin/famc.main.o \
     bin/rtmain.o bin/end.bin > bin/test.in
 run bin/famld bin/test.famcw || fail=$((fail + 1))
 
@@ -128,7 +128,7 @@ expect "a label is placed twice" \
 expect "a label is never placed" \
         'fn f() { fwd; }'
 
-rm -f bin/test.in bin/test.a bin/test.b bin/test.famc2 bin/test.famcw \
+rm -f bin/test.in bin/test.a bin/test.b bin/test.famc bin/test.famcw \
       bin/test.wrong.o $objs
 
 echo
