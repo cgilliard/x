@@ -1,4 +1,4 @@
-# fam object format, version 1 (draft)
+# fam object format, version 2 (draft)
 
 Status: a draft, implemented by `src/famc.forth` (the front end) and
 `src/famld.forth` (the linker and back end). Parts listed under "Open
@@ -42,7 +42,7 @@ with no gaps:
 | Word | Contents |
 |---|---|
 | 0 | the magic: the bytes `F` `A` `M` `O` |
-| 1 | the version: 1 |
+| 1 | the version: 2 |
 | 2 | the size of the whole object in bytes |
 | 3 | the number of symbols |
 | 4 | the number of call sites |
@@ -86,9 +86,15 @@ that is not `pub` a local one.
 | 0 | where the call is, as an offset into the code |
 | 1 | the index of the symbol called: a function, a local function or an external |
 
-A call site is 28 bytes of code, all zero in the object. That is the size
-of the call sequence the linker puts there. So the code in an object is laid out exactly as it will be in memory, and the
-front end can resolve every branch from offsets in its own output.
+A call site is 16 bytes of code, all zero in the object. That is the size
+of the call sequence the linker puts there. So the code in an object is
+laid out exactly as it will be in memory, and the front end can resolve
+every branch from offsets in its own output.
+
+The linker finds call sites from this table and nowhere else; it never
+searches the code. It does check that the bytes a site stands for are all
+zero, so an entry that points at real code is an error, not code
+overwritten.
 
 Call sites are in ascending order of offset and do not overlap. Each lies
 wholly inside one record's code.
@@ -113,8 +119,8 @@ An object with two functions: `math.answer`, whose code is the one word
 `1305A002` (`addi a0,zero,42`), and `main`, whose code is one call site,
 for `math.answer`.
 
-It is 124 bytes: the header, two symbols, one call site, 32 bytes of code
-(4 for `math.answer`, 28 for the call site in `main`) and 16 bytes of
+It is 112 bytes: the header, two symbols, one call site, 20 bytes of code
+(4 for `math.answer`, 16 for the call site in `main`) and 16 bytes of
 names.
 
 ## Linking
@@ -167,21 +173,29 @@ j .
 
 It runs at whatever address it is loaded: every jump in it is relative.
 
-**A function** is a jump over itself, its code, and a jump to the island
-it returns through. (The jump over it is there because the binary runs
-from the top, through the functions, to reach the init records.)
+**A function** is a jump over itself, `addi s11, s11, -4`, its code, and a
+jump to the island it returns through. (The jump over it is there because
+the binary runs from the top, through the functions, to reach the init
+records.)
 
-**A call** is seven instructions in the 28 bytes of a call site:
+**A call** is four instructions in the 16 bytes of a call site:
 
 ```
-addi s11, s11, -4 ; bgeu s11, s10, +8 ; ebreak     room for a return id?
-lui t0, id ; addi t0, t0, id                       this call's return id
-sw t0, 0(s11)
+lui t0, id ; addi t0, t0, id     this call's return id
+sw t0, -4(s11)                   left just under the return-id stack
 j <the function, or a relay for it>
 ```
 
+The function's first instruction, the `addi` above, takes the id into the
+stack. That costs one instruction a function, not one a call.
+
 Return ids are numbered through the binary in the order the calls are
 written.
+
+Nothing here checks that the return-id stack has room. The runtime keeps
+a page just under the stack that cannot be read or written, so the `sw` of
+a call nested too deep traps, and the runtime reports it. A program
+linked without `lib/rt.fam` must provide such a page itself.
 
 **An island** is where functions return. There is one about every 256 KiB,
 between functions, and one at the end. It pops the return id and jumps to
@@ -218,9 +232,10 @@ whether or not anything calls it directly.
 These come from the call and return sequences above:
 
 - `s10` and `s11` are the return-id stack's floor and pointer. The startup
-  code sets them before the first call. Nothing else may touch them.
+  code sets them before the first call, with a page below `s10` that traps
+  when written. Nothing else may touch them.
 - A call and its return clobber `t0` and `t1`.
-- A call is seven instructions, 28 bytes.
+- A call is four instructions, 16 bytes.
 - On entry to the image, `gp` holds the address of the first byte past it.
 - Calls reach any distance. A plain `jal` written by the front end reaches
   1 MiB, so a single function's code must stay under that.
@@ -250,7 +265,7 @@ The deviations:
 - **`s10` and `s11` are reserved** for that return-id stack, where the
   standard has them as callee-saved registers.
 
-## Not in version 1
+## Not in version 2
 
 - **Shared data.** Globals and constants visible to other objects. Until
   there is a data part, an object exposes data through a function that

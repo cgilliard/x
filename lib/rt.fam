@@ -12,8 +12,8 @@
 
 // ---- startup ----------------------------------------------------------------
 
-//   image | variables | return ids | guard page | heap > ... < stack | device tree
-//         tp          s10          s11 at first                sp at first
+//   image | variables | guard page | return ids | guard page | heap > ... < stack | device tree
+//         tp                       s10          s11 at first                sp at first
 //
 // On entry gp = the image's end (the linker's doing) and a1 = the address of
 // the device tree, which QEMU puts just under the top of RAM.  There is no
@@ -35,6 +35,8 @@ init asm {
     23A00300    // sw zero,0(t2)
     93834300    // addi t2,t2,4
     E3ECA3FF    // bltu t2,s10,clear
+    B7130000    // lui t2,0x1
+    330D7D00    // add s10,s10,t2        (and a guard page after them)
 
     // The stack starts just under the device tree.  If a1 is not at least 1 MiB
     // above the image (something other than QEMU started us), assume 1 MiB.
@@ -64,25 +66,37 @@ init asm {
     93D32D00    // srli t2,s11,0x2
     93E3F31F    // ori t2,t2,511         (a 4 KiB region at s11)
     7390033B    // csrw pmpaddr0,t2
-    93038009    // li t2,152             (locked, no read, write or execute)
+
+    // So is the page below them: a call stores its return id before anything
+    // else, so a call nested too deep is caught there.  The call sequence has
+    // no check of its own.
+    B7F3FFFF    // lui t2,0xfffff
+    B3037D00    // add t2,s10,t2
+    93D32300    // srli t2,t2,0x2
+    93E3F31F    // ori t2,t2,511         (a 4 KiB region under s10)
+    7390133B    // csrw pmpaddr1,t2
+    B7A30000    // lui t2,0xa
+    93838389    // addi t2,t2,-1896      (both locked, no read, write or execute)
     7390033A    // csrw pmpcfg0,t2
 
     // Traps come to the code below.
     97030000    // auipc t2,0x0
     93830301    // addi t2,t2,16
     73905330    // csrw mtvec,t2
-    6F000004    // j done
+    6F00C003    // j done
 
-    // trap: a call nested too deep (the call sequence executes ebreak),
-    // a stack overflow (the guard page), or any other fault.  Nothing can be
+    // trap: a call nested too deep (the guard page below the return ids),
+    // a stack overflow (the one above), or any other fault.  Nothing can be
     // resumed: take a fresh piece of both stacks and report it.
-    //   __trap(cause, pc, address, guard page)
+    //   __trap(cause, pc, address, the stack's guard page, the return ids')
     73252034    // csrr a0,mcause
     F3251034    // csrr a1,mepc
     73263034    // csrr a2,mtval
     F3260034    // csrr a3,mscratch
     B7230000    // lui t2,0x2
     33817600    // add sp,a3,t2          (the stack's lowest page)
+    B7F3FFFF    // lui t2,0xfffff
+    33077D00    // add a4,s10,t2
     930D0D10    // addi s11,s10,256      (the lowest 64 return ids)
     @__trap
     6F000000    // j .
@@ -389,12 +403,12 @@ pub fn __tests_done() {
 
 // ---- traps ------------------------------------------------------------------
 
-// __trap(cause, pc, address, guard): the startup code comes here on a trap, with
-// the CPU's cause, the pc and the address it faulted on, and the address of
-// the guard page under the stack.
-pub fn __trap(cause, pc, address, guard) {
+// __trap(cause, pc, address, guard, ids_guard): the startup code comes here
+// on a trap, with the CPU's cause, the pc and the address it faulted on, and
+// the addresses of the guard pages under the stack and under the return ids.
+pub fn __trap(cause, pc, address, guard, ids_guard) {
     print("fam: ");
-    if cause == 3 {
+    if (cause == 5 || cause == 7) && address - ids_guard >= 0 && address - ids_guard < 4096 {
         print("calls nested too deep");
     } else if (cause == 5 || cause == 7) && address - guard >= 0 && address - guard < 4096 {
         print("stack overflow");

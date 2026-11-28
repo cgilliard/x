@@ -276,11 +276,11 @@
    -rot 2dup ofind over if nip nip nip nip exit then
    2drop rot onew nip ;
 
-\ osite  append a call of a symbol: a call site and its 28 zero bytes.
+\ osite  append a call of a symbol: a call site and its 16 zero bytes.
 : osite  ( index -- )
    cln @ 8 lit + cllim @ u> if ebig then
    cn @ cb @ - cln @ !  cln @ 4 lit + !  cln @ 8 lit + cln !
-   7 lit begin dup while 0 lit cw, 1- repeat drop ;
+   4 lit begin dup while 0 lit cw, 1- repeat drop ;
 
 \ oidsite  append the loading of a function's id into a0: an id site (the
 \ index's top bit set) and its 8 zero bytes.
@@ -303,7 +303,7 @@
       0 lit nn @ c!  nn @ 1+ nn !
    repeat
    4F4D4146 lit putw                         \ FAMO
-   1 lit putw
+   2 lit putw
    syn @ syb @ -  cln @ clb @ - +  cn @ cb @ - +  nn @ nb @ - +  1C lit + putw
    nsy @ putw
    cln @ clb @ - 3 lit rshift putw

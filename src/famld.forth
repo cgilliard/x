@@ -14,9 +14,10 @@
 \   3. Writes the init records, in the order given, as the code the binary
 \      starts with.
 \
-\ The binary never has a jalr.  A call pushes a number, its return id, on
-\ the stack of return ids (s10 floor, s11 pointer) and jumps to the
-\ function; the function ends by jumping to an "island", which pops the id
+\ The binary never has a jalr.  A call puts a number, its return id, just
+\ under the stack of return ids (s10 floor, s11 pointer) and jumps to the
+\ function, which starts by taking that place into the stack; the function
+\ ends by jumping to an "island", which pops the id
 \ and jumps to where the call was, finding the place by halving through the
 \ ids.  A jump reaches 1 MiB, so there is an island about every 256 KiB,
 \ and each has a relay, a jump, for every function before it: a call out of
@@ -223,6 +224,7 @@
 
 \ word:  start a word, after an island if one is due; its entry in the list
 \ of words.  A word is: a jump over it, its code, a jump to the island.
+\ A function's code starts with fn, (a stub's does not: it jumps to one).
 : word:  ( -- word )
    op @ lastisl @ - 40000 lit u>= if 0 lit island then
    op @ skip !  6F lit w,
@@ -235,13 +237,17 @@
    retent @ jal,
    skip @ op @ patchj ;
 
+\ fn,  how a function starts: it takes the return id its caller left just
+\ under the stack into the stack.
+: fn,  ( -- )   FFCD8D93 lit w, ;            \ addi s11, s11, -4
+
 \ call,  append a call of a word:
-\      addi s11, s11, -4 ; bgeu s11, s10, +8 ; ebreak     room for an id?
-\      li t0, id ; sw t0, 0(s11) ; j <the word, or its relay>
+\      li t0, id ; sw t0, -4(s11) ; j <the word, or its relay>
+\ There is no check for room: the program's library keeps a page under the
+\ stack of return ids that cannot be written, so the sw traps.
 : call,  ( word -- )
-   FFCD8D93 lit w,  01ADF463 lit w,  00100073 lit w,
    nsites 2B7 lit 28293 lit li,              \ li t0, id
-   005DA023 lit w,                           \ sw t0, 0(s11)
+   FE5DAE23 lit w,                           \ sw t0, -4(s11)
    dup @ op @ - reach? if @ else 4 lit + @ then jal,
    sn @ dup slim @ u>= if oom then
    op @ over !  4 lit + sn ! ;
@@ -347,6 +353,10 @@
    o @ over 8 lit + !
    C lit + ! ;
 
+\ hole  the code a call site stands for must be all zero in the object.
+: hole  ( start end -- )
+   begin 2dup u< while over @ if bad then swap 4 lit + swap repeat 2drop ;
+
 \ dosite  check one call site of the object.  A function whose id is taken
 \ (a site with the top bit of its index set) gets an id.
 : dosite  ( C -- )
@@ -354,9 +364,10 @@
    dup 3 lit and if bad then
    dup pend @ u< if bad then
    dup codesz @ u> if bad then
-   over 4 lit + @ 0< if 8 lit else 1C lit then +
+   over 4 lit + @ 0< if 8 lit else 10 lit then +
    dup codesz @ u> if bad then
-   pend !
+   dup pend !
+   over @ o @ 8 lit + @ +  swap o @ 8 lit + @ +  hole
    dup 4 lit + @ 7FFFFFFF lit and
    dup nsym @ u>= if bad then
    lsym                                      \ C L
@@ -407,7 +418,7 @@
    dup @ 04040404 lit = if drop 0 lit exit then
    dup @ 4F4D4146 lit <> if "famld: the input is not a fam object" err then
    dup 4 lit + over C lit + rd
-   dup 4 lit + @ 1 lit <> if "famld: unknown object version" err then
+   dup 4 lit + @ 2 lit <> if "famld: unknown object version" err then
    dup 8 lit + @                             \ O size
    dup 1C lit u< if bad then
    dup 3 lit and if bad then
@@ -472,7 +483,7 @@
             dup 800 lit + C lit rshift C lit lshift 537 lit or w,    \ lui a0
             14 lit lshift 50513 lit or w,                             \ addi a0, a0
          else                                \ a call site
-            eoff @ 1C lit + dup eend @ u> if bad then eoff !
+            eoff @ 10 lit + dup eend @ u> if bad then eoff !
             eo @ ecall @ csym
             dup 8 lit + @ 0= if undef then
             outcall
@@ -488,7 +499,7 @@
 \ then the tree: for one id,      <call it> ; j <the end>
 \ and for more, with m the middle one,
 \      li t3, m ; bltu t2, t3, +8 ; j <second half> ; <first half>
-\ so a run of n ids is 48n - 16 bytes.
+\ so a run of n ids is 36n - 16 bytes.
 : dpos  variable ;     \ bytes of tree written
 : dend  variable ;     \ bytes of tree in all
 
@@ -498,7 +509,7 @@
 : gen  ( lo hi -- )
    2dup = if
       drop idsym outcall
-      dpos @ 1C lit + dpos !
+      dpos @ 10 lit + dpos !
       dend @ dpos @ - jalw w,
       dpos @ 4 lit + dpos !
       exit
@@ -506,7 +517,7 @@
    2dup + 1+ 1 lit rshift                    \ lo hi m
    dup E37 lit E0E13 lit li,                 \ li t3, m
    01C3E463 lit w,                           \ bltu t2, t3, +8
-   dup 3 lit pick - 30 lit * C lit - jalw w,
+   dup 3 lit pick - 24 lit * C lit - jalw w,
    dpos @ 10 lit + dpos !
    2 lit pick over 1- gen
    swap gen drop ;
@@ -516,7 +527,7 @@
    nids @ 0= if exit then
    nids @ 1+ E37 lit E0E13 lit li,           \ li t3, last + 1
    01C3E463 lit w,  0 lit w,                 \ bltu t2, t3, +8 ; illegal
-   nids @ 30 lit * 10 lit - dend !  0 lit dpos !
+   nids @ 24 lit * 10 lit - dend !  0 lit dpos !
    1 lit nids @ gen ;
 
 \ mkstub  give a function that is being written a stub, if it has none.
@@ -582,6 +593,7 @@
 
    word: curfn @ 14 lit + !
    curfn @ 18 lit + @ dup if @ op @ spatch else drop then
+   fn,
    curfn @ 8 lit + @ 1 lit = if
       disp
    else
