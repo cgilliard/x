@@ -1,0 +1,2 @@
+tests/err_use_missing/main.fam:3: undefined: nothing
+exit 1

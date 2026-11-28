@@ -1,0 +1,26 @@
+// one file that uses others: tools/famc is given this one alone
+use config::LIMIT;
+use config::level;
+use config;
+use logging::log;
+use logging;
+use net::packet;
+use net::packet::size;
+
+fn twice(x) { return x + x; }
+
+fn main() {
+    log("limit", LIMIT);
+    log("level", level);
+    level = level + 1;
+    log("level", config::level);
+    config::level = twice(config::level);
+    log("level", level);
+    log("lines", logging::lines);
+    log("size", size(3));
+    log("packet", packet::size(4) + packet::HEADER);
+    let f = &log;
+    f("by id", logging::count());
+    let g = &packet::size;
+    return g(0) - packet::HEADER;
+}

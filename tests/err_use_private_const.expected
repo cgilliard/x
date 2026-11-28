@@ -1,0 +1,2 @@
+tests/err_use_private_const/main.fam:3: private: SECRET
+exit 1

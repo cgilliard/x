@@ -161,7 +161,7 @@ fn skipws() {
 }
 
 // next(): read the next token.  Punctuation is one character, or one of
-// == != <= >= << >> && ||.  A string is quotes and all.  To leave a token
+// == != <= >= << >> && || ::.  A string is quotes and all.  To leave a token
 // unread:  cur = tk
 pub fn next() {
     skipws();
@@ -212,8 +212,8 @@ pub fn next() {
         if n == 61 {                            // == != <= >=
             if c == 61 || c == 33 || c == 60 || c == 62 { cur = cur + 1; }
         } else {
-            if n == c {                         // << >> && ||
-                if c == 60 || c == 62 || c == 38 || c == 124 { cur = cur + 1; }
+            if n == c {                         // << >> && || ::
+                if c == 60 || c == 62 || c == 38 || c == 124 || c == 58 { cur = cur + 1; }
             }
         }
     }
@@ -325,15 +325,126 @@ pub fn odd() { etoken(); }
 
 // ---- reading the source ----------------------------------------------------
 
-// read(): read the whole source from the console, up to the byte 0x04.
-// If it starts with the byte 0x01 or 0x02, that and the rest of its first
-// line are not source: the line is the file's name, and 0x01 asks for the
-// tests.
+// The files given, 32 bytes each: where its name starts and ends (0: it
+// has none), where its text starts and ends, 0 or 1 while it is being
+// compiled or 2 once it has been, and the name of its module and that
+// name's length (parse.fam sets those three).  The first is the file to
+// compile; the others are there to be used by it (`use`).
+let fb = 0;
+let fn_top = 0;
+let flim = 0;
+pub let unit = 0;       // the file being read: its entry
+
+// Where the reading of the files that use the one being read stopped,
+// 36 bytes each.
+let hb = 0;
+let hn = 0;
+let hlim = 0;
+
+fn addfile(name, nend, from, to) {
+    if fn_top + 32 > flim { ebig(); }
+    store32(fn_top, name);
+    store32(fn_top + 4, nend);
+    store32(fn_top + 8, from);
+    store32(fn_top + 12, to);
+    store32(fn_top + 16, 0);
+    store32(fn_top + 20, 0);
+    store32(fn_top + 24, 0);
+    fn_top = fn_top + 32;
+}
+
+// enter(f): read the file f from its start.
+pub fn enter(f) {
+    unit = f;
+    file = load32(f);
+    fend = load32(f + 4);
+    cur = load32(f + 8);
+    send = load32(f + 12);
+    line = 1;
+}
+
+// push(): put aside where we are in the file being read.
+pub fn push() {
+    if hn + 36 > hlim { error("files use each other too deep"); }
+    store32(hn, cur);
+    store32(hn + 4, send);
+    store32(hn + 8, line);
+    store32(hn + 12, tk);
+    store32(hn + 16, tl);
+    store32(hn + 20, kind);
+    store32(hn + 24, file);
+    store32(hn + 28, fend);
+    store32(hn + 32, unit);
+    hn = hn + 36;
+}
+
+// pop(): back to where we were in the file put aside last.
+pub fn pop() {
+    hn = hn - 36;
+    cur = load32(hn);
+    send = load32(hn + 4);
+    line = load32(hn + 8);
+    tk = load32(hn + 12);
+    tl = load32(hn + 16);
+    kind = load32(hn + 20);
+    file = load32(hn + 24);
+    fend = load32(hn + 28);
+    unit = load32(hn + 32);
+}
+
+// root(): the file to compile: its entry.
+pub fn root() {
+    return fb;
+}
+
+// lookup(path, len): the file that a path names: its entry (0: none).  A
+// path is names with / between them, as `a/b`: the file is a/b.fam in the
+// directory of the file to compile.
+pub fn lookup(path, len) {
+    let dir = 0;                                // how much of the first file's
+    let i = 0;                                  //   name is its directory
+    let rname = load32(fb);
+    let rlen = load32(fb + 4) - rname;
+    while i < rlen {
+        if load8(rname + i) == 47 { dir = i + 1; }
+        i = i + 1;
+    }
+    let f = fb;
+    while f < fn_top {
+        let name = load32(f);
+        if name {
+            if load32(f + 4) - name == dir + len + 4 {
+                if same(name, rname, dir) {
+                    if same(name + dir, path, len) {
+                        if zeq(name + dir + len, 4, ".fam") { return f; }
+                    }
+                }
+            }
+        }
+        f = f + 32;
+    }
+    return 0;
+}
+
+// read(): read everything from the console, up to the byte 0x04: the file
+// to compile, and after it the files it may use.
+//
+// Each file starts with the byte 0x01 or 0x02 and a line that is its name,
+// as tools/famc sends it, and runs to the next such byte.  0x01 on the
+// first asks for the tests.  If the first byte is neither, everything is
+// one file with no name.
 pub fn read() {
+    fb = alloc(0x10000);
+    fn_top = fb;
+    flim = fb + 0x10000;
+    hb = alloc(0x1000);
+    hn = hb;
+    hlim = hb + 0x1000;
+
     let room = 0x2000000;
     let p = alloc(room);
     let limit = p + room;
-    cur = p;
+    let from = p;
     let c = getc();
     while c != 4 {
         if p >= limit { ebig(); }
@@ -341,21 +452,36 @@ pub fn read() {
         p = p + 1;
         c = getc();
     }
-    send = p;
-    line = 1;
+    let to = p;
 
-    if cur >= send { return; }
-    c = load8(cur);
-    if c < 1 || c > 2 { return; }
-    if c == 1 { mode = 1; }
-    file = cur + 1;
-    p = file;
-    let more = 1;
-    while more {
-        if p >= send { more = 0; } else {
-            if load8(p) == 10 { more = 0; } else { p = p + 1; }
-        }
+    p = from;
+    let named = 0;
+    if p < to {
+        c = load8(p);
+        named = c == 1 || c == 2;
+        if c == 1 { mode = 1; }
     }
-    fend = p;
-    cur = p + 1;
+    if named == 0 { addfile(0, 0, from, to); }
+    while p < to {                              // p is at a 0x01 or 0x02
+        let name = p + 1;
+        p = name;
+        let more = 1;
+        while more {
+            if p >= to { more = 0; } else {
+                if load8(p) == 10 { more = 0; } else { p = p + 1; }
+            }
+        }
+        let nend = p;
+        if p < to { p = p + 1; }
+        let text = p;
+        more = 1;
+        while more {
+            if p >= to { more = 0; } else {
+                c = load8(p);
+                if c == 1 || c == 2 { more = 0; } else { p = p + 1; }
+            }
+        }
+        addfile(name, nend, text, p);
+    }
+    enter(fb);
 }

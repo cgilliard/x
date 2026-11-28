@@ -3,8 +3,9 @@
 # bin/famc) writes what the stage compiler, the one in Forth that builds
 # it (src/famc.forth, bin/famc0), writes.  Exit 0 if it does.
 #
-# Every .fam file in tests/, src/ and lib/ is given to both, once as
-# tools/famc gives it and once as `tools/famc --test` does.  The two must
+# Every .fam file in tests/, src/ and lib/ that is in the stage compiler's
+# language (no `use`) is given to both, once as tools/famc gives it and
+# once as `tools/famc --test` does.  The two must
 # write the same bytes and exit with the same code: the same object, or
 # the same message for a file that must not compile.
 #
@@ -44,6 +45,12 @@ same() { cat "$1" "$2" bin/end.bin | tools/q32 bin/same; }
 pass=0; fail=0
 
 for f in tests/*.fam tests/*/*.fam src/*.fam src/*/*.fam lib/*.fam; do
+        # `use` is not in the stage compiler's language: not a file with
+        # a line that starts with it, nor one that such a file uses (a
+        # test's main.fam and the files beside it)
+        case $(cat "$f") in "use "*|*"
+use "*) continue ;; esac
+        case $f in tests/*) [ -f "${f%/*}/main.fam" ] && continue ;; esac
         for mark in '\001' '\002'; do
                 { printf "$mark%s\n" "$f"; cat "$f"; printf '\004'; } > bin/test.in
                 run bin/famc0 bin/test.a; echo "exit $?" >> bin/test.a

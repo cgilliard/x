@@ -58,12 +58,25 @@ import emit;
 
 // ---- constants and globals -------------------------------------------------
 
-// The file's constants and globals, 16 bytes each: name, length, 0 for a
-// constant or 1 for a global, and the constant's value or the index of the
-// global's symbol.
+// The names each file knows besides its functions, 24 bytes each: name,
+// length, what it is, a value, the file (its entry in lex.fam), and 1 if
+// other files may use it (`pub`).  What it is, and the value:
+//     0   a constant                              its number
+//     1   a global                                the index of its symbol
+//     2   another file's function (`use a::f;`)   the index of its symbol
+//     3   another file (`use a;`)                 that file's entry
 let gb = 0;
 let gn = 0;
 let glim = 0;
+
+// What item() found: what the name is, as above, and its value.
+let ikind = 0;
+let ivalue = 0;
+
+// For `use`: the names of a path, 8 bytes each (name, length), and room to
+// spell a path with one character between its names.
+let ub = 0;
+let pb = 0;
 
 // How deep statements and expressions are nested.
 let depth = 0;
@@ -76,9 +89,11 @@ let mlim = 0;
 
 // setup(): room for the constants and globals.
 pub fn setup() {
-    gb = alloc(0x40000);
+    gb = alloc(0x60000);
     gn = gb;
-    glim = gb + 0x40000;
+    glim = gb + 0x60000;
+    ub = alloc(0x80);
+    pb = alloc(0x400);
 }
 
 // define(name, f): a macro.  The name is a text that ends with a zero
@@ -115,25 +130,39 @@ fn macro() {
     return 0;
 }
 
-// gfind(name, len): the entry of a name (0: none).
-fn gfind(name, len) {
+// gin(f, name, len): the entry of a name in the file f (0: none).
+fn gin(f, name, len) {
     let p = gb;
     while p < gn {
-        if load32(p + 4) == len {
+        if load32(p + 4) == len && load32(p + 16) == f {
             if lex.same(load32(p), name, len) { return p; }
         }
-        p = p + 16;
+        p = p + 24;
     }
     return 0;
 }
 
-fn gadd(name, len, what, value) {
-    if gn + 16 > glim { lex.ebig(); }
+// gfind(name, len): the entry of a name in this file (0: none).
+fn gfind(name, len) {
+    return gin(lex.unit, name, len);
+}
+
+// gkind(name, len): what a name is in this file (-1: nothing listed).
+fn gkind(name, len) {
+    let e = gfind(name, len);
+    if e == 0 { return -1; }
+    return load32(e + 8);
+}
+
+fn gadd(name, len, what, value, public) {
+    if gn + 24 > glim { lex.ebig(); }
     store32(gn, name);
     store32(gn + 4, len);
     store32(gn + 8, what);
     store32(gn + 12, value);
-    gn = gn + 16;
+    store32(gn + 16, lex.unit);
+    store32(gn + 20, public);
+    gn = gn + 24;
 }
 
 fn eunknown(name, len) { lex.error_name("unknown variable ", name, len); }
@@ -174,6 +203,139 @@ fn gstore(index) {
     obj.word(0x00752023);                       // sw t2, 0(a0)
 }
 
+// ---- names in other files --------------------------------------------------
+
+// item(f, name, len): what a name is in the file f, which this file uses:
+// ikind and ivalue.  It must be `pub` there.  If f is still being compiled
+// (it uses this file, and this file it) and has not defined the name yet,
+// the name is taken for a function, to be checked at the end.
+fn item(f, name, len) {
+    let e = gin(f, name, len);
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what == 0 || what == 1 {
+        if load32(e + 20) == 0 { lex.error_name("private: ", name, len); }
+        ikind = what;
+        ivalue = load32(e + 12);
+        return;
+    }
+    obj.join(load32(f + 20), load32(f + 24), name, len);
+    let index = obj.ref(obj.qname, obj.qlen, 0);
+    let k = obj.kind(index);
+    if k == 3 { lex.error_name("private: ", name, len); }
+    if k != 1 {
+        if load32(f + 16) == 2 { lex.error_name("undefined: ", name, len); }
+        obj.check(index, 1, lex.line);
+    }
+    ikind = 2;
+    ivalue = index;
+}
+
+// used(name, len): the file a name stands for in this file (`use a;`).
+fn used(name, len) {
+    let e = gfind(name, len);
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what != 3 { lex.error_name("unknown module ", name, len); }
+    return load32(e + 12);
+}
+
+// colons(): is the token last read `::`?
+fn colons() {
+    if lex.kind != 3 { return 0; }
+    return lex.is("::");
+}
+
+// spell(n, between): the first n names of the path, with a character
+// between them, at pb: how long that is.
+fn spell(n, between) {
+    let at = pb;
+    let i = 0;
+    while i < n {
+        let name = load32(ub + (i << 3));
+        let len = load32(ub + (i << 3) + 4);
+        if at + len + 1 > pb + 0x400 { lex.error("name too long"); }
+        if i {
+            store8(at, between);
+            at = at + 1;
+        }
+        let k = 0;
+        while k < len {
+            store8(at + k, load8(name + k));
+            k = k + 1;
+        }
+        at = at + len;
+        i = i + 1;
+    }
+    return at - pb;
+}
+
+// include(f, n): compile the file f now, as the module that the first n
+// names of the path spell.
+fn include(f, n) {
+    let len = spell(n, 46);
+    let name = alloc(len);
+    let i = 0;
+    while i < len {
+        store8(name + i, load8(pb + i));
+        i = i + 1;
+    }
+    store32(f + 20, name);
+    store32(f + 24, len);
+    store32(f + 16, 1);
+    lex.push();
+    lex.enter(f);
+    obj.enter(name, len);
+    file();
+    obj.leave();
+    lex.pop();
+    store32(f + 16, 2);
+}
+
+// use(): use NAME { :: NAME } ; (the use is read).  All the names but the
+// last are a file, and the last is something `pub` in it; or, if there is
+// no such file, all the names are a file.  The file is compiled here, if
+// it has not been, and the last name stands in this file for what it is in
+// that one, or for the file.
+fn use() {
+    let n = 0;
+    let text = 0;
+    let name = 0;
+    let len = 0;
+    let more = 1;
+    while more {
+        lex.next();
+        lex.chkident();
+        if n == 16 { lex.error("name too long"); }
+        name = lex.tk;
+        len = lex.tl;
+        store32(ub + (n << 3), name);
+        store32(ub + (n << 3) + 4, len);
+        if n == 0 { text = name; }
+        n = n + 1;
+        lex.next();
+        more = colons();
+    }
+    if lex.punct1(59) == 0 { lex.syntax(); }
+    let f = 0;
+    let whole = 0;
+    if n > 1 { f = lex.lookup(pb, spell(n - 1, 47)); }
+    if f == 0 {
+        f = lex.lookup(pb, spell(n, 47));
+        whole = 1;
+    }
+    if f == 0 { lex.error_name("cannot find ", text, name + len - text); }
+    if f == lex.root() { lex.error_name("cannot use the file being compiled: ", text, name + len - text); }
+    if gfind(name, len) { edup(name, len); }
+    if load32(f + 16) == 0 { include(f, n - 1 + whole); }
+    if whole {
+        gadd(name, len, 3, f, 0);
+    } else {
+        item(f, name, len);
+        gadd(name, len, ikind, ivalue, 0);
+    }
+}
+
 // ---- names of functions, and asm -------------------------------------------
 
 // fnref(): read [ module "." ] name: the index of that function's symbol,
@@ -191,7 +353,19 @@ fn fnref() {
         obj.join(name, len, lex.tk, lex.tl);
         return obj.ref(obj.qname, obj.qlen, 0);
     }
+    if colons() {                               // file :: name
+        let f = used(name, len);
+        lex.next();
+        lex.chkident();
+        item(f, lex.tk, lex.tl);
+        if ikind != 2 { lex.error_name("not a function: ", lex.tk, lex.tl); }
+        return ivalue;
+    }
     lex.cur = lex.tk;                           // a bare name
+    let e = gfind(name, len);
+    if e {
+        if load32(e + 8) == 2 { return load32(e + 12); }
+    }
     return obj.bare(name, len);
 }
 
@@ -354,8 +528,35 @@ fn named(name, len) {
             if lex.zeq(name, len, "load32") { args(0, -2); return; }
             if lex.zeq(name, len, "store8") { args(0, -3); return; }
             if lex.zeq(name, len, "store32") { args(0, -4); return; }
+            let e = gfind(name, len);
+            if e {                              // another file's, by `use`
+                if load32(e + 8) == 2 {
+                    args(load32(e + 12), 0);
+                    return;
+                }
+            }
             args(obj.bare(name, len), 0);
             return;
+        }
+        if colons() {                           // file :: name
+            let f = used(name, len);
+            lex.next();
+            lex.chkident();
+            let qn = lex.tk;
+            let ql = lex.tl;
+            item(f, qn, ql);
+            let what = ikind;
+            let value = ivalue;
+            lex.next();
+            if lex.punct(40) {
+                if what != 2 { lex.error_name("not a function: ", qn, ql); }
+                args(value, 0);
+                return;
+            }
+            lex.cur = lex.tk;
+            if what == 0 { emit.li(value); return; }
+            if what == 1 { gload(value); return; }
+            eunknown(qn, ql);
         }
         if c == 46 {                            // module . name: a call if (
             obj.chkmod(name, len);              //   follows, else a global
@@ -385,9 +586,10 @@ fn named(name, len) {
         emit.lw(s, 10);
         return;
     }
+    let what = gkind(name, len);
+    if what != 0 && what != 1 { eunknown(name, len); }
     let e = gfind(name, len);
-    if e == 0 { eunknown(name, len); }
-    if load32(e + 8) {
+    if what {
         gload(load32(e + 12));
     } else {
         emit.li(load32(e + 12));
@@ -505,9 +707,10 @@ fn assign(name, len) {
         emit.sw(s, 10);
         return;
     }
-    let e = gfind(name, len);                   // not a local: a global
-    if e == 0 { eunknown(name, len); }
-    if load32(e + 8) == 0 { lex.error("cannot assign to a constant"); }
+    let what = gkind(name, len);                // not a local: a global
+    if what < 0 || what > 1 { eunknown(name, len); }
+    if what == 0 { lex.error("cannot assign to a constant"); }
+    let e = gfind(name, len);
     expr(1);
     lex.expect(59);
     gstore(load32(e + 12));
@@ -592,6 +795,24 @@ fn stmt1() {
             }
         }
     }
+    if colons() {
+        lex.next();                             // file :: NAME = ... ?
+        if lex.kind == 1 {
+            let qn = lex.tk;
+            let ql = lex.tl;
+            lex.next();
+            if lex.punct1(61) {
+                item(used(name, len), qn, ql);
+                if ikind == 0 { lex.error("cannot assign to a constant"); }
+                if ikind != 1 { eunknown(qn, ql); }
+                let index = ivalue;
+                expr(1);
+                lex.expect(59);
+                gstore(index);
+                return;
+            }
+        }
+    }
     lex.line = at_line;                         // an expression: back to the name
     lex.cur = name;
     expr(1);
@@ -631,7 +852,7 @@ fn global(public) {
     obj.word(constval());                       // its record: the one word
     lex.expect(59);
     obj.end();
-    gadd(name, len, 1, index);
+    gadd(name, len, 1, index, public);
 }
 
 // function(what): fn NAME ( [ NAME { , NAME } ] ) block (the fn is read).
@@ -642,6 +863,7 @@ fn function(what) {
     if obj.modl == 0 && lex.mode == 0 {         // the root's main is public
         if lex.is("main") { what = 1; }
     }
+    if gkind(lex.tk, lex.tl) >= 2 { edup(lex.tk, lex.tl); }
     obj.qualify(lex.tk, lex.tl);
     if obj.define(obj.qname, obj.qlen, what) < 0 { edup(obj.qname, obj.qlen); }
     emit.begin();
@@ -721,7 +943,17 @@ fn top() {
         emit.end();
         return;
     }
-    if lex.is("const") {                        // const NAME = value ;
+    if lex.is("use") {
+        use();
+        return;
+    }
+    let public = 0;
+    if lex.is("pub") {
+        public = 1;
+        lex.next();
+        if lex.kind != 1 { lex.syntax(); }
+    }
+    if lex.is("const") {                        // [ pub ] const NAME = value ;
         lex.next();
         lex.chkident();
         let name = lex.tk;
@@ -730,14 +962,8 @@ fn top() {
         lex.expect(61);
         let v = constval();
         lex.expect(59);
-        gadd(name, len, 0, v);
+        gadd(name, len, 0, v, public);
         return;
-    }
-    let public = 0;
-    if lex.is("pub") {
-        public = 1;
-        lex.next();
-        if lex.kind != 1 { lex.syntax(); }
     }
     if lex.is("let") {
         global(public);
@@ -747,7 +973,8 @@ fn top() {
     if public { function(1); } else { function(3); }
 }
 
-// file(): the whole file.
+// file(): the whole file.  The same for a file that the one being compiled
+// uses.
 pub fn file() {
     lex.next();
     while lex.kind {

@@ -1,0 +1,2 @@
+tests/err_use_root_private/other.fam:3: private: helper
+exit 1

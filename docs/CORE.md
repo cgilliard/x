@@ -7,7 +7,15 @@ frozen; `scripts/test_compilers.sh` checks that. In it `if`, `while`,
 `return`, `||` and `&&` are already macros (`src/famc/std.fam`), built from
 the labels and jumps of `src/famc/emit.fam`, with the checks on jumps
 below. They are functions registered by name; there is no `macro` keyword
-yet, and nothing else here is built.
+yet. `use` is built (`docs/LANGUAGE.md`, "Using other files"), beside
+`module` and `import`, which the compiler's own source still needs: the
+stage compiler has to compile it. Nothing else here is built.
+
+The compiler runs on a bare machine and cannot open a file. So
+`tools/famc` sends it, after the file to compile, every other `.fam` file
+in that file's directory and below, each with its name, and the compiler
+takes from them the ones that are used, in the order of first use. The
+order they are sent in does not matter.
 
 The compiler is to understand very little itself:
 definitions, expressions and assignment. Everything that controls flow
@@ -186,5 +194,5 @@ fn packed_size(input, n) {
    compiling today's language to the same bytes. (Done.)
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
-3. `use`, attributes, flags and tests.
+3. `use` (done), attributes, flags and tests.
 4. Types, and operators as library functions.

@@ -1,0 +1,2 @@
+tests/err_use_file/main.fam:2: cannot find nowhere::thing
+exit 1

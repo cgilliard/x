@@ -1,0 +1,5 @@
+use even::is_even;
+pub fn is_odd(n) {
+    if n == 0 { return 0; }
+    return is_even(n - 1);
+}

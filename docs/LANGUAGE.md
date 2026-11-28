@@ -79,7 +79,7 @@ hides it.
 - Both must be defined above where they are used.
 - A global belongs to its file's module, as a function does: only that file
   can use it unless it is `pub`, and another file names it `module.name`.
-  A constant cannot be `pub`.
+  A constant can be `pub` only for `use`: see "Using other files".
 - A global the program never uses is left out of the binary.
 
 ## Functions
@@ -194,6 +194,52 @@ fn main() {
   module's file or object must be given to `famc` too. Calling a function that
   does not exist, or is not `pub`, is a link error:
   `famld: undefined: shapes.twice in main`.
+
+## Using other files
+
+`use` is the newer way to split a program into files, and is to replace
+`module` and `import`. The compiler is given one file and finds the others
+itself:
+
+```
+// main.fam
+use config::LIMIT;          // LIMIT is what config.fam calls LIMIT
+use logging::log;           // log is logging.fam's function log
+use net::packet;            // packet is the file net/packet.fam
+
+fn main() {
+    log("limit", LIMIT);
+    return packet::size(3) - packet::HEADER;
+}
+```
+
+```
+tools/famc main.fam -o prog
+```
+
+- **`use a::b::name;`** makes `name` stand for what the file `a/b.fam`
+  calls `name`: a function, a global or a constant. If there is no such
+  file, the whole path is a file, `a/b/name.fam`, and `name` stands for
+  that file: then `name::thing` is what it calls `thing`.
+- **Files are found from the directory of the file given to `famc`,**
+  wherever the `use` is written.
+- **Only what is `pub` can be used** from another file. A constant can be
+  `pub` too: `pub const LIMIT = 4096;`. Using what is not `pub`, or does
+  not exist, is a compile error that names the line:
+  `main.fam:2: private: helper`.
+- **A used file is compiled into the object of the file that was given.**
+  It is not named on the command line as well. It is compiled once,
+  however many files use it, where the first `use` of it stands: so its
+  `init` blocks run before those that follow that `use`.
+- **A function called by its bare name** is this file's, or one named in a
+  `use`, or else the runtime library's. It is never another file's
+  function that was not named in a `use`.
+- **Two files may use each other,** for their functions. A constant or a
+  global must be defined before the `use` that names it is read.
+- A file that is used has no `module` line: its place says what it is.
+
+`famc --test main.fam` runs the tests of every file that `main.fam` uses,
+with its own.
 
 ## Tests
 
@@ -336,7 +382,10 @@ prog.fam:3: unknown variable y
 - Types other than the 32-bit integer; arrays, pointers, structs.
 - Character literals.
 - Globals of more than one word, or that start as anything but a number;
-  constants shared between files; giving memory back.
+  giving memory back.
+- `famc --test DIRECTORY` for files that `use` each other: it compiles
+  every file by itself, so a used file is compiled twice. Give it the one
+  file that uses the others.
 - Checking the number of arguments of a call.
 - Nested modules; importing single names; checking at compile time that
   an imported function exists.

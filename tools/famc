@@ -17,6 +17,10 @@
 # (docs/OBJECT.md).  Linking adds the runtime (lib/rt.fam).  An error is
 # reported as FILE:LINE: WHAT.
 #
+# A source file may `use` the other .fam files in its directory and in the
+# directories in that: they are compiled into its object, and are not to
+# be named here as well.
+#
 # With --test, files are linked into one binary: `main` is not called and
 # is private to its file, so several programs can be tested together.  The
 # runtime's own source, lib/rt.fam, if among the files, is built with its
@@ -118,6 +122,44 @@ tool() {
         cat "$tmp/result" > "$t_out"
 }
 
+# others DIRECTORY -- write every .fam file in the directory and in the
+# directories in it, but for $c_src: each after a line that is the byte
+# 0x02 and its name.
+others() {
+        for o_e in "$1"/*; do
+                if [ -d "$o_e" ]; then
+                        others "$o_e"
+                else
+                        case $o_e in *" "*) continue ;; *.fam) ;; *) continue ;; esac
+                        [ "$o_e" = "$c_src" ] && continue
+                        printf '\002%s\n' "${o_e#$c_strip}"
+                        cat "$o_e"
+                fi
+        done
+}
+
+# compile SOURCE OBJECT -- compile a source file.  bin/famc is given the
+# file, after a line that is the byte 0x02 (or 0x01, to ask for the tests)
+# and its name; and after it, the same way, every other .fam file in its
+# directory and the directories in that, which are the files it may `use`.
+compile() {
+        c_src=$1
+        c_dir=.; c_strip=./
+        case $1 in */*) c_dir=${1%/*}; c_strip= ;; esac
+        c_mark='\002'; [ -z "$testing" ] || c_mark='\001'
+        { printf "$c_mark%s\n" "$1"; cat "$1"
+          # a file with no "use" anywhere in it uses nothing: send no more
+          # (what a program reads from the serial port, it reads slowly)
+          case $(cat "$1") in *use*) others "$c_dir" ;; esac
+          printf '\004'
+        } > "$tmp/in"
+        if ! qemu "$bin/famc"; then
+                cat "$tmp/result" >&2
+                return 1
+        fi
+        cat "$tmp/result" > "$2"
+}
+
 if [ $mode = pack ]; then
         [ $# -eq 1 ] && [ -n "$out" ] || usage
         # bin/fampack finds the size in the binary itself
@@ -149,12 +191,7 @@ for f; do
                 obj=$out
                 [ -n "$obj" ] || { obj=${f##*/}; obj=${obj%.*}.o; }
         fi
-        # bin/famc is told the file's name, for its messages, in a first
-        # line that starts with the byte 0x02, or 0x01 to ask for the tests
-        pre=$(printf '\002%s' "$f")
-        [ -z "$testing" ] || pre=$(printf '\001%s' "$f")
-        tool "$bin/famc" "$obj" "$f" || exit 1
-        pre=
+        compile "$f" "$obj" || exit 1
         if [ -n "$testing" ] && [ "$f" -ef "$root/lib/rt.fam" ]; then
                 rt=$obj                 # the runtime itself, with its tests
         else

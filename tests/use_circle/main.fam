@@ -1,0 +1,8 @@
+// two files that use each other
+use even::is_even;
+fn main() {
+    print_int(is_even(10));
+    print_int(is_even(7));
+    print("\n");
+    return 0;
+}

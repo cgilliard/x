@@ -1,0 +1,7 @@
+use logging::log;
+
+pub const HEADER = 20;
+
+init { log("packet starts", HEADER); }
+
+pub fn size(n) { return HEADER + n * 8; }

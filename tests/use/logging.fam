@@ -1,0 +1,16 @@
+use config::LIMIT;
+
+pub let lines = 0;
+
+fn twice(x) { return x * 100; }     // this file's own, not main's
+
+pub fn count() { return twice(lines); }
+
+pub fn log(what, n) {
+    lines = lines + 1;
+    if n > LIMIT { n = LIMIT; }
+    print(what);
+    print(" ");
+    print_int(n);
+    print("\n");
+}

@@ -4,7 +4,8 @@
 # expected.  Exit 0 if every one is as expected.
 #
 # A test is a source file, tests/NAME.fam, or a directory of them,
-# tests/NAME/.  What it does is, as a user would do it:
+# tests/NAME/: all of them are compiled and linked, unless one of them is
+# main.fam, which is then compiled alone (it says which others it uses).  What it does is, as a user would do it:
 #
 #       tools/famc tests/NAME.fam -o BINARY && tools/q32 BINARY
 #
@@ -41,7 +42,8 @@ pass=0; fail=0
 for t; do
         t=${t%/}
         name=${t%.fam}
-        if [ -d "$t" ]; then src=$(echo "$t"/*.fam); else src=$t; fi
+        if [ -f "$t/main.fam" ]; then src=$t/main.fam    # which uses the others
+        elif [ -d "$t" ]; then src=$(echo "$t"/*.fam); else src=$t; fi
         input=/dev/null; [ ! -f "$name.input" ] || input=$name.input
 
         case $name in

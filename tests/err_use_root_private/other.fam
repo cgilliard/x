@@ -1,0 +1,4 @@
+// helper is main.fam's own: this file cannot call it
+pub fn f() {
+    return helper();
+}

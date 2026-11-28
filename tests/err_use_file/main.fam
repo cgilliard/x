@@ -1,0 +1,3 @@
+// no such file
+use nowhere::thing;
+fn main() { return 0; }

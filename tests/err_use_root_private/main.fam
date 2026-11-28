@@ -1,0 +1,3 @@
+use other::f;
+fn helper() { return 1; }
+fn main() { return f(); }
