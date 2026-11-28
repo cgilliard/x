@@ -55,6 +55,8 @@ Every value has a type, and nothing is converted that is not told to be.
 | `u8` `u16` `u32` | an integer without one |
 | `bool` | `true` or `false` |
 | `*T` | a pointer: the address of a `T` |
+| `[T; N]` | an array: `N` values of type `T`, one after another |
+| a struct's name | a struct: see "Structs and arrays" |
 | `fn(T, ...) -> T` | a function, as a value: see "Function values" |
 
 - **Arithmetic wraps** at the size of the type: a `u8` holding 250, plus
@@ -97,12 +99,69 @@ fn sum(p: *u32, n: u32) -> u32 {
 | `*p` | what `p` points at |
 | `p[i]` | what `p` points at, `i` of them further on; `i` is any integer |
 | `p + n`, `p - n` | the pointer `n` of them further on, or back |
-| `&x` | the address of the local or global `x` |
+| `&x` | the address of `x`, or of any other place: see "Structs and arrays" |
 | `p == q`, `p < q`, ... | pointers of one type compare, as addresses |
 
 `*p = EXPR;` and `p[i] = EXPR;` store. What is loaded and stored is as
 many bytes as the type has. Nothing checks that a pointer points at
 anything: `0 as *u8` is a pointer like any other.
+
+## Structs and arrays
+
+```
+struct Point { x: i32, y: i32 }
+struct Packet { kind: u8, len: u16, at: Point, body: *u8, next: *Packet }
+
+let table: [u32; 256];                  // a global: all zeros
+
+fn length(p: *Packet) -> u32 {
+    let total: u32 = 0;
+    while p != 0 as *Packet {
+        total = total + p.len as u32;
+        p = p.next;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let a: Point;                       // a local: all zeros
+    a.x = 3;
+    let b = a;                          // a copy
+    let first: Packet;
+    first.at = b;
+    first.len = 20;
+    table[7] = length(&first);
+    return table[7] as i32;
+}
+```
+
+- **A struct** is laid out as C lays it out: each field at the next
+  address that is a multiple of its size (of its largest part's, for a
+  struct or an array), and the whole a multiple of the largest of those.
+  `Packet` above is 20 bytes, with `len` at 2 and `at` at 4.
+- **`s.field`** is a field of a struct, and of what a pointer to a struct
+  points at: there is no `->`.
+- **`a[i]`** is an element of an array, as of a pointer. Nothing checks
+  that `i` is less than the array's length.
+- **`let NAME: TYPE;`**, with no value, is all zeros, for a local or a
+  global of any type. It is how a struct or an array starts: there is no
+  way to write one out yet.
+- **Assigning a struct or an array copies it**, all of it: `b = a;`,
+  `p.at = a;`, `*q = a;`, `let b = a;`.
+- **A function takes and gives only what fits a register**: integers,
+  `bool`s, pointers. A struct or an array is passed as a pointer: `&a`,
+  `&table[0]`, or `table as *u32` for the pointer to an array's first
+  element.
+- **`&PLACE`** is the address of anything that is kept in memory: a
+  variable, a field (`&p.at`), an element (`&table[3]`), or what a pointer
+  points at.
+- **`size_of(TYPE)`** is the number of bytes a type takes.
+- A struct can hold a pointer to itself, but not itself. Structs can be
+  named before they are defined, and `pub struct` can be used from another
+  file: `use shapes::Rect;`, or `shapes::Rect`.
+- Structs and arrays have no operators: `a == b` is an error.
+- A function's locals have about 2000 bytes between them: a larger array
+  is a global, or comes from `alloc`.
 
 ## Functions
 
@@ -160,6 +219,7 @@ lasts as long as the program runs. Its type is `i32` if none is written.
 
 - What follows the `=` is a number or the name of a constant, with a `-`
   in front if wanted, or `true` or `false`. It is not an expression.
+  Without `= ...` a global is all zeros.
 - A local or parameter of the same name hides either.
 - A global the program never uses is left out of the binary.
 
@@ -170,7 +230,8 @@ lasts as long as the program runs. Its type is `i32` if none is written.
 | `let NAME = EXPR;` | A new local, of the expression's type. It lasts to the end of its block and may hide an outer one of the same name. |
 | `let NAME: TYPE = EXPR;` | The same, of the type written. |
 | `NAME = EXPR;` | Assign to a local, a parameter or a global. `FILE::NAME = EXPR;` assigns to another file's global. |
-| `*P = EXPR;` `P[I] = EXPR;` | Store where a pointer points. |
+| `let NAME: TYPE;` | The same, all zeros. |
+| `*P = EXPR;` `P[I] = EXPR;` `S.F = EXPR;` | Store where a pointer points, or in an element or a field. |
 | `if EXPR { ... } else if EXPR { ... } else { ... }` | The `else` parts are optional. The expression is a `bool`. |
 | `while EXPR { ... }` | Loop while the `bool` is true. |
 | `return EXPR;` `return;` | Leave the function, with its value if it gives one. |
@@ -198,7 +259,7 @@ have the same precedence and group left to right.
 | `*` `/` `%` | multiply, divide, remainder; division rounds toward zero, the remainder has the sign of the left side, and dividing by zero is a panic |
 | `EXPR as TYPE` | turn into another type |
 | `-x` `!x` `~x` `*p` `&x` | negate; not, of a `bool`; bitwise not; what a pointer points at; an address |
-| `p[i]` `f(...)` | what a pointer points at, further on; a call |
+| `p[i]` `s.f` `f(...)` | an element; a field; a call |
 
 Parentheses group.
 
@@ -391,10 +452,12 @@ prog.fam:7: expected u8, found i32
 
 ## Not yet
 
-- Structs, arrays, integers of 64 bits, tagged unions and `match`.
+- Integers of 64 bits, tagged unions and `match`.
+- Writing a struct or an array out as a value; passing one to a function
+  other than by pointer; checking an index against an array's length.
 - Character literals.
-- Globals of more than one word, or that start as anything but a number;
-  giving memory back.
+- Globals that start as anything but a number or zeros; giving memory
+  back.
 - Checking that every path through a function that gives a value ends in
   a `return`.
 - Macros defined by a program; `defer`; loops other than `while`.

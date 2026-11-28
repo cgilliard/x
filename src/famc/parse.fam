@@ -68,6 +68,7 @@ let pass = 0;           // 1: taking down what is defined; 2: writing code
 //     4   a function                              the index of its symbol
 //     5   something of another file (`use a::x;`) that file's entry
 //         that has not been looked up yet
+//     6   a struct                                its type
 let gb = 0;
 let gn = 0;
 let glim = 0;
@@ -97,11 +98,23 @@ let mlim = 0;
 let litv = 0;
 let litk = 0;
 
-// The expression read last: if it was `*p` or `p[i]`, where the code is
-// just after it (the instruction before that is the load), and its type.
-// A `=` after it makes that load a store.
+// The expression read last: if it was a place -- something that is kept
+// in memory and can be stored to -- of a type that fits a register, where
+// the code is just after it (the instruction before that is its load),
+// and what kind of place:
+//     1   through an address: taking the load back leaves the address in a0
+//     2   a local: pslot is its slot
+// A `=` after it makes that load a store, and a `&` before it, an address.
+// (A struct or an array is always a place: its value is its address.)
 let place = 0;
-let ptype = 0;
+let pkind = 0;
+let pslot = 0;
+
+// The structs whose fields are still to be read, 16 bytes each: the type,
+// the file, where its fields start in it, and the line.
+let sb = 0;
+let sn = 0;
+let slim = 0;
 
 let rettype = 0;        // what the function being compiled gives
 
@@ -118,6 +131,9 @@ pub fn setup() {
     yb = alloc(0x1000);
     yn = yb;
     ylim = yb + 0x1000;
+    sb = alloc(0x10000);
+    sn = sb;
+    slim = sb + 0x10000;
 }
 
 // ---- macros ----------------------------------------------------------------
@@ -323,11 +339,19 @@ fn arrow() {
     return 0;
 }
 
-// type(): read a type:  NAME | "*" type | "fn" "(" [ type { "," type } ] ")"
-// [ "->" type ]
+// type(): read a type:  NAME [ "::" NAME ] | "*" type | "[" type ";" value "]"
+// | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
 fn type() {
     lex.next();
     if lex.punct1(42) { return types.ptr(type()); }
+    if lex.punct1(91) {
+        let of = type();
+        lex.expect(59);
+        let n = constval();
+        if cvtype != 9 || n < 1 { lex.error("an array has one element or more"); }
+        lex.expect(93);
+        return types.array(of, n);
+    }
     if lex.kind != 1 { lex.syntax(); }
     if lex.is("fn") {
         lex.expect(40);
@@ -354,8 +378,68 @@ fn type() {
         return f;
     }
     let t = types.named(lex.tk, lex.tl);
-    if t == 0 { lex.error_name("unknown type ", lex.tk, lex.tl); }
-    return t;
+    if t { return t; }
+    let name = lex.tk;                          // a struct, this file's or
+    let len = lex.tl;                           //   another's
+    let e = 0;
+    lex.next();
+    if colons() {
+        let f = used(name, len);
+        lex.next();
+        lex.chkident();
+        name = lex.tk;
+        len = lex.tl;
+        e = member(f, name, len);
+    } else {
+        lex.cur = lex.tk;
+        e = find(name, len);
+    }
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what != 6 { lex.error_name("unknown type ", name, len); }
+    return load32(e + 12);
+}
+
+// narrow(t): a parameter, or what a function gives, has the type t: it
+// must fit a register.
+fn narrow(t) {
+    if types.wide(t) { etype("pass a pointer, not ", t); }
+}
+
+// layout(t): read the fields of a struct, if they have not been, and so
+// find its size.  A struct it holds is laid out first.
+fn layout(t) {
+    if types.is_array(t) {
+        layout(types.element(t));
+        return;
+    }
+    if types.is_struct(t) == 0 { return; }
+    if types.state(t) == 2 { return; }
+    if types.state(t) == 1 { etype("a struct cannot hold itself: ", t); }
+    types.set_state(t, 1);
+    let s = sb;
+    while load32(s) != t { s = s + 16; }
+    lex.push();
+    lex.enter(load32(s + 4));
+    lex.cur = load32(s + 8);
+    lex.line = load32(s + 12);
+    lex.next();
+    while lex.punct1(125) == 0 {
+        lex.chkident();
+        let name = lex.tk;
+        let len = lex.tl;
+        lex.expect(58);
+        let ft = type();
+        if ft == 8 { lex.syntax(); }
+        layout(ft);
+        types.add_field(t, name, len, ft);
+        lex.next();
+        if lex.punct1(44) { lex.next(); } else {
+            if lex.punct1(125) == 0 { lex.syntax(); }
+        }
+    }
+    types.close(t);
+    lex.pop();
 }
 
 // ---- using other files -----------------------------------------------------
@@ -574,6 +658,15 @@ fn gstore(index) {
     obj.word(0x00752023);                       // sw t2, 0(a0)
 }
 
+// copy(t): append the copying of a struct or an array of type t, from
+// where a0 points to where the slot taken last says: a call of __copy.
+fn copy(t) {
+    obj.word(0x00050593);                       // mv a1, a0
+    emit.lw(emit.drop(1), 10);
+    emit.lir(12, types.size(t));
+    obj.call("__copy", 6);
+}
+
 // ---- operators -------------------------------------------------------------
 
 // binop(): is the token a binary operator?  Its precedence (0: it is not
@@ -612,11 +705,17 @@ fn binop() {
     if lex.is("%")  { bset(9, 16); return; }
 }
 
-// scale(n): append the multiplying of a0 by the size of what a pointer
+// scale(n): append the multiplying of a0 by n, the size of what a pointer
 // points at.
 fn scale(n) {
-    if n == 2 { obj.word(0x00151513); }         // slli a0, a0, 1
-    if n == 4 { obj.word(0x00251513); }         // slli a0, a0, 2
+    let shift = 0;
+    while (1 << shift) < n { shift = shift + 1; }
+    if (1 << shift) == n {
+        if shift { obj.word((shift << 20) | 0x00051513); }      // slli a0, a0, shift
+        return;
+    }
+    emit.lir(11, n);
+    obj.call("__mul", 5);
 }
 
 // combine(op, lt, rt, lv, lk): append what an operator does.  Its left
@@ -656,6 +755,7 @@ fn combine(op, lt, rt, lv, lk) {
         }
     }
     let number = types.is_int(t) || t == 9;
+    if types.wide(t) { etype("no operators on ", t); }
     if op > 6 && number == 0 { etype("no arithmetic on ", t); }
     if op > 2 && op <= 6 && number == 0 && types.is_ptr(t) == 0 { etype("no order on ", t); }
     if t == 8 { etype("nothing to compare: ", t); }
@@ -762,8 +862,15 @@ fn value(e, name, len) {
         return load32(e + 24);
     }
     if what != 1 { eunknown(name, len); }
-    gload(load32(e + 12), load32(e + 24));
-    return load32(e + 24);
+    let t = load32(e + 24);
+    if types.wide(t) {
+        obj.asite(load32(e + 12));              // its address is its value
+        return t;
+    }
+    gload(load32(e + 12), t);
+    place = obj.cn;
+    pkind = 1;
+    return t;
 }
 
 // called(e, name, len): a call of the function of an entry.  The ( is read.
@@ -780,6 +887,13 @@ fn named(name, len) {
     if lex.kind == 3 {
         let c = load8(lex.tk);
         if c == 40 {                            // name (
+            if lex.zeq(name, len, "size_of") {  // size_of ( type )
+                litv = types.size(type());
+                litk = 1;
+                lex.expect(41);
+                emit.li(litv);
+                return 9;
+            }
             let s = emit.look(name, len);
             if s >= 0 {                         // a local holding an id
                 let ft = emit.ltype;
@@ -811,7 +925,14 @@ fn named(name, len) {
     let s = emit.look(name, len);               //   constant
     if s >= 0 {
         let t = emit.ltype;
+        if types.wide(t) {
+            emit.address(s);                    // its address is its value
+            return t;
+        }
         emit.get(s, t);
+        place = obj.cn;
+        pkind = 2;
+        pslot = s;
         return t;
     }
     return value(find(name, len), name, len);
@@ -846,47 +967,55 @@ fn primary() {
     return t;
 }
 
-// addressof(): & NAME [ :: NAME ] (the & is read): the address of a local
-// or a global, or the id of a function.
+// addressof(): & (the & is read) and then the name of a function, which
+// gives its id, or a place, which gives its address.
 fn addressof() {
     lex.next();
-    lex.chkident();
-    let name = lex.tk;
-    let len = lex.tl;
-    let e = 0;
-    lex.next();
-    if colons() {
-        let f = used(name, len);
+    let from = lex.tk;
+    let at_line = lex.line;
+    if lex.kind == 1 {
+        let name = lex.tk;
+        let len = lex.tl;
+        let e = 0;
         lex.next();
-        lex.chkident();
-        name = lex.tk;
-        len = lex.tl;
-        e = member(f, name, len);
-    } else {
-        lex.cur = lex.tk;
-        let s = emit.look(name, len);
-        if s >= 0 {
-            emit.address(s);
-            return types.ptr(emit.ltype);
+        if colons() {
+            let f = used(name, len);
+            lex.next();
+            lex.chkident();
+            e = member(f, lex.tk, lex.tl);
+        } else {
+            lex.cur = lex.tk;
+            if emit.look(name, len) < 0 { e = find(name, len); }
         }
-        e = find(name, len);
+        let what = -1;
+        if e { what = load32(e + 8); }
+        if what == 4 {
+            obj.idsite(load32(e + 12));
+            return load32(e + 24);
+        }
     }
-    let what = -1;
-    if e { what = load32(e + 8); }
-    if what == 4 {
-        obj.idsite(load32(e + 12));
-        return load32(e + 24);
-    }
-    if what != 1 { eunknown(name, len); }
-    obj.asite(load32(e + 12));
-    return types.ptr(load32(e + 24));
+    lex.cur = from;                             // not a function: a place
+    lex.line = at_line;
+    place = 0;
+    let t = prefix();
+    if types.wide(t) { return types.ptr(t); }
+    if place != obj.cn { lex.error("that has no address"); }
+    obj.back();                                 // not its load: its address
+    if pkind == 2 { emit.address(pslot); }
+    place = 0;
+    return types.ptr(t);
 }
 
-// index(t): [ expr ] after a pointer of type t, which is in a0 (the [ is
-// read): what it points at, that many on.
+// index(t): [ expr ] after a pointer or an array of type t, whose address
+// is in a0 (the [ is read): what is there, that many on.
 fn index(t) {
-    if types.is_ptr(t) == 0 { etype("not a pointer: ", t); }
-    let to = types.target(t);
+    let to = 0;
+    if types.is_array(t) {
+        to = types.element(t);
+    } else {
+        if types.is_ptr(t) == 0 { etype("not a pointer or an array: ", t); }
+        to = types.target(t);
+    }
     if types.size(to) == 0 { etype("nothing to load: ", t); }
     emit.sw(emit.slot(), 10);
     let it = expr(1);
@@ -895,13 +1024,35 @@ fn index(t) {
     scale(types.size(to));
     emit.lw(emit.drop(1), 11);
     obj.word(0x00A58533);                       // add a0, a1, a0
-    emit.fetch(to);
-    place = obj.cn;
-    ptype = to;
-    return to;
+    return at(to);
 }
 
-// prefix(): ( "-" | "!" | "~" | "*" ) prefix | "&" name | primary { "[" expr "]" }
+// at(t): a0 is the address of something of type t: its value.
+fn at(t) {
+    place = 0;
+    if types.wide(t) { return t; }              // the address is the value
+    emit.fetch(t);
+    place = obj.cn;
+    pkind = 1;
+    return t;
+}
+
+// field(t): . NAME after a struct of type t, or a pointer to one, whose
+// address is in a0 (the . is read): that field of it.
+fn field(t) {
+    let st = t;
+    if types.is_ptr(t) { st = types.target(t); }
+    if types.is_struct(st) == 0 { etype("no fields in ", t); }
+    lex.next();
+    if lex.kind != 1 { lex.syntax(); }
+    let f = types.field(st, lex.tk, lex.tl);
+    if f == 0 { lex.error_name("no field ", lex.tk, lex.tl); }
+    emit.further(types.field_at(f));
+    return at(types.field_type(f));
+}
+
+// prefix(): ( "-" | "!" | "~" | "*" ) prefix | "&" place
+// | primary { "[" expr "]" | "." NAME }
 fn prefix() {
     lex.next();
     if lex.kind == 3 && lex.tl == 1 {
@@ -912,12 +1063,14 @@ fn prefix() {
             obj.word(0x40A00533);               // neg a0, a0
             emit.fit(t);
             litv = 0 - litv;
+            place = 0;
             return t;
         }
         if c == 33 {
             let t = prefix();
             if t != 7 { mismatch(t, 7); }
             obj.word(0x00153513);               // seqz a0, a0
+            place = 0;
             return 7;
         }
         if c == 126 {
@@ -926,6 +1079,7 @@ fn prefix() {
             obj.word(0xFFF54513);               // not a0, a0
             emit.fit(t);
             litv = ~litv;
+            place = 0;
             return t;
         }
         if c == 42 {
@@ -933,18 +1087,15 @@ fn prefix() {
             if types.is_ptr(t) == 0 { etype("not a pointer: ", t); }
             let to = types.target(t);
             if types.size(to) == 0 { etype("nothing to load: ", t); }
-            emit.fetch(to);
-            place = obj.cn;
-            ptype = to;
-            return to;
+            return at(to);
         }
         if c == 38 { return addressof(); }
     }
     lex.cur = lex.tk;
     let t = primary();
     lex.next();
-    while lex.punct1(91) {
-        t = index(t);
+    while lex.punct1(91) || lex.punct1(46) {
+        if lex.punct1(91) { t = index(t); } else { t = field(t); }
         lex.next();
     }
     lex.cur = lex.tk;
@@ -963,6 +1114,7 @@ fn cast(t, to) {
     if types.is_ptr(to) {
         ok = types.is_ptr(t) || t == 9;
         if types.is_int(t) { ok = types.size(t) == 4; }
+        if types.is_array(t) { ok = types.element(t) == types.target(to); }
     }
     if ok == 0 {
         lex.complain();
@@ -1080,6 +1232,11 @@ fn assign(name, len) {
     let s = emit.look(name, len);
     if s >= 0 {
         let want = emit.ltype;
+        if types.wide(want) {
+            emit.address(s);
+            store(want);
+            return;
+        }
         need(expr(1), want);
         lex.expect(59);
         emit.sw(s, 10);
@@ -1090,9 +1247,28 @@ fn assign(name, len) {
     if e { what = load32(e + 8); }
     if what == 0 { lex.error("cannot assign to a constant"); }
     if what != 1 { eunknown(name, len); }
+    if types.wide(load32(e + 24)) {
+        obj.asite(load32(e + 12));
+        store(load32(e + 24));
+        return;
+    }
     need(expr(1), load32(e + 24));
     lex.expect(59);
     gstore(load32(e + 12));
+}
+
+// store(t): = expr ; (the = is read), where a0 is the address of a place
+// of type t: what the expression gives is stored there.
+fn store(t) {
+    emit.sw(emit.slot(), 10);                   // the address waits in a slot
+    need(expr(1), t);
+    lex.expect(59);
+    if types.wide(t) {
+        copy(t);
+        return;
+    }
+    emit.lw(emit.drop(1), 11);
+    emit.put(t);
 }
 
 // statement(): compile a statement.
@@ -1115,6 +1291,22 @@ fn stmt1() {
             if lex.punct1(58) {
                 want = type();
                 lex.next();
+                if lex.punct1(59) {             // no value: all zeros
+                    let n = (types.size(want) + 3) >> 2;
+                    let s = emit.slots(n);
+                    if n > 8 {
+                        emit.address(s);
+                        emit.lir(11, n << 2);
+                        obj.call("__zero", 6);
+                    } else {
+                        while n {
+                            n = n - 1;
+                            emit.sw(s - n, 0);
+                        }
+                    }
+                    emit.local(name, len, s, want);
+                    return;
+                }
             }
             if lex.punct1(61) == 0 { lex.syntax(); }
             let t = expr(1);
@@ -1125,6 +1317,15 @@ fn stmt1() {
             if t == 9 { t = 3; }                // a number, nothing said: i32
             if t == 8 { lex.error("nothing to keep"); }
             lex.expect(59);
+            if types.wide(t) {                  // a0 is the address of what
+                let s = emit.slots((types.size(t) + 3) >> 2);     // to copy
+                obj.word(0x00050593);           // mv a1, a0
+                emit.address(s);
+                emit.lir(12, types.size(t));
+                obj.call("__copy", 6);
+                emit.local(name, len, s, t);
+                return;
+            }
             let s = emit.slot();                // in scope from here on, not in
             emit.local(name, len, s, t);        //   its own expression
             emit.sw(s, 10);
@@ -1161,9 +1362,8 @@ fn stmt1() {
                     let e = member(used(name, len), qn, ql);
                     if load32(e + 8) == 0 { lex.error("cannot assign to a constant"); }
                     if load32(e + 8) != 1 { eunknown(qn, ql); }
-                    need(expr(1), load32(e + 24));
-                    lex.expect(59);
-                    gstore(load32(e + 12));
+                    obj.asite(load32(e + 12));
+                    store(load32(e + 24));
                     return;
                 }
             }
@@ -1174,17 +1374,23 @@ fn stmt1() {
         lex.cur = lex.tk;
     }
     place = 0;
-    expr(1);
+    let t = expr(1);
     lex.next();
-    if lex.punct1(61) {                         // *p = expr ;  p[i] = expr ;
+    if lex.punct1(61) {                         // place = expr ;
+        if types.wide(t) {                      // a0 is its address already
+            store(t);
+            return;
+        }
         if place != obj.cn { lex.error("cannot assign to that"); }
-        let to = ptype;
-        obj.back();                             // not the load: the address
-        emit.sw(emit.slot(), 10);               //   waits in a slot
-        need(expr(1), to);
-        lex.expect(59);
-        emit.lw(emit.drop(1), 11);
-        emit.put(to);
+        obj.back();                             // not its load
+        if pkind == 2 {
+            let s = pslot;
+            need(expr(1), t);
+            lex.expect(59);
+            emit.sw(s, 10);
+            return;
+        }
+        store(t);
         return;
     }
     if lex.punct1(59) == 0 { lex.syntax(); }
@@ -1210,6 +1416,7 @@ fn signature(bind) {
             lex.expect(58);
             let t = type();
             if t == 8 { lex.syntax(); }
+            narrow(t);
             if yn + 4 > ylim { lex.ebig(); }
             store32(yn, t);
             yn = yn + 4;
@@ -1227,7 +1434,10 @@ fn signature(bind) {
         }
     }
     let gives = 8;
-    if arrow() { gives = type(); }
+    if arrow() {
+        gives = type();
+        narrow(gives);
+    }
     let f = types.func(gives, (yn - base) >> 2, base);
     yn = base;
     return f;
@@ -1259,30 +1469,35 @@ fn function(public) {
     emit.end();
 }
 
-// global(public): [ pub ] let NAME [ : type ] = value ; (the let is read)
+// global(public): [ pub ] let NAME [ : type ] [ = value ] ; (the let is
+// read).  Without a value it is all zeros, which is the only way for a
+// struct or an array to start.
 fn global(public) {
     lex.next();
     lex.chkident();
     let name = lex.tk;
     let len = lex.tl;
     let t = 3;
+    let v = 0;
     lex.next();
     if lex.punct1(58) {
         t = type();
         lex.next();
     }
-    if lex.punct1(61) == 0 { lex.syntax(); }
-    let v = constval();
-    if cvtype == 7 {
-        if t != 7 { mismatch(7, t); }
-    } else {
-        if types.is_int(t) {
-            if types.fits(v, t) == 0 { etype("the number does not fit ", t); }
+    if lex.punct1(59) == 0 {
+        if lex.punct1(61) == 0 { lex.syntax(); }
+        v = constval();
+        if cvtype == 7 {
+            if t != 7 { mismatch(7, t); }
         } else {
-            if types.is_ptr(t) == 0 { mismatch(9, t); }
+            if types.is_int(t) {
+                if types.fits(v, t) == 0 { etype("the number does not fit ", t); }
+            } else {
+                if types.is_ptr(t) == 0 { mismatch(9, t); }
+            }
         }
+        lex.expect(59);
     }
-    lex.expect(59);
     obj.qualify(name, len);
     if pass == 1 {
         if gin(lex.unit, name, len) { edup(name, len); }
@@ -1292,8 +1507,40 @@ fn global(public) {
     let what = 5;
     if public { what = 4; }
     if obj.define(obj.qname, obj.qlen, what) < 0 { edup(name, len); }
-    obj.word(v);                                // its record: the one word
+    obj.word(v);                                // its record: its words
+    let n = (types.size(t) + 3) >> 2;
+    while n > 1 {
+        obj.word(0);
+        n = n - 1;
+    }
     obj.end();
+}
+
+// structure(public): [ pub ] struct NAME { NAME : type , ... } (the struct
+// is read).  Its fields are read later, when every struct has a name:
+// layout.
+fn structure(public) {
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    lex.expect(123);
+    if pass == 1 {
+        if gin(lex.unit, name, len) { edup(name, len); }
+        if types.named(name, len) { edup(name, len); }
+        let t = types.strukt(name, len);
+        gadd(name, len, 6, t, public, 0);
+        if sn + 16 > slim { lex.ebig(); }
+        store32(sn, t);
+        store32(sn + 4, lex.unit);
+        store32(sn + 8, lex.cur);
+        store32(sn + 12, lex.line);
+        sn = sn + 16;
+    }
+    while lex.punct1(125) == 0 {
+        lex.next();
+        if lex.kind == 0 { lex.syntax(); }
+    }
 }
 
 // constant(public): [ pub ] const NAME = value ; (the const is read)
@@ -1350,6 +1597,10 @@ fn top() {
     }
     if lex.is("let") {
         global(public);
+        return;
+    }
+    if lex.is("struct") {
+        structure(public);
         return;
     }
     if lex.is("fn") == 0 { lex.syntax(); }
@@ -1449,6 +1700,11 @@ pub fn program() {
     while e < gn {
         if load32(e + 8) == 5 { settle(e); }
         e = e + 32;
+    }
+    let s = sb;                                 // every struct has a name
+    while s < sn {                              //   now: their fields
+        layout(load32(s));
+        s = s + 16;
     }
     pass = 2;
     if pre { run(pre); }

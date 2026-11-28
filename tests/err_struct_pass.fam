@@ -1,0 +1,3 @@
+struct P { x: i32 }
+fn take(p: P) { }
+fn main() -> i32 { return 0; }

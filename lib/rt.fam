@@ -369,6 +369,23 @@ fn __urem_bits(a: u32, b: u32) -> u32 {
     }
 }
 
+// A struct or an array is copied by __copy(to, from, n), and one that is
+// declared without a value is filled by __zero(to, n): n bytes.
+pub fn __copy(to: *u8, from: *u8, n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        to[i] = from[i];
+        i = i + 1;
+    }
+}
+pub fn __zero(to: *u8, n: u32) {
+    let i: u32 = 0;
+    while i < n {
+        to[i] = 0;
+        i = i + 1;
+    }
+}
+
 // ---- the runtime's variables -----------------------------------------------
 
 // The startup code leaves tp pointing at a zeroed page for them, as words:

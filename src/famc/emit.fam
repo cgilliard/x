@@ -115,6 +115,15 @@ pub fn slot() {
     return s;
 }
 
+// slots(n): n new slots, next to each other: the one with the lowest
+// address, which is the last of them.
+pub fn slots(n) {
+    vcur = vcur + n;
+    if vcur > 500 { elocals(); }
+    if vcur > vmax { vmax = vcur; }
+    return vcur - 1;
+}
+
 // drop(n): give back the last n slots: the lowest of them.
 pub fn drop(n) {
     vcur = vcur - n;
@@ -306,12 +315,29 @@ pub fn here(at) { patchjl(at, obj.cn, 0x6F); }
 // li(value): append the code that loads a value into a0: one
 // `addi a0,zero,v` if it fits 12 signed bits, else `lui` and `addi`.
 pub fn li(value) {
+    lir(10, value);
+}
+
+// lir(register, value): the same, into any register.
+pub fn lir(register, value) {
     if value < -2048 || value > 2047 {
-        obj.word((((value + 0x800) >> 12) << 12) | 0x537);
-        obj.word((value << 20) | 0x50513);
+        obj.word((((value + 0x800) >> 12) << 12) | (register << 7) | 0x37);
+        obj.word((value << 20) | (register << 15) | (register << 7) | 0x13);
     } else {
-        obj.word((value << 20) | 0x513);
+        obj.word((value << 20) | (register << 7) | 0x13);
     }
+}
+
+// further(n): append the adding of n, which is not negative, to the
+// address in a0.
+pub fn further(n) {
+    if n == 0 { return; }
+    if n < 2048 {
+        obj.word((n << 20) | 0x00050513);       // addi a0, a0, n
+        return;
+    }
+    lir(11, n);
+    obj.word(0x00B50533);                       // add a0, a0, a1
 }
 
 // ---- labels and jumps ------------------------------------------------------

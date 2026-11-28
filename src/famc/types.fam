@@ -11,6 +11,12 @@
 // each, so two types are the same if their numbers are:
 //     pointer    1, the type pointed at
 //     function   2, the type it gives, how many parameters, their types
+//     struct     3, its name and the name's length, its size, what its
+//                address must be a multiple of, and how far it has got: 0
+//                named, 1 its fields being read, 2 laid out (40 bytes)
+//     array      4, the type of each element, how many there are
+// A struct's fields are in a table of their own, 20 bytes each: the struct,
+// name, length, type, and where it is in the struct.
 
 module types;
 
@@ -20,10 +26,26 @@ let tb = 0;
 let tn = 0;
 let tlim = 0;
 
+let fb = 0;
+let fn_top = 0;
+let flim = 0;
+
 pub fn setup() {
     tb = alloc(0x100000);
     tn = tb;
     tlim = tb + 0x100000;
+    fb = alloc(0x100000);
+    fn_top = fb;
+    flim = fb + 0x100000;
+}
+
+// after(p): the record after the one at p.
+fn after(p) {
+    let k = load32(p);
+    if k == 1 { return p + 8; }
+    if k == 2 { return p + 12 + (load32(p + 8) << 2); }
+    if k == 3 { return p + 40; }
+    return p + 12;
 }
 
 pub fn i32() { return 3; }
@@ -59,11 +81,39 @@ pub fn is_fn(t) {
     return load32(t) == 2;
 }
 
+pub fn is_struct(t) {
+    if simple(t) { return 0; }
+    return load32(t) == 3;
+}
+
+pub fn is_array(t) {
+    if simple(t) { return 0; }
+    return load32(t) == 4;
+}
+
+// wide(t): is it a struct or an array?  A value of such a type is not kept
+// in a register: its address is.
+pub fn wide(t) {
+    if simple(t) { return 0; }
+    return load32(t) >= 3;
+}
+
 // size(t): how many bytes a value of the type takes in memory.
 pub fn size(t) {
     if t == 1 || t == 4 || t == 7 { return 1; }
     if t == 2 || t == 5 { return 2; }
     if t == 8 { return 0; }
+    if simple(t) { return 4; }
+    if load32(t) == 3 { return load32(t + 12); }
+    if load32(t) == 4 { return load32(t + 8) * size(load32(t + 4)); }
+    return 4;
+}
+
+// align(t): what the address of a value of the type must be a multiple of.
+pub fn align(t) {
+    if simple(t) { return size(t); }
+    if load32(t) == 3 { return load32(t + 16); }
+    if load32(t) == 4 { return align(load32(t + 4)); }
     return 4;
 }
 
@@ -73,10 +123,8 @@ pub fn ptr(t) {
     while p < tn {
         if load32(p) == 1 {
             if load32(p + 4) == t { return p; }
-            p = p + 8;
-        } else {
-            p = p + 12 + (load32(p + 8) << 2);
         }
+        p = after(p);
     }
     if tn + 8 > tlim { lex.ebig(); }
     store32(tn, 1);
@@ -95,9 +143,7 @@ pub fn target(t) {
 pub fn func(gives, n, params) {
     let p = tb;
     while p < tn {
-        if load32(p) == 1 {
-            p = p + 8;
-        } else {
+        if load32(p) == 2 {
             let same = load32(p + 4) == gives && load32(p + 8) == n;
             let i = 0;
             while same && i < n {
@@ -105,8 +151,8 @@ pub fn func(gives, n, params) {
                 i = i + 1;
             }
             if same { return p; }
-            p = p + 12 + (load32(p + 8) << 2);
         }
+        p = after(p);
     }
     if tn + 12 + (n << 2) > tlim { lex.ebig(); }
     p = tn;
@@ -132,6 +178,94 @@ pub fn count(t) {
 }
 pub fn param(t, i) {
     return load32(t + 12 + (i << 2));
+}
+
+// array(of, n): the type `[of; n]`.
+pub fn array(of, n) {
+    let p = tb;
+    while p < tn {
+        if load32(p) == 4 {
+            if load32(p + 4) == of && load32(p + 8) == n { return p; }
+        }
+        p = after(p);
+    }
+    if tn + 12 > tlim { lex.ebig(); }
+    store32(tn, 4);
+    store32(tn + 4, of);
+    store32(tn + 8, n);
+    tn = tn + 12;
+    return tn - 12;
+}
+
+// element(t): the type of an array's elements.
+pub fn element(t) {
+    return load32(t + 4);
+}
+
+// strukt(name, len): a new struct of that name, with no fields yet.
+pub fn strukt(name, len) {
+    if tn + 40 > tlim { lex.ebig(); }
+    let p = tn;
+    tn = tn + 40;
+    store32(p, 3);
+    store32(p + 4, name);
+    store32(p + 8, len);
+    store32(p + 12, 0);
+    store32(p + 16, 1);
+    store32(p + 20, 0);
+    return p;
+}
+
+// state(t), set_state(t, s): how far a struct has got.
+pub fn state(t) {
+    return load32(t + 20);
+}
+pub fn set_state(t, s) {
+    store32(t + 20, s);
+}
+
+// add_field(t, name, len, ft): the next field of a struct: after the ones
+// before it, at the next address that suits its type.
+pub fn add_field(t, name, len, ft) {
+    if field(t, name, len) { lex.error_name("defined twice: ", name, len); }
+    if fn_top + 20 > flim { lex.ebig(); }
+    let a = align(ft);
+    let at = (load32(t + 12) + a - 1) & (0 - a);
+    store32(fn_top, t);
+    store32(fn_top + 4, name);
+    store32(fn_top + 8, len);
+    store32(fn_top + 12, ft);
+    store32(fn_top + 16, at);
+    fn_top = fn_top + 20;
+    store32(t + 12, at + size(ft));
+    if a > load32(t + 16) { store32(t + 16, a); }
+}
+
+// close(t): a struct has all its fields: its size is a multiple of what
+// its address must be.
+pub fn close(t) {
+    let a = load32(t + 16);
+    store32(t + 12, (load32(t + 12) + a - 1) & (0 - a));
+    store32(t + 20, 2);
+}
+
+// field(t, name, len): the field of that name of a struct: its entry (0:
+// none).  field_type and field_at say what it is and where.
+pub fn field(t, name, len) {
+    let p = fb;
+    while p < fn_top {
+        if load32(p) == t && load32(p + 8) == len {
+            if lex.same(load32(p + 4), name, len) { return p; }
+        }
+        p = p + 20;
+    }
+    return 0;
+}
+pub fn field_type(f) {
+    return load32(f + 12);
+}
+pub fn field_at(f) {
+    return load32(f + 16);
 }
 
 // named(name, len): the simple type of that name (0: there is none).
@@ -170,6 +304,18 @@ pub fn show(t) {
     if load32(t) == 1 {
         putc(42);
         show(load32(t + 4));
+        return;
+    }
+    if load32(t) == 3 {
+        lex.write(load32(t + 4), load32(t + 8));
+        return;
+    }
+    if load32(t) == 4 {
+        putc(91);
+        show(load32(t + 4));
+        print("; ");
+        print_int(load32(t + 8));
+        putc(93);
         return;
     }
     print("fn(");

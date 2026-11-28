@@ -1,0 +1,8 @@
+struct P { x: i32 }
+struct Q { x: i32 }
+fn main() -> i32 {
+    let p: P;
+    let q: Q;
+    p = q;
+    return 0;
+}

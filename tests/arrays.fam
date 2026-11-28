@@ -1,0 +1,54 @@
+// Arrays: locals and globals, of integers and of structs.
+struct Pair { a: u8, b: u32 }
+
+const N = 5;
+let table: [u32; 8];
+let pairs: [Pair; 3];
+
+fn show(n: i32) { print_int(n); putc(32); }
+
+fn sum(p: *u32, n: u32) -> u32 {
+    let total: u32 = 0;
+    let i: u32 = 0;
+    while i < n {
+        total = total + p[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    show(size_of([u32; 8]) as i32);
+    show(size_of([Pair; 3]) as i32);
+    let i: u32 = 0;
+    while i < 8 {
+        table[i] = i * i;
+        i = i + 1;
+    }
+    show(sum(&table[0], 8) as i32);
+    show(sum(table as *u32, 4) as i32);
+    print("| ");
+
+    let small: [u8; N];                 // on the stack, all zeros
+    small[0] = 250;
+    small[4] = small[0] + 10;           // a u8 wraps
+    show(small[4] as i32); show(small[1] as i32);
+    let big: [i16; 40];                 // more than a few words
+    show(big[39] as i32);
+    big[39] = -7;
+    let copy = big;
+    show(copy[39] as i32);
+    print("| ");
+
+    pairs[1].a = 9;
+    pairs[2].b = 1000;
+    let third = &pairs[2];
+    show(pairs[1].a as i32); show(third.b as i32);
+    show((third as u32 - &pairs[0] as u32) as i32);
+    let grid: [[u8; 3]; 2];             // an array of arrays
+    grid[1][2] = 6;
+    show(grid[1][2] as i32);
+    show(*((&grid as *u8) + 5) as i32);
+    putc(10);
+    return 0;
+}

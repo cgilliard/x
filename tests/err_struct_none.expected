@@ -1,0 +1,2 @@
+tests/err_struct_none.fam:3: no fields in i32
+exit 1

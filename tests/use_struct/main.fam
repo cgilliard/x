@@ -1,0 +1,12 @@
+// A struct of another file, by its name and by the file's.
+use shapes::Rect;
+use shapes;
+fn main() -> i32 {
+    let r: Rect;
+    r.w = 6;
+    r.h = 7;
+    let s: shapes::Rect = r;
+    let node: shapes::Node;
+    node.rect = &s;
+    return shapes::area(node.rect);
+}

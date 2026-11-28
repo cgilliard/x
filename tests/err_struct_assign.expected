@@ -1,0 +1,2 @@
+tests/err_struct_assign.fam:6: expected P, found Q
+exit 1

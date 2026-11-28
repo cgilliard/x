@@ -1,0 +1,2 @@
+tests/err_struct_field.fam:4: no field z
+exit 1

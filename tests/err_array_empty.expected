@@ -1,0 +1,2 @@
+tests/err_array_empty.fam:2: an array has one element or more
+exit 1

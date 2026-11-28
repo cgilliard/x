@@ -42,12 +42,13 @@
 //
 // The language:
 //     program   = { item }
-//     item      = use | constant | global | function | init
+//     item      = use | constant | global | struct | function | init
 //               | "#" "[" NAME ...              an attribute: a macro says
 //                                               what follows (std.fam)
 //     use       = "use" NAME { "::" NAME } ";"  another file, or something in it
 //     constant  = [ "pub" ] "const" NAME "=" value ";"
-//     global    = [ "pub" ] "let" NAME [ ":" type ] "=" value ";"
+//     global    = [ "pub" ] "let" NAME [ ":" type ] [ "=" value ] ";"
+//     struct    = [ "pub" ] "struct" NAME "{" [ NAME ":" type { "," NAME ":" type } [ "," ] ] "}"
 //     value     = [ "-" ] ( NUMBER | NAME ) | "true" | "false"
 //     function  = [ "pub" ] "fn" NAME "(" [ NAME ":" type { "," NAME ":" type } ] ")"
 //                 [ "->" type ] block
@@ -55,11 +56,14 @@
 //               | "init" "asm" "{" ... "}"      the same, nothing but the code
 //     type      = "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "bool"
 //               | "*" type                      a pointer
+//               | "[" type ";" value "]"        an array
+//               | fname                         a struct
 //               | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
 //     block     = "{" { statement } "}"
 //     statement = "let" NAME [ ":" type ] "=" expr ";"
-//               | [ NAME "::" ] NAME "=" expr ";"
-//               | expr "=" expr ";"             the first: *p or p[i]
+//               | "let" NAME ":" type ";"       all zeros
+//               | expr "=" expr ";"             the first is a place: a
+//                                               variable, *p, p[i] or s.f
 //               | "asm" "{" { HEXWORD | "@" fname | "&" fname } "}"
 //               | expr ";"
 //               | what a macro reads: if, while, return, assert, assert_eq
@@ -68,9 +72,11 @@
 //                   * / %
 //     unary     = prefix { "as" type }
 //     prefix    = ( "-" | "!" | "~" | "*" ) prefix
-//               | "&" fname                     an address, or a function's id
-//               | primary { "[" expr "]" }
+//               | "&" prefix                    the address of a place, or
+//                                               a function's id
+//               | primary { "[" expr "]" | "." NAME }
 //     primary   = NUMBER | STRING | "true" | "false" | fname
+//               | "size_of" "(" type ")"
 //               | "bytes" "{" { HEXBYTES } "}"  data: its value is its address
 //               | fname "(" [ expr { "," expr } ] ")"
 //               | "(" expr ")"

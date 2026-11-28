@@ -13,10 +13,10 @@ the language is today):
 - `use`, with one compilation for a file and all it uses.
 - Attributes, with `#[cfg]`, `#[test]`, `assert` and `assert_eq` as macros,
   and `famc --cfg`.
-- Types: the integers, `bool`, pointers and function types, checked, with
-  no conversion that is not written. Structs, arrays and wider integers
-  are not built, and the operators are still in the compiler, not the
-  library.
+- Types: the integers, `bool`, pointers, function types, structs and
+  arrays, checked, with no conversion that is not written. A struct or an
+  array is handled by its address and copied by a call. Wider integers are
+  not built, and the operators are still in the compiler, not the library.
 
 The compiler runs on a bare machine and cannot open a file. So
 `tools/famc` sends it, after the file to compile, every other `.fam` file
@@ -202,5 +202,6 @@ fn packed_size(input, n) {
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests. (Done.)
-4. Types (integers, `bool`, pointers: done; structs, arrays and wide
-   values: not yet), and operators as library functions (not yet).
+4. Types (integers, `bool`, pointers, structs and arrays: done; `u64`
+   in the library: not yet), and operators as library functions (not
+   yet).

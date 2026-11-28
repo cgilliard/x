@@ -1,0 +1,2 @@
+tests/err_struct_pass.fam:2: pass a pointer, not P
+exit 1
