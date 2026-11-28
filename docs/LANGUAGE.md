@@ -4,12 +4,12 @@ Status: what the compiler, `src/famc/`, compiles today. It grows step by
 step; "Not yet" at the end lists what is planned and missing.
 
 ```
-fn fib(n) {
+fn fib(n: i32) -> i32 {
     if n < 2 { return n; }
     return fib(n - 1) + fib(n - 2);
 }
 
-fn main() {
+fn main() -> i32 {
     let i = 1;
     while i <= 10 {
         print_int(fib(i));
@@ -20,118 +20,165 @@ fn main() {
 }
 ```
 
-Compile it with `tools/famc`, which is used like `gcc`, and run it with
-`tools/q32`:
+Compile it with `tools/famc`, and run it with `tools/q32`:
 
 ```
 tools/famc prog.fam -o prog
 tools/q32 prog; echo $?
 ```
 
-The program starts at `main`, and what `main` returns is the exit code.
-`famc` adds the runtime (startup and library) to every link; a binary holds
-only the functions the program uses.
+The program starts at `main`, which is `fn main() -> i32`, and what it
+returns is the exit code. Every program has the runtime library; a binary
+holds only the functions the program uses.
 
 | Command | What it does |
 |---|---|
-| `famc a.fam b.fam -o prog` | Compile and link. Without `-o` the binary is `a.out`. |
+| `famc a.fam -o prog` | Compile and link. Without `-o` the binary is `a.out`. |
 | `famc -c a.fam` | Compile only, to `a.o`. |
-| `famc main.fam util.o -o prog` | Sources and objects together. |
-| `famc --test a.fam` | Build the file's tests and run them: see "Tests". |
-| `famc --test src` | The same for every `.fam` file under the directory `src`. |
-| `famc --test` | The same for the current directory. |
+| `famc --test a.fam` | Build the tests of the file, and of the files it uses, and run them: see "Tests". |
 | `famc --cfg NAME ...` | Set a flag, for `#[cfg(NAME)]`. |
 | `q32 prog` | Run a binary. It reads q32's standard input and writes to its standard output. |
+
+`famc` is given one file. The files that one uses are found from it: see
+"Using other files".
 
 Both run QEMU (`qemu-system-riscv32`), and need `scripts/build.sh` to have
 run. `MEM=256M` in the environment changes the machine's memory.
 
-## Values
+## Types
 
-Every value is a signed 32-bit integer. Arithmetic wraps around.
+Every value has a type, and nothing is converted that is not told to be.
 
-Numbers are decimal (`42`) or hex (`0x2A`), up to 32 bits.
+| Type | What it is |
+|---|---|
+| `i8` `i16` `i32` | an integer with a sign, of 8, 16 or 32 bits |
+| `u8` `u16` `u32` | an integer without one |
+| `bool` | `true` or `false` |
+| `*T` | a pointer: the address of a `T` |
+| `fn(T, ...) -> T` | a function, as a value: see "Function values" |
 
-A string, `"hello\n"`, is the address of its bytes, which end with a zero
-byte. Inside one, `\n` is a newline, `\t` a tab, `\0` a zero byte, `\\` a
-backslash and `\"` a quote. A string must end on the line it starts on.
+- **Arithmetic wraps** at the size of the type: a `u8` holding 250, plus
+  10, is 4.
+- **The two sides of an operator have the same type.** `a + b` with a `u8`
+  and an `i32` is an error: write `a as i32 + b`.
+- **`EXPR as TYPE`** turns a value into another type. Between integers it
+  keeps the low bits and reads them as the new type: `300 as u8` is 44,
+  and `200 as u8 as i8` is -56. A `bool` becomes 1 or 0. A pointer becomes
+  a pointer of another type, or a `u32` or `i32`, and those become
+  pointers. Nothing becomes a `bool`: write `n != 0`. `as` binds tighter
+  than any operator with two sides, and looser than `-x` or `*p`.
+- **A number written in the source** (`42`, `0x2A`, up to 32 bits) takes
+  the type of what stands beside it, or of where it is going, and must fit
+  it: `let b: u8 = 300;` is an error. With nothing to say, it is an `i32`.
+- **A string**, `"hello\n"`, is a `*u8`: the address of its bytes, which
+  end with a zero byte. Inside one, `\n` is a newline, `\t` a tab, `\0` a
+  zero byte, `\\` a backslash and `\"` a quote. A string must end on the
+  line it starts on.
+- **`bytes { 13 00 00 00 6F00C000 }`** is a `*u8` too: the address of those
+  bytes, written as uppercase hex digits, two for each byte, grouped any
+  way. There is no zero byte at the end.
 
-`bytes { 13 00 00 00 6F00C000 }` is the address of those bytes: uppercase
-hex digits, two for each byte, grouped any way. There is no zero byte at
-the end, and the program has to know the length.
+## Pointers
+
+```
+fn sum(p: *u32, n: u32) -> u32 {
+    let total: u32 = 0;
+    let i: u32 = 0;
+    while i < n {
+        total = total + p[i];
+        i = i + 1;
+    }
+    return total;
+}
+```
+
+| Expression | Meaning |
+|---|---|
+| `*p` | what `p` points at |
+| `p[i]` | what `p` points at, `i` of them further on; `i` is any integer |
+| `p + n`, `p - n` | the pointer `n` of them further on, or back |
+| `&x` | the address of the local or global `x` |
+| `p == q`, `p < q`, ... | pointers of one type compare, as addresses |
+
+`*p = EXPR;` and `p[i] = EXPR;` store. What is loaded and stored is as
+many bytes as the type has. Nothing checks that a pointer points at
+anything: `0 as *u8` is a pointer like any other.
+
+## Functions
+
+```
+fn NAME(PARAMETER: TYPE, ...) -> TYPE { STATEMENTS }
+```
+
+- Without `-> TYPE` the function gives nothing, and `return;` ends it.
+- A call must pass as many arguments as the function has parameters, each
+  of the parameter's type.
+- A function can be called before it is defined.
+- `return EXPR;` must give the function's type. A function that should
+  give a value and ends without `return` gives whatever its last
+  computation left behind: this is not checked yet.
+- Functions may call themselves and each other.
+
+## Function values
+
+`&NAME` is a function as a value, of the type `fn(...) -> ...` that the
+function has. It can be kept in a local, passed and compared, and calling
+a local calls the function it holds:
+
+```
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 { return f(a, b); }
+
+fn main() -> i32 {
+    let f = &add;
+    return f(1, 2) + apply(&add, 3, 4);
+}
+```
+
+- `&shapes::area` names another file's function.
+- The value is a small number, the function's id, not an address. Zero is
+  never a function's id.
+- A call through a value is slower than a direct call (`docs/OBJECT.md`,
+  "Function ids").
+- Calling a number that is no function's id stops the program with a
+  message.
 
 ## Constants and globals
 
 ```
 const LIMIT = 4096;
 let count = 0;
-pub let total = LIMIT;
+pub let total: u32 = LIMIT;
+let ready: bool = false;
 ```
 
-A **constant** is a name for a number, in the file that defines it.
+A **constant** is a name for a number, or for `true` or `false`. Like a
+number written in the source, it takes the type of where it is used.
 
-A **global** is a variable outside any function: one 32-bit value, which
-starts as given and lasts as long as the program runs. Functions read and
-assign it by name, like a local. A local or parameter of the same name
-hides it.
+A **global** is a variable outside any function, which starts as given and
+lasts as long as the program runs. Its type is `i32` if none is written.
 
 - What follows the `=` is a number or the name of a constant, with a `-`
-  in front if wanted. It is not an expression.
-- Both must be defined above where they are used.
-- A global belongs to its file's module, as a function does: only that file
-  can use it unless it is `pub`, and another file names it `module.name`.
-  A constant can be `pub` only for `use`: see "Using other files".
+  in front if wanted, or `true` or `false`. It is not an expression.
+- A local or parameter of the same name hides either.
 - A global the program never uses is left out of the binary.
-
-## Functions
-
-```
-fn NAME(PARAMETER, ...) { STATEMENTS }
-```
-
-- A function can be called before it is defined, and from another file.
-- A call must pass as many arguments as the function has parameters. This
-  is not checked yet.
-- A function that ends without `return` returns whatever its last
-  computation left behind. Use `return` when the value matters.
-- Functions may call themselves and each other.
-
-## Function values
-
-`&NAME` is a function as a value, which can be kept in a local, passed and
-compared. Calling a local calls the function it holds:
-
-```
-fn add(a, b) { return a + b; }
-fn apply(f, a, b) { return f(a, b); }
-
-fn main() {
-    let f = &add;
-    return f(1, 2) + apply(&add, 3, 4);
-}
-```
-
-- `&shapes.area` names another module's function, as in a call.
-- A local hides a function of the same name: `f(1, 2)` calls through the
-  local `f` if there is one.
-- The value is a small number, the function's id, not an address. Zero is
-  never a function, so it can stand for "none".
-- A call through a value is slower than a direct call (`docs/OBJECT.md`,
-  "Function ids").
-- Calling a number that is no function's id stops the program with a
-  message. Nothing checks that the function takes the arguments given.
 
 ## Statements
 
 | Statement | Meaning |
 |---|---|
-| `let NAME = EXPR;` | A new local. It lasts to the end of its block and may hide an outer one of the same name. |
-| `NAME = EXPR;` | Assign to a local, a parameter or a global. `MODULE.NAME = EXPR;` assigns to another module's global. |
-| `if EXPR { ... } else if EXPR { ... } else { ... }` | The `else` parts are optional. Zero is false; anything else is true. |
-| `while EXPR { ... }` | Loop while the expression is not zero. |
-| `return EXPR;` | Return a value. `return;` returns 0. |
+| `let NAME = EXPR;` | A new local, of the expression's type. It lasts to the end of its block and may hide an outer one of the same name. |
+| `let NAME: TYPE = EXPR;` | The same, of the type written. |
+| `NAME = EXPR;` | Assign to a local, a parameter or a global. `FILE::NAME = EXPR;` assigns to another file's global. |
+| `*P = EXPR;` `P[I] = EXPR;` | Store where a pointer points. |
+| `if EXPR { ... } else if EXPR { ... } else { ... }` | The `else` parts are optional. The expression is a `bool`. |
+| `while EXPR { ... }` | Loop while the `bool` is true. |
+| `return EXPR;` `return;` | Leave the function, with its value if it gives one. |
 | `EXPR;` | Compute and discard, usually a call. |
 | `asm { HEXWORD ... }` | Put machine code in the function: see below. |
+
+Every variable can be assigned to. Assigning is a statement, not an
+expression: `a = b = 0;` is an error.
 
 ## Expressions
 
@@ -140,67 +187,24 @@ have the same precedence and group left to right.
 
 | Operators | Meaning |
 |---|---|
-| `\|\|` | or: 1 if either side is not zero; the right side is skipped if the left decides |
-| `&&` | and: 1 if both sides are not zero; the right side is skipped if the left decides |
-| `==` `!=` `<` `<=` `>` `>=` | comparisons (signed), giving 1 or 0 |
+| `\|\|` | or, of two `bool`s; the right side is skipped if the left decides |
+| `&&` | and, of two `bool`s; the right side is skipped if the left decides |
+| `==` `!=` `<` `<=` `>` `>=` | comparisons, giving a `bool`; the order is that of the type, with or without a sign |
 | `\|` | bitwise or |
 | `^` | bitwise exclusive or |
 | `&` | bitwise and |
-| `<<` `>>` | shifts; `>>` keeps the sign |
+| `<<` `>>` | shifts; `>>` keeps the sign of a type that has one |
 | `+` `-` | add, subtract |
 | `*` `/` `%` | multiply, divide, remainder; division rounds toward zero, the remainder has the sign of the left side, and dividing by zero is a panic |
-| `-x` `!x` `~x` | negate; 1 if zero, else 0; bitwise not |
+| `EXPR as TYPE` | turn into another type |
+| `-x` `!x` `~x` `*p` `&x` | negate; not, of a `bool`; bitwise not; what a pointer points at; an address |
+| `p[i]` `f(...)` | what a pointer points at, further on; a call |
 
-Parentheses group. A call is `NAME(EXPR, ...)`.
-
-## Modules
-
-A file belongs to a module if it starts with a `module` line:
-
-```
-module shapes;
-
-pub fn area(w, h) { return w * h; }
-
-fn twice(x) { return x + x; }       // only this file can call it
-
-pub fn around(w, h) { return twice(w) + twice(h); }
-```
-
-Another file imports the module and calls its functions by their full
-names:
-
-```
-import shapes;
-
-fn main() {
-    print_int(shapes.area(3, 4));
-    return 0;
-}
-```
-
-- **`pub`** makes a function callable from other files. Without it a
-  function is private to its file, and other files may have their own
-  function of the same name. `main` needs no `pub`.
-- **A file without a `module` line** is in the root module, whose public
-  functions need no prefix anywhere. The runtime library is there, which is
-  why `print` works in every file.
-- **A bare name**, `twice(x)`, is this file's function of that name if it
-  has one, and the root module's otherwise.
-- **A full name**, `shapes.area(3, 4)`, needs `import shapes;` earlier in
-  the file, unless `shapes` is the file's own module.
-- **Several files** may belong to one module. They call each other's `pub`
-  functions by full name.
-- **`import` does not read anything.** It only allows the prefix; the
-  module's file or object must be given to `famc` too. Calling a function that
-  does not exist, or is not `pub`, is a link error:
-  `famld: undefined: shapes.twice in main`.
+Parentheses group.
 
 ## Using other files
 
-`use` is the newer way to split a program into files, and is to replace
-`module` and `import`. The compiler is given one file and finds the others
-itself:
+The compiler is given one file and finds the others itself:
 
 ```
 // main.fam
@@ -208,7 +212,7 @@ use config::LIMIT;          // LIMIT is what config.fam calls LIMIT
 use logging::log;           // log is logging.fam's function log
 use net::packet;            // packet is the file net/packet.fam
 
-fn main() {
+fn main() -> i32 {
     log("limit", LIMIT);
     return packet::size(3) - packet::HEADER;
 }
@@ -224,34 +228,30 @@ tools/famc main.fam -o prog
   that file: then `name::thing` is what it calls `thing`.
 - **Files are found from the directory of the file given to `famc`,**
   wherever the `use` is written.
-- **Only what is `pub` can be used** from another file. A constant can be
-  `pub` too: `pub const LIMIT = 4096;`. Using what is not `pub`, or does
-  not exist, is a compile error that names the line:
-  `main.fam:2: private: helper`.
+- **Only what is `pub` can be used** from another file: `pub fn`,
+  `pub let`, `pub const`. Using what is not `pub`, or does not exist, is an
+  error that names the line: `main.fam:2: private: helper`.
 - **A used file is compiled into the object of the file that was given.**
-  It is not named on the command line as well. It is compiled once,
-  however many files use it, where the first `use` of it stands: so its
-  `init` blocks run before those that follow that `use`.
-- **A function called by its bare name** is this file's, or one named in a
-  `use`, or else the runtime library's. It is never another file's
-  function that was not named in a `use`.
-- **Two files may use each other,** for their functions. A constant or a
-  global must be defined before the `use` that names it is read.
-- A file that is used has no `module` line: its place says what it is.
-
-`famc --test main.fam` runs the tests of every file that `main.fam` uses,
-with its own.
+  It is compiled once, however many files use it, where the first `use`
+  of it stands: so its `init` blocks run before those that follow that
+  `use`.
+- **A bare name** is this file's, or one named in a `use`, or else the
+  runtime library's. It is never another file's that was not named in a
+  `use`.
+- **Anything can be named before it is defined**, in this file or
+  another, and two files may use each other. Only the value of a constant
+  or a global must be made of constants defined above it.
 
 ## Tests
 
 A test is a function marked `#[test]`, next to the code it tests:
 
 ```
-fn add(a, b) { return a + b; }
+fn add(a: i32, b: i32) -> i32 { return a + b; }
 
 #[cfg(test)]
 {
-    fn big() { return 1000; }           // only there in a test build
+    fn big() -> i32 { return 1000; }    // only there in a test build
 
     #[test]
     fn adds() {
@@ -272,86 +272,49 @@ FAIL  subtracts (math.fam:21): 3 is not 4: three less one
 
 - **`#[test] fn NAME() { ... }`** is a test, named by its function. A
   normal build passes over it.
-- **`assert(EXPR);`** fails the test if the expression is zero, and the
-  test stops there; the other tests still run. **`assert_eq(A, B);`** fails
-  it if the two differ, and says what they were. Both take a reason, a
-  string, as a last argument; it is only computed if the test fails. They
-  are only allowed in a test.
+- **`assert(EXPR);`** fails the test if the `bool` is false, and the test
+  stops there; the other tests still run. **`assert_eq(A, B);`** fails it
+  if two integers of one type differ, and says what they were. Both take a
+  reason, a string, as a last argument; it is only computed if the test
+  fails. They are only allowed in a test.
 - **`#[cfg(NAME)]`** before a function, a `let`, a `const`, a `use`, or
   several of them in `{ }`, keeps them only if the flag NAME is set.
   `famc --test` sets the flag `test`, and `famc --cfg NAME` sets any. What
   is not kept is not read, but for its braces: a mistake in it shows only
   in a build with the flag. The braces group; they are not a scope.
-- The rest is as for `test` blocks, below.
-
-`#[cfg]`, `#[test]`, `assert` and `assert_eq` are not part of the compiler
-proper but macros (`src/famc/std.fam`).
-
-### `test` blocks
-
-The older form, which the runtime's own tests still use (the stage compiler
-has to read that file). A `test` block sits next to the code it tests:
-
-```
-fn add(a, b) { return a + b; }
-
-test "add adds" {
-    assert add(2, 3) == 5;
-    assert add(-1, 1) == 0;
-}
-```
-
-`famc --test` builds the files given with their tests and runs them all.
-A directory stands for every `.fam` file in it and in the directories
-inside it, and no name at all for the current directory:
-
-```
-$ tools/famc --test math.fam
-ok    add adds
-FAIL  add handles big numbers (math.fam:14)
-
-1 passed, 1 failed
-```
-
-- A test's body is statements, as in a function. `assert EXPR;` fails the
-  test if the expression is zero, and the test stops there. The other
-  tests still run.
+- `famc --test main.fam` runs the tests of `main.fam` and of every file it
+  uses, in the order the files are compiled. `main` is not called.
 - The exit code is 0 if every test passed, else 1.
-- Tests run in the order they are written, file by file. `main` is not
-  called, and in a test build it is private to its file, so a directory
-  holding several programs can be tested in one go.
-- All the files are linked into one binary, so two of them cannot both
-  define the same `pub` function.
-- `famc --test lib` tests the runtime: its source is compiled with its
-  tests and used in place of the prebuilt one.
-- `famc --test math.fam -o t` keeps the test binary as `t` and does not
+- `famc --test main.fam -o t` keeps the test binary as `t` and does not
   run it; `tools/q32 t` runs it later.
-- A normal build (without `--test`) skips test blocks.
-- In a `test` block the form is `assert EXPR;`, with no reason.
+- `famc --test lib/rt.fam` runs the runtime's own tests.
 - A panic or a trap in a test ends the whole run.
+
+## Macros
+
+`if`, `while`, `return`, `||`, `&&`, `#[cfg]`, `#[test]`, `assert` and
+`assert_eq` are not part of the compiler proper. Each is a macro: a
+function in `src/famc/std.fam` that the compiler calls where the word
+stands, which reads what follows and says what code to write, with labels
+and jumps (`docs/CORE.md`). A program cannot define its own yet.
 
 ## The runtime library
 
-These are in `lib/rt.fam`, in the root module, so every file can call them
-by their bare names.
+These are in `lib/rt.fam`, and every file can call them by their bare
+names.
 
 | Function | Meaning |
 |---|---|
-| `putc(c)` | Write one byte to the console. |
-| `print(s)` | Write a string. |
-| `print_int(n)` | Write a number in decimal. |
-| `print_hex(n)` | Write a number as `0x` and eight hex digits. |
-| `getc()` | The next byte from the console. Waits until there is one. |
-| `alloc(size)` | The address of a new piece of memory of that many bytes. Nothing gives it back; running out is a panic. |
-| `exit(code)` | End the program with that exit code. |
-| `panic(message)` | Write `panic: ` and the message, and exit with code 1. |
-| `load8(address)` `load32(address)` | The byte (0 to 255) or the word at an address. |
-| `store8(address, value)` `store32(address, value)` | Put a byte or a word at an address. |
+| `putc(c: u8)` | Write one byte to the console. |
+| `print(s: *u8)` | Write a string. |
+| `print_int(n: i32)` | Write a number in decimal. |
+| `print_hex(n: u32)` | Write a number as `0x` and eight hex digits. |
+| `getc() -> u8` | The next byte from the console. Waits until there is one. |
+| `alloc(size: u32) -> *u8` | The address of a new piece of memory of that many bytes, on a 16-byte boundary. Nothing gives it back; running out is a panic. |
+| `exit(code: i32)` | End the program with that exit code. |
+| `panic(message: *u8)` | Write `panic: ` and the message, and exit with code 1. |
 
 Names starting with `__` belong to the runtime.
-
-The four `load` and `store` functions compile to a single instruction each
-when called by name.
 
 A program reads what `q32` is given: `tools/q32 prog < input`.
 
@@ -376,7 +339,7 @@ uppercase hex digits, four bytes in memory order: `addi a0,a0,3` is the
 word `0x00350513`, written `13053500`.
 
 ```
-fn add3(x) {
+fn add3(x: i32) -> i32 {
     asm { 13053500 }        // addi a0, a0, 3
 }
 ```
@@ -387,7 +350,7 @@ fn add3(x) {
 - If it is the first thing in a function, the arguments are still in `a0`
   to `a7`.
 - What it leaves in `a0` is the function's result if the function ends
-  there.
+  there. Nothing checks it against the function's type.
 - It may use `a0` to `a7` and `t0` to `t6`. It must leave `sp`, `s0` to
   `s11`, `gp` and `tp` as they were.
 
@@ -401,8 +364,9 @@ init { print("starting\n"); }
 ```
 
 - Init blocks run in the order written, file by file in the order the
-  files are given to `famc`.
-- Its body is statements, as in a function. `return;` ends it.
+  files are compiled.
+- Its body is statements, as in a function that gives nothing. `return;`
+  ends it.
 - `init asm { ... }` is the same with nothing but the machine code given:
   no stack frame around it. The runtime's own startup code is written this
   way, because it runs before there is a stack.
@@ -417,6 +381,7 @@ A compile error names the file and line and stops at the first problem:
 
 ```
 prog.fam:3: unknown variable y
+prog.fam:7: expected u8, found i32
 ```
 
 ## Limits
@@ -426,15 +391,12 @@ prog.fam:3: unknown variable y
 
 ## Not yet
 
-- Types other than the 32-bit integer; arrays, pointers, structs.
+- Structs, arrays, integers of 64 bits, tagged unions and `match`.
 - Character literals.
 - Globals of more than one word, or that start as anything but a number;
   giving memory back.
-- `famc --test DIRECTORY` for files that `use` each other: it compiles
-  every file by itself, so a used file is compiled twice. Give it the one
-  file that uses the others.
-- Checking the number of arguments of a call.
-- Nested modules; importing single names; checking at compile time that
-  an imported function exists.
-- Types for function values (they are plain numbers, like everything
-  else).
+- Checking that every path through a function that gives a value ends in
+  a `return`.
+- Macros defined by a program; `defer`; loops other than `while`.
+- Operators as library functions: what `+` does for each type is still in
+  the compiler.

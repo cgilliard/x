@@ -1,11 +1,12 @@
 ok    alone
 ok    adds
-FAIL  fails_with_a_reason (tests/attr.test.fam:27): two and two are not five
-FAIL  fails_without (tests/attr.test.fam:33)
-FAIL  differs (tests/attr.test.fam:38): 4 is not 1004: four and a thousand and four
-FAIL  differs_without (tests/attr.test.fam:44): 3 is not -3
+FAIL  fails_with_a_reason (tests/attr.test.fam:32): two and two are not five
+FAIL  fails_without (tests/attr.test.fam:38)
+FAIL  differs (tests/attr.test.fam:43): 4 is not 1004: four and a thousand and four
+FAIL  differs_without (tests/attr.test.fam:49): 3 is not -3
+FAIL  bytes_differ (tests/attr.test.fam:55): 200 is not 201
 ok    the_reason_is_only_computed_on_failure
-ok    the old kind still works
+ok    returns_early
 
-4 passed, 4 failed
+4 passed, 5 failed
 exit 1

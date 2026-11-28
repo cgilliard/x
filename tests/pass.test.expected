@@ -1,6 +1,6 @@
 ok    adds
-ok    loops and locals
-ok    returns early
+ok    loops_and_locals
+ok    returns_early
 
 3 passed, 0 failed
 exit 0

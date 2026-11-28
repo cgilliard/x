@@ -4,36 +4,28 @@
 #   famc hello.fam                  compile and link: a.out
 #   famc hello.fam -o hello         the same, to `hello`
 #   famc -c hello.fam               compile only: hello.o
-#   famc main.fam util.o -o prog    sources and objects together
-#   famc --test math.fam            build the file's `test` blocks and run
-#                                   them; exit code 0 if all pass
-#   famc --test src                 the same for every .fam file in the
-#                                   directory src and the directories in it
-#   famc --test                     the same for the current directory
-#   famc --test src -o t            build them as `t`; do not run them
+#   famc --test math.fam            build the file's tests and run them;
+#                                   exit code 0 if all pass
+#   famc --test math.fam -o t       build them as `t`; do not run them
 #   famc --cfg NAME ...             set a flag, for `#[cfg(NAME)]` in the
 #                                   source; --test sets the flag `test`
 # Run a binary with tools/q32.
 #
-# A file is taken by its ending: .fam is fam source, .o an object
-# (docs/OBJECT.md).  Linking adds the runtime (lib/rt.fam).  An error is
-# reported as FILE:LINE: WHAT.
+# It is given one source file.  The other .fam files in that file's
+# directory, and in the directories in that, are the ones it may `use`:
+# they are compiled with it, into one object.  So is the runtime
+# (lib/rt.fam), which every program has.  An error is reported as
+# FILE:LINE: WHAT.
 #
-# A source file may `use` the other .fam files in its directory and in the
-# directories in that: they are compiled into its object, and are not to
-# be named here as well.
-#
-# With --test, files are linked into one binary: `main` is not called and
-# is private to its file, so several programs can be tested together.  The
-# runtime's own source, lib/rt.fam, if among the files, is built with its
-# tests and used in place of bin/rt.o.
+# With --test the tests are those of the file and of every file it uses,
+# and `main` is not called.
 #
 # One more thing it does:
 #   famc --pack BINARY -o PACKED    pack a fam binary into one that unpacks itself
 #
 # It runs the programs scripts/build.sh puts in bin/ -- famc (the compiler
-# proper) for each source, then famld (the linker) -- each under QEMU.  MEM
-# and CPU set the machine, as for tools/q32.
+# proper), then famld (the linker) -- each under QEMU.  MEM and CPU set the
+# machine, as for tools/q32.
 #
 # It needs qemu-system-riscv32, cat, mktemp and rm.
 
@@ -46,14 +38,14 @@ zawrs=false,zfa=false,zfh=false,zfhmin=false,zcb=false,\
 zcd=false,zcf=false,zcmp=false,zcmt=false,zifencei=false}"
 
 usage() {
-        echo "usage: famc [-c] [-o OUTPUT] [--cfg NAME]... FILE...
-       famc --test [-o OUTPUT] [--cfg NAME]... [FILE or DIRECTORY]...
+        echo "usage: famc [-c] [-o OUTPUT] [--cfg NAME]... FILE
+       famc --test [-o OUTPUT] [--cfg NAME]... FILE
        famc --pack BINARY -o PACKED" >&2
         exit 2
 }
 die() { echo "famc: $*" >&2; exit 1; }
 
-only=; testing=; out=; mode=build; files=; cfgs=
+only=; testing=; out=; mode=build; src=; cfgs=
 while [ $# -gt 0 ]; do
         case $1 in
         -c)     only=1 ;;
@@ -63,35 +55,13 @@ while [ $# -gt 0 ]; do
         --pack) mode=pack ;;
         -*)     usage ;;
         *)      case $1 in *" "*) die "no spaces in file names: $1" ;; esac
-                files="$files $1" ;;
+                [ -z "$src" ] || die "one file: the others are found by its \`use\`s"
+                src=$1 ;;
         esac
         shift
 done
+[ -n "$src" ] || usage
 [ -r "$bin/famc" ] || die "nothing in $bin: run scripts/build.sh first"
-
-# --test: each directory named stands for the .fam files in it and in the
-# directories in it; no name at all, for the current directory.
-sources() {
-        for s_e in "$1"/*; do
-                case $s_e in *" "*) die "no spaces in file names: $s_e" ;; esac
-                if [ -d "$s_e" ]; then
-                        sources "$s_e"
-                else
-                        case $s_e in *.fam) files="$files $s_e" ;; esac
-                fi
-        done
-}
-if [ -n "$testing" ] && [ $mode = build ]; then
-        [ -n "$files" ] || files=.
-        set -- $files
-        files=
-        for f; do
-                if [ -d "$f" ]; then sources "${f%/}"; else files="$files $f"; fi
-        done
-        [ -n "$files" ] || die "no .fam files to test"
-fi
-set -- $files
-[ $# -ge 1 ] || usage
 
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
@@ -108,114 +78,85 @@ qemu() {
                 -device loader,file="$1",addr=0x80000000
 }
 
-# tool IMAGE OUTPUT INPUT... -- run one of the programs over the inputs.  If
-# it fails, what it wrote is its message: print that, and leave OUTPUT as it
-# was.  $pre, if set, goes first.  (The four 0x04 bytes end a list of
-# objects; one ends a text.)
-pre=
-tool() {
-        t_image=$1; t_out=$2; shift 2
-        { [ -z "$pre" ] || printf '%s\n' "$pre"
-          cat "$@"; printf '\004\004\004\004'
-        } > "$tmp/in"
-        if ! qemu "$t_image"; then
-                cat "$tmp/result" >&2
-                return 1
-        fi
-        cat "$tmp/result" > "$t_out"
-}
+if [ $mode = pack ]; then
+        [ -n "$out" ] || usage
+        # bin/fampack finds the size in the binary itself
+        cat "$src" > "$tmp/in" || exit 1
+        qemu "$bin/fampack" || { cat "$tmp/result" >&2; die "packing $src failed"; }
+        cat "$tmp/result" > "$out"
+        exit $?
+fi
+
+case $src in *.fam) ;; *) die "$src: not a .fam file" ;; esac
+[ -r "$src" ] || die "cannot read $src"
 
 # others DIRECTORY -- write every .fam file in the directory and in the
-# directories in it, but for $c_src: each after a line that is the byte
-# 0x02 and its name.
+# directories in it, but for $src: each after a line that is the byte 0x02
+# and its name.
 others() {
         for o_e in "$1"/*; do
                 if [ -d "$o_e" ]; then
                         others "$o_e"
                 else
                         case $o_e in *" "*) continue ;; *.fam) ;; *) continue ;; esac
-                        [ "$o_e" = "$c_src" ] && continue
-                        printf '\002%s\n' "${o_e#$c_strip}"
+                        [ "$o_e" = "$dir/${src##*/}" ] && continue
+                        printf '\002%s\n' "${o_e#$strip}"
                         cat "$o_e"
                 fi
         done
 }
 
-# compile SOURCE OBJECT -- compile a source file.  bin/famc is given the
-# file, after a line that is the byte 0x02 (or 0x01, to ask for the tests)
-# and its name; and after it, the same way, every other .fam file in its
-# directory and the directories in that, which are the files it may `use`.
-# Before all that, a line for each --cfg flag: the byte 0x03 and its name.
-compile() {
-        c_src=$1
-        c_dir=.; c_strip=./
-        case $1 in */*) c_dir=${1%/*}; c_strip= ;; esac
-        c_mark='\002'; [ -z "$testing" ] || c_mark='\001'
-        { for c_flag in $cfgs; do printf '\003%s\n' "$c_flag"; done
-          printf "$c_mark%s\n" "$1"; cat "$1"
-          # a file with no "use" anywhere in it uses nothing: send no more
-          # (what a program reads from the serial port, it reads slowly)
-          case $(cat "$1") in *use*) others "$c_dir" ;; esac
-          printf '\004'
-        } > "$tmp/in"
-        if ! qemu "$bin/famc"; then
-                cat "$tmp/result" >&2
-                return 1
-        fi
-        cat "$tmp/result" > "$2"
-}
-
-if [ $mode = pack ]; then
-        [ $# -eq 1 ] && [ -n "$out" ] || usage
-        # bin/fampack finds the size in the binary itself
-        cat "$1" > "$tmp/in" || exit 1
-        qemu "$bin/fampack" || { cat "$tmp/result" >&2; die "packing $1 failed"; }
+# Compile.  bin/famc is given, each after a line that says what it is and
+# its name (src/famc/lex.fam, "reading the source"):
+#   - a line for each --cfg flag: the byte 0x03 and its name
+#   - the runtime, lib/rt.fam, after the byte 0x05 (0x06: with its tests)
+#   - the source file, after the byte 0x02, or 0x01 to ask for the tests
+#   - every other .fam file in its directory and the directories in that,
+#     after 0x02: the files it may `use`.  A file with no "use" anywhere in
+#     it uses nothing, and then they are not sent (what a program reads
+#     from the serial port, it reads slowly).
+dir=.; strip=./
+case $src in */*) dir=${src%/*}; strip= ;; esac
+mark='\002'; [ -z "$testing" ] || mark='\001'
+{ for flag in $cfgs; do printf '\003%s\n' "$flag"; done
+  if [ -n "$testing" ] && [ "$src" -ef "$root/lib/rt.fam" ]; then
+          # the runtime's own tests: it is the prelude, with its tests
+          # wanted (the byte 0x06), of a program that has nothing else
+          printf '\006%s\n' "$src"; cat "$src"
+          printf '\001%s\n' "$src"
+  else
+          printf '\005%s\n' "$root/lib/rt.fam"; cat "$root/lib/rt.fam"
+          printf "$mark%s\n" "$src"; cat "$src"
+          case $(cat "$src") in *use*) others "$dir" ;; esac
+  fi
+  printf '\004'
+} > "$tmp/in"
+if ! qemu "$bin/famc"; then
+        cat "$tmp/result" >&2
+        exit 1
+fi
+if [ -n "$only" ]; then
+        [ -n "$out" ] || { out=${src##*/}; out=${out%.*}.o; }
         cat "$tmp/result" > "$out"
         exit $?
 fi
+cat "$tmp/result" > "$tmp/o"
 
-[ -z "$only" ] || [ -z "$out" ] || [ $# -eq 1 ] || die "-c with -o takes one file"
-
-# Each source to an object: beside us for -c, else one to link and forget.
-objs=; n=0; rt=$bin/rt.o
-for f; do
-        n=$((n + 1))
-        if [ -n "$testing" ]; then
-                # the two files that end a link are not something to test
-                [ "$f" -ef "$root/lib/rtmain.fam" ] && continue
-                [ "$f" -ef "$root/lib/rttest.fam" ] && continue
-        fi
-        case $f in
-        *.o)    [ -z "$only" ] || die "$f is an object already"
-                objs="$objs $f"; continue ;;
-        *.fam)  ;;
-        *)      die "$f: not a .fam or .o file" ;;
-        esac
-        obj=$tmp/$n.o
-        if [ -n "$only" ]; then
-                obj=$out
-                [ -n "$obj" ] || { obj=${f##*/}; obj=${obj%.*}.o; }
-        fi
-        compile "$f" "$obj" || exit 1
-        if [ -n "$testing" ] && [ "$f" -ef "$root/lib/rt.fam" ]; then
-                rt=$obj                 # the runtime itself, with its tests
-        else
-                objs="$objs $obj"
-        fi
-done
-[ -z "$only" ] || exit 0
-
-# Link.  The runtime comes first, for its startup code, and the call of
-# main (or the tests' report) last: init records run in the order given.
-last=$bin/rtmain.o; [ -z "$testing" ] || last=$bin/rttest.o
+# Link: the object is the whole program.  (The four 0x04 bytes end the
+# linker's input.)
+{ cat "$tmp/o"; printf '\004\004\004\004'; } > "$tmp/in"
+if ! qemu "$bin/famld"; then
+        cat "$tmp/result" >&2
+        exit 1
+fi
 if [ -z "$testing" ] || [ -n "$out" ]; then
-        tool "$bin/famld" "${out:-a.out}" "$rt" $objs "$last" || exit 1
-        exit 0
+        cat "$tmp/result" > "${out:-a.out}"
+        exit $?
 fi
 
 # --test without -o: run the tests now.  The serial port is our standard
 # input and output, as in tools/q32, and the exit code is the tests'.
-tool "$bin/famld" "$tmp/tests" "$rt" $objs "$last" || exit 1
+cat "$tmp/result" > "$tmp/tests"
 qemu-system-riscv32 \
         -machine virt -m "$MEM" -cpu "$CPU" \
         -display none -bios none \

@@ -1,3 +1,0 @@
-// Tests from every file of the link run, in order.
-pub fn twice(x) { return x + x; }
-test "here" { assert thrice(2) == 6; }

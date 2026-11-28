@@ -1,5 +1,5 @@
 // Strings of every length around a word, and the escapes.
-fn main() {
+fn main() -> i32 {
     print("a\tb \"q\" \\ ");
     print("[");      print("");      print("] ");
     print("[");      print("x");     print("] ");
@@ -7,5 +7,5 @@ fn main() {
     print("[");      print("xyz");   print("] ");
     print("[");      print("wxyz");  print("] ");
     print("[");      print("vwxyz"); print("]\n");
-    return load8("A") - 65 + load8("\0");
+    return ("A"[0] - 65 + *"\0") as i32;
 }

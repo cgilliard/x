@@ -1,0 +1,2 @@
+tests/err_type_deref.fam:3: not a pointer: i32
+exit 1

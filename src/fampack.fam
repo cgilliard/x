@@ -63,7 +63,7 @@
 // and then jumps too.  Its jumps are relative: like all else here it has no
 // jalr.  It leaves a1 alone: that is the address of the
 // device tree, which the startup code of what is packed sizes memory from.
-fn unpacker() {
+fn unpacker() -> *u8 {
     return bytes {
         F32240F1    // 010: csrr t0,mhartid
         63800202    // 014: beqz t0,80000034
@@ -142,22 +142,21 @@ fn unpacker() {
     };
 }
 
-// putc writes the low byte of what it is given.
-fn write32(v) {
-    putc(v);
-    putc(v >> 8);
-    putc(v >> 16);
-    putc(v >> 24);
+fn write32(v: u32) {
+    putc(v as u8);
+    putc((v >> 8) as u8);
+    putc((v >> 16) as u8);
+    putc((v >> 24) as u8);
 }
 
 // Append a group -- its flags, then the bytes of its items -- to the packed
 // data, which has `size` bytes; the new size.
-fn add_group(packed, size, flags, items, items_size) {
-    store8(packed + size, flags);
+fn add_group(packed: *u8, size: u32, flags: u8, items: *u8, items_size: u32) -> u32 {
+    packed[size] = flags;
     size = size + 1;
-    let k = 0;
+    let k: u32 = 0;
     while k < items_size {
-        store8(packed + size, load8(items + k));
+        packed[size] = items[k];
         size = size + 1;
         k = k + 1;
     }
@@ -166,26 +165,26 @@ fn add_group(packed, size, flags, items, items_size) {
 
 // pack(input, n, packed): pack the n bytes at input into packed, which has
 // room for n + n/8 + 32 bytes; the size of the packed data.
-fn pack(input, n, packed) {
-    let size = 0;
+fn pack(input: *u8, n: u32, packed: *u8) -> u32 {
+    let size: u32 = 0;
     let items = alloc(16);                      // the group being filled
-    let items_size = 0;
-    let flags = 0;
-    let count = 0;
+    let items_size: u32 = 0;
+    let flags: u32 = 0;
+    let count: u32 = 0;
 
-    let i = 0;
+    let i: u32 = 0;
     while i < n {
         let here = input + i;
         let max = n - i;                        // the longest copy possible
         if max > 18 { max = 18; }
-        let j = i - 4096;                       // the farthest place to copy from
-        if j < 0 { j = 0; }
-        let best = 0;
-        let best_at = 0;
+        let j: u32 = 0;                         // the farthest place to copy from
+        if i > 4096 { j = i - 4096; }
+        let best: u32 = 0;
+        let best_at: u32 = 0;
         while j < i {
             let there = input + j;
-            let len = 0;
-            while len < max && load8(there + len) == load8(here + len) {
+            let len: u32 = 0;
+            while len < max && there[len] == here[len] {
                 len = len + 1;
             }
             if len > best {
@@ -198,51 +197,53 @@ fn pack(input, n, packed) {
         flags = flags << 1;
         if best < 3 {
             flags = flags | 1;
-            store8(items + items_size, load8(here));
+            items[items_size] = *here;
             items_size = items_size + 1;
             i = i + 1;
         } else {
             let distance = i - best_at - 1;
-            store8(items + items_size, distance);
-            store8(items + items_size + 1, (distance >> 8 & 15) | (best - 3) << 4);
+            items[items_size] = distance as u8;
+            items[items_size + 1] = ((distance >> 8 & 15) | (best - 3) << 4) as u8;
             items_size = items_size + 2;
             i = i + best;
         }
         count = count + 1;
         if count == 8 {
-            size = add_group(packed, size, flags, items, items_size);
+            size = add_group(packed, size, flags as u8, items, items_size);
             items_size = 0;
             flags = 0;
             count = 0;
         }
     }
     if count > 0 {
-        size = add_group(packed, size, flags << (8 - count), items, items_size);
+        size = add_group(packed, size, (flags << (8 - count)) as u8, items, items_size);
     }
     return size;
 }
 
 // room(n): how much room pack needs for n bytes: at worst a ninth larger.
-fn room(n) {
+fn room(n: u32) -> u32 {
     return n + (n >> 3) + 32;
 }
 
-fn main() {
+fn main() -> i32 {
     // the first 24 bytes, which say how many there are in all
     let head = alloc(24);
-    let i = 0;
+    let i: u32 = 0;
     while i < 24 {
-        store8(head + i, getc());
+        head[i] = getc();
         i = i + 1;
     }
-    let auipc = load32(head + 16);
-    let addi = load32(head + 20);
-    if load32(head) != 0x00000013 || load32(head + 4) != 0x00C0006F
+    let words = head as *u32;
+    let auipc = words[4];
+    let addi = words[5];
+    if words[0] != 0x00000013 || words[1] != 0x00C0006F
             || (auipc & 0xFFF) != 0x197 || (addi & 0xFFFFF) != 0x18193 {
         print("fampack: the input is not a fam binary\n");
         return 1;
     }
-    let n = 16 + (auipc & 0xFFFFF000) + (addi >> 20);
+    // the addi's twelve bits have a sign
+    let n = 16 + (auipc & 0xFFFFF000) + (addi as i32 >> 20) as u32;
     if n < 24 {
         print("fampack: the input is not a fam binary\n");
         return 1;
@@ -252,9 +253,9 @@ fn main() {
     i = 0;
     while i < n {
         if i < 24 {
-            store8(input + i, load8(head + i));
+            input[i] = head[i];
         } else {
-            store8(input + i, getc());
+            input[i] = getc();
         }
         i = i + 1;
     }
@@ -269,12 +270,12 @@ fn main() {
     let code = unpacker();
     i = 0;
     while i < 296 {
-        putc(load8(code + i));
+        putc(code[i]);
         i = i + 1;
     }
     i = 0;
     while i < size {
-        putc(load8(packed + i));
+        putc(packed[i]);
         i = i + 1;
     }
     return 0;
@@ -283,168 +284,176 @@ fn main() {
 // ---- tests ------------------------------------------------------------------
 //
 //     tools/famc --test src/fampack.fam
-//
-// The functions below are only used by the tests, so they are not in
-// bin/fampack.
 
-// unpack(packed, out, n): what the unpacker's machine code does, in fam:
-// unpack n bytes from packed into out.
-fn unpack(packed, out, n) {
-    let p = 0;                                  // where we are in packed
-    let o = 0;                                  // and in out
-    let flags = 0;
-    let left = 0;                               // flags not used yet
-    while o < n {
-        if left == 0 {
-            flags = load8(packed + p);
-            p = p + 1;
-            left = 8;
-        }
-        let literal = flags & 128;
-        flags = flags << 1;
-        left = left - 1;
-        if literal {
-            store8(out + o, load8(packed + p));
-            p = p + 1;
-            o = o + 1;
-        } else {
-            let low = load8(packed + p);
-            let high = load8(packed + p + 1);
-            p = p + 2;
-            let from = o - ((low | (high & 15) << 8) + 1);
-            let len = (high >> 4) + 3;
-            while len > 0 {
-                store8(out + o, load8(out + from));
+#[cfg(test)]
+{
+    // unpack(packed, out, n): what the unpacker's machine code does, in fam:
+    // unpack n bytes from packed into out.
+    fn unpack(packed: *u8, out: *u8, n: u32) {
+        let p: u32 = 0;                         // where we are in packed
+        let o: u32 = 0;                         // and in out
+        let flags: u32 = 0;
+        let left = 0;                           // flags not used yet
+        while o < n {
+            if left == 0 {
+                flags = packed[p] as u32;
+                p = p + 1;
+                left = 8;
+            }
+            let literal = flags & 128 != 0;
+            flags = flags << 1;
+            left = left - 1;
+            if literal {
+                out[o] = packed[p];
+                p = p + 1;
                 o = o + 1;
-                from = from + 1;
-                len = len - 1;
+            } else {
+                let low = packed[p] as u32;
+                let high = packed[p + 1] as u32;
+                p = p + 2;
+                let from = o - ((low | (high & 15) << 8) + 1);
+                let len = (high >> 4) + 3;
+                while len > 0 {
+                    out[o] = out[from];
+                    o = o + 1;
+                    from = from + 1;
+                    len = len - 1;
+                }
             }
         }
     }
-}
 
-// length(s): the number of bytes in a string.
-fn length(s) {
-    let n = 0;
-    while load8(s + n) != 0 { n = n + 1; }
-    return n;
-}
-
-// equal(a, b, n): are the n bytes at a and at b the same?
-fn equal(a, b, n) {
-    let i = 0;
-    while i < n {
-        if load8(a + i) != load8(b + i) { return 0; }
-        i = i + 1;
+    // length(s): the number of bytes in a string.
+    fn length(s: *u8) -> u32 {
+        let n: u32 = 0;
+        while s[n] != 0 { n = n + 1; }
+        return n;
     }
-    return 1;
-}
 
-// survives(input, n): do n bytes come back the same from pack and unpack?
-fn survives(input, n) {
-    let packed = alloc(room(n));
-    pack(input, n, packed);
-    let out = alloc(n + 32);
-    unpack(packed, out, n);
-    return equal(input, out, n);
-}
-
-// packed_size(input, n): how many bytes n bytes pack into.
-fn packed_size(input, n) {
-    return pack(input, n, alloc(room(n)));
-}
-
-test "nothing packs into nothing" {
-    assert packed_size("", 0) == 0;
-}
-
-test "bytes with nothing repeated stay as they are, after a byte of flags" {
-    let packed = alloc(room(8));
-    let size = pack("abcdefgh", 8, packed);
-    assert size == 9;
-    assert load8(packed) == 0xFF;               // eight bytes as they are
-    assert equal(packed + 1, "abcdefgh", 8);
-}
-
-test "a repeat becomes a copy: two bytes for its distance and length" {
-    let packed = alloc(room(9));
-    let size = pack("abcabcabc", 9, packed);
-    // a b c as they are, then: copy 6 bytes from 3 back
-    assert size == 6;
-    assert load8(packed) == 0xE0;               // flags 1 1 1 0, padded
-    assert equal(packed + 1, "abc", 3);
-    assert load8(packed + 4) == 2;              // distance 3, less 1
-    assert load8(packed + 5) == 0x30;           // length 6, less 3, in the high half
-}
-
-test "a repeat of two bytes is not worth a copy" {
-    let packed = alloc(room(6));
-    assert pack("abXabY", 6, packed) == 7;      // six bytes and their flags
-    assert load8(packed) == 0xFC;
-}
-
-test "the farthest of the longest copies is taken" {
-    let packed = alloc(room(11));
-    // a b c X as they are; copy 3 from 4 back; Y; then "abc" again, which
-    // is both 8 back and 4 back
-    assert pack("abcXabcYabc", 11, packed) == 10;
-    assert load8(packed) == 0xF4;               // flags 1 1 1 1 0 1 0, padded
-    assert load8(packed + 5) == 3;              // the first copy: 4 back
-    assert load8(packed + 8) == 7;              // the second: 8 back, not 4
-    assert load8(packed + 9) == 0x00;           // length 3, less 3
-}
-
-test "a copy is 18 bytes at most" {
-    let input = alloc(40);
-    let i = 0;
-    while i < 40 { store8(input + i, 7); i = i + 1; }
-    let packed = alloc(room(40));
-    // one byte, then copies of 18, 18 and 3 from 1 back
-    assert pack(input, 40, packed) == 8;
-    assert load8(packed) == 0x80;
-    assert load8(packed + 2) == 0;
-    assert load8(packed + 3) == 0xF0;           // length 18, less 3
-    assert load8(packed + 7) == 0x00;           // length 3, less 3
-}
-
-test "what is packed unpacks to what it was" {
-    assert survives("", 0);
-    assert survives("a", 1);
-    assert survives("abcdefgh", 8);
-    assert survives("abcabcabc", 9);
-    let text = "the quick brown fox jumps over the lazy dog; the lazy dog sleeps on";
-    assert survives(text, length(text));
-    assert packed_size(text, length(text)) < length(text);
-}
-
-test "a long run of one byte unpacks to what it was, and is much smaller" {
-    let n = 600;
-    let input = alloc(n);
-    let i = 0;
-    while i < n { store8(input + i, 0); i = i + 1; }
-    assert survives(input, n);
-    assert packed_size(input, n) < 80;
-}
-
-test "data longer than the 4096 bytes a copy can reach back unpacks to what it was" {
-    let n = 4500;
-    let input = alloc(n);
-    let x = 1;
-    let i = 0;
-    while i < 4200 {                            // bytes with little repeated
-        x = x * 1103515245 + 12345;
-        store8(input + i, x >> 16);
-        i = i + 1;
+    // equal(a, b, n): are the n bytes at a and at b the same?
+    fn equal(a: *u8, b: *u8, n: u32) -> bool {
+        let i: u32 = 0;
+        while i < n {
+            if a[i] != b[i] { return false; }
+            i = i + 1;
+        }
+        return true;
     }
-    while i < n {                               // then the start again, too
-        store8(input + i, load8(input + i - 4200));     // far back to copy
-        i = i + 1;
-    }
-    assert survives(input, n);
-}
 
-test "the unpacker is 74 instructions and ends by jumping to what it unpacked" {
-    let code = unpacker();
-    assert load32(code) == 0xF14022F3;          // csrr t0, mhartid
-    assert load32(code + 292) == 0x6CD0006F;    // j 0x80001000
+    // survives(input, n): do n bytes come back the same from pack and unpack?
+    fn survives(input: *u8, n: u32) -> bool {
+        let packed = alloc(room(n));
+        pack(input, n, packed);
+        let out = alloc(n + 32);
+        unpack(packed, out, n);
+        return equal(input, out, n);
+    }
+
+    // packed_size(input, n): how many bytes n bytes pack into.
+    fn packed_size(input: *u8, n: u32) -> u32 {
+        return pack(input, n, alloc(room(n)));
+    }
+
+    #[test]
+    fn nothing_packs_into_nothing() {
+        assert_eq(packed_size("", 0), 0);
+    }
+
+    #[test]
+    fn bytes_with_nothing_repeated_stay_as_they_are_after_a_byte_of_flags() {
+        let packed = alloc(room(8));
+        assert_eq(pack("abcdefgh", 8, packed), 9);
+        assert_eq(*packed, 0xFF, "eight bytes as they are");
+        assert(equal(packed + 1, "abcdefgh", 8));
+    }
+
+    #[test]
+    fn a_repeat_becomes_a_copy_two_bytes_for_its_distance_and_length() {
+        let packed = alloc(room(9));
+        // a b c as they are, then: copy 6 bytes from 3 back
+        assert_eq(pack("abcabcabc", 9, packed), 6);
+        assert_eq(*packed, 0xE0, "flags 1 1 1 0, padded");
+        assert(equal(packed + 1, "abc", 3));
+        assert_eq(packed[4], 2, "distance 3, less 1");
+        assert_eq(packed[5], 0x30, "length 6, less 3, in the high half");
+    }
+
+    #[test]
+    fn a_repeat_of_two_bytes_is_not_worth_a_copy() {
+        let packed = alloc(room(6));
+        assert_eq(pack("abXabY", 6, packed), 7, "six bytes and their flags");
+        assert_eq(*packed, 0xFC);
+    }
+
+    #[test]
+    fn the_farthest_of_the_longest_copies_is_taken() {
+        let packed = alloc(room(11));
+        // a b c X as they are; copy 3 from 4 back; Y; then "abc" again, which
+        // is both 8 back and 4 back
+        assert_eq(pack("abcXabcYabc", 11, packed), 10);
+        assert_eq(*packed, 0xF4, "flags 1 1 1 1 0 1 0, padded");
+        assert_eq(packed[5], 3, "the first copy: 4 back");
+        assert_eq(packed[8], 7, "the second: 8 back, not 4");
+        assert_eq(packed[9], 0x00, "length 3, less 3");
+    }
+
+    #[test]
+    fn a_copy_is_18_bytes_at_most() {
+        let input = alloc(40);
+        let i: u32 = 0;
+        while i < 40 { input[i] = 7; i = i + 1; }
+        let packed = alloc(room(40));
+        // one byte, then copies of 18, 18 and 3 from 1 back
+        assert_eq(pack(input, 40, packed), 8);
+        assert_eq(*packed, 0x80);
+        assert_eq(packed[2], 0);
+        assert_eq(packed[3], 0xF0, "length 18, less 3");
+        assert_eq(packed[7], 0x00, "length 3, less 3");
+    }
+
+    #[test]
+    fn what_is_packed_unpacks_to_what_it_was() {
+        assert(survives("", 0));
+        assert(survives("a", 1));
+        assert(survives("abcdefgh", 8));
+        assert(survives("abcabcabc", 9));
+        let text = "the quick brown fox jumps over the lazy dog; the lazy dog sleeps on";
+        assert(survives(text, length(text)));
+        assert(packed_size(text, length(text)) < length(text));
+    }
+
+    #[test]
+    fn a_long_run_of_one_byte_unpacks_to_what_it_was_and_is_much_smaller() {
+        let n: u32 = 600;
+        let input = alloc(n);
+        let i: u32 = 0;
+        while i < n { input[i] = 0; i = i + 1; }
+        assert(survives(input, n));
+        assert(packed_size(input, n) < 80);
+    }
+
+    #[test]
+    fn data_longer_than_a_copy_can_reach_back_unpacks_to_what_it_was() {
+        let n: u32 = 4500;
+        let input = alloc(n);
+        let x: u32 = 1;
+        let i: u32 = 0;
+        while i < 4200 {                        // bytes with little repeated
+            x = x * 1103515245 + 12345;
+            input[i] = (x >> 16) as u8;
+            i = i + 1;
+        }
+        while i < n {                           // then the start again, too
+            input[i] = input[i - 4200];         // far back to copy
+            i = i + 1;
+        }
+        assert(survives(input, n));
+    }
+
+    #[test]
+    fn the_unpacker_is_74_instructions_and_ends_by_jumping_to_what_it_unpacked() {
+        let code = unpacker() as *u32;
+        assert(*code == 0xF14022F3, "csrr t0, mhartid");
+        assert(code[73] == 0x6CD0006F, "j 0x80001000");
+    }
 }

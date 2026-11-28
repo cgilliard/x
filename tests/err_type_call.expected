@@ -1,0 +1,2 @@
+tests/err_type_call.fam:3: not a function: n
+exit 1

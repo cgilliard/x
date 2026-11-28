@@ -7,13 +7,16 @@ questions" are the ones most likely to change.
 ## Pipeline
 
 ```
-lib/rt.fam ──famc───▶ rt.o ─────┐
-source.fam ──famc───▶ source.o ─┤
-source.fam ──famc───▶ source.o ─┼─▶ famld ──▶ binary
-lib/rtmain.fam ─famc▶ rtmain.o ─┘
+lib/rt.fam ─────┐
+main.fam ───────┼─▶ famc ──▶ main.o ──▶ famld ──▶ binary
+the files it uses ┘
 ```
 
-- The **front end** (`famc`) compiles one source file to one object.
+- The **front end** (`famc`) compiles a program to one object: the file
+  it is given, the files that one uses, and the runtime, which every
+  program has. (The linker still takes several objects, one after
+  another. The compiler itself is built that way, by the stage compiler,
+  which compiles one file to one object.)
 - An **object** is binary: machine code and data, the names it defines and
   uses, and where the uses are.
 - The **linker** (`famld`) reads the objects one after another and writes
@@ -153,11 +156,10 @@ of four `0x04` bytes. It:
    code the binary starts running, and after all the code the data that
    code refers to, in the order it is first referred to. Data nothing
    written refers to is left out. So the runtime (`lib/rt.fam`, which
-   begins with the startup code) goes first and the object that calls
-   `main` (`lib/rtmain.fam`) last, with the init records of the program's
-   objects in between; `tools/famc` sees to that. In a test build each
-   `test` block is an init record, and `lib/rttest.fam`, which reports the
-   results, takes the place of `lib/rtmain.fam`.
+   begins with the startup code) goes first and the record that calls
+   `main` last, with the init records of the program's files in between;
+   the front end sees to that. In a test build each test is an init
+   record, and the last record reports the results instead.
 
 A stub's jump is a plain `jal`, so the stub and its function must end up
 within 1 MiB of each other. If they do not, the link fails with a message
@@ -318,9 +320,10 @@ Each of these is a new part or a new symbol kind, under a new version.
 - The linker is its own program and its own pass, and it is the back end
   too: it writes the binary. `tools/famc` is the driver that compiles or
   links depending on what it is given, the way `gcc` does.
-- The compiler's own programs, the front end and the linker, are written
-  in the Forth of `lib/compiler.lib` and compiled by the core
-  (`src/fam.S`), which the seed builds.
+- The linker and the stage compiler are written in the Forth of
+  `lib/compiler.lib` and compiled by the core (`src/fam.S`), which the
+  seed builds. The front end (`src/famc/`) is written in the stage
+  compiler's language.
 - The program starts in the runtime's init record (in `lib/rt.fam`),
-  which lays out memory. The last init record (`lib/rtmain.fam`) calls
-  `main`, then `exit` with its result.
+  which lays out memory. The last init record, which the front end adds,
+  calls `main`, then `exit` with its result.

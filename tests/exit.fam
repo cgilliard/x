@@ -1,5 +1,5 @@
 // exit() ends the program at once.
-fn main() {
+fn main() -> i32 {
     print("before\n");
     exit(9);
     print(" after");

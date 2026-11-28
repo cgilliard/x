@@ -1,0 +1,5 @@
+// The other file of this test.
+use main_twice::double;
+pub fn thrice(x: i32) -> i32 { return double(x) + x; }
+#[test]
+fn there() { assert_eq(double(4), 8); }

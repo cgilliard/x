@@ -1,0 +1,6 @@
+// A second file with names the first one has too.
+pub fn say(s: *u8) { print(s); }    // print is the library's
+
+pub fn name() -> *u8 { return twice("text"); }
+
+fn twice(x: *u8) -> *u8 { return x; }   // another file's twice is another function

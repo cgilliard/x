@@ -1,4 +1,4 @@
-fn main() {
-    if 1 { let inner = 2; }
+fn main() -> i32 {
+    if true { let inner = 2; }
     return inner;
 }

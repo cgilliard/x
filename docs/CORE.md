@@ -1,17 +1,22 @@
 # The next compiler: a small core and macros
 
-Status: a plan, of which the start is built. The compiler, `src/famc/`,
-is written in fam. It compiles today's language (`docs/LANGUAGE.md`) to the
-same bytes as the stage compiler, `src/famc.forth`, which builds it and is
-frozen; `scripts/test_compilers.sh` checks that. In it `if`, `while`,
-`return`, `||` and `&&` are already macros (`src/famc/std.fam`), built from
-the labels and jumps of `src/famc/emit.fam`, with the checks on jumps
-below. They are functions registered by name; there is no `macro` keyword
-yet. `use` is built (`docs/LANGUAGE.md`, "Using other files"), beside
-`module` and `import`, which the compiler's own source still needs: the
-stage compiler has to compile it. Attributes are built, with `#[cfg]`,
-`#[test]`, `assert` and `assert_eq` as macros in `src/famc/std.fam`, and
-`famc --cfg`. Nothing else here is built.
+Status: a plan, of which this much is built (`docs/LANGUAGE.md` says what
+the language is today):
+
+- The compiler, `src/famc/`. It is written in an older fam with no types,
+  which the stage compiler, `src/famc.forth`, compiles; that one is frozen.
+  The compiler does not compile its own source.
+- `if`, `while`, `return`, `||` and `&&` as macros (`src/famc/std.fam`),
+  built from the labels and jumps of `src/famc/emit.fam`, with the checks
+  on jumps below. A macro is a function registered by name; there is no
+  `macro` keyword yet.
+- `use`, with one compilation for a file and all it uses.
+- Attributes, with `#[cfg]`, `#[test]`, `assert` and `assert_eq` as macros,
+  and `famc --cfg`.
+- Types: the integers, `bool`, pointers and function types, checked, with
+  no conversion that is not written. Structs, arrays and wider integers
+  are not built, and the operators are still in the compiler, not the
+  library.
 
 The compiler runs on a bare machine and cannot open a file. So
 `tools/famc` sends it, after the file to compile, every other `.fam` file
@@ -197,4 +202,5 @@ fn packed_size(input, n) {
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests. (Done.)
-4. Types, and operators as library functions.
+4. Types (integers, `bool`, pointers: done; structs, arrays and wide
+   values: not yet), and operators as library functions (not yet).

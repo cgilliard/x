@@ -1,0 +1,2 @@
+let calls = 0;
+pub fn add() -> i32 { calls = calls + 1; return calls; }

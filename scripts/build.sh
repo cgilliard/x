@@ -56,6 +56,25 @@ compile() {
         fi
 }
 
+# program OBJECT SOURCE -- compile a fam program with bin/famc, which is
+# given the runtime (lib/rt.fam, the prelude) and then the source, each
+# after a line that says what it is and its name (src/famc/lex.fam,
+# "reading the source").  The object is the whole program: the linker
+# makes the binary of it alone.
+program() {
+        out=$1; src=$2
+        if fresh "$out" bin/famc lib/rt.fam "$src"; then return 0; fi
+        echo "Building $src → $out" >&2
+        printf '\005lib/rt.fam\n' > bin/build.rt
+        printf '\002%s\n' "$src" > bin/build.name
+        if ! run bin/famc "$out" bin/build.rt lib/rt.fam bin/build.name "$src"; then
+                echo "build.sh: $out: error:" >&2
+                cat "$out" >&2
+                : > "$out"
+                exit 1
+        fi
+}
+
 # verify A B -- stop the build unless the files A and B are identical.
 # bin/same, a fam program, compares them: it exits with 1 if they differ and
 # writes nothing.  A note in bin/<A's name>.same says the check was made;
@@ -81,35 +100,32 @@ compile bin/fam   fam0.seed src/fam.fam0
 compile bin/famc0 bin/fam lib/compiler.lib src/famc.forth
 compile bin/famld.unpacked bin/fam lib/compiler.lib src/famld.forth
 
-# the fam compiler, written in fam (src/famc/): the stage compiler compiles
-# it and the runtime it is linked with
-compile bin/famc0.rt.o      bin/famc0 lib/rt.fam
-compile bin/famc0.rtmain.o  bin/famc0 lib/rtmain.fam
+# the fam compiler (src/famc/), and the runtime it is linked with.  They
+# are written in the stage compiler's language, which has no types, and it
+# compiles them.
+compile bin/famc0.rt.o      bin/famc0 src/famc/rt.fam
+compile bin/famc0.rtmain.o  bin/famc0 src/famc/rtmain.fam
 compile bin/famc.lex.o      bin/famc0 src/famc/lex.fam
 compile bin/famc.obj.o      bin/famc0 src/famc/obj.fam
+compile bin/famc.types.o    bin/famc0 src/famc/types.fam
 compile bin/famc.emit.o     bin/famc0 src/famc/emit.fam
 compile bin/famc.parse.o    bin/famc0 src/famc/parse.fam
 compile bin/famc.std.o      bin/famc0 src/famc/std.fam
 compile bin/famc.main.o     bin/famc0 src/famc/main.fam
 compile bin/famc  bin/famld.unpacked bin/famc0.rt.o bin/famc.lex.o \
-                  bin/famc.obj.o bin/famc.emit.o bin/famc.parse.o \
-                  bin/famc.std.o bin/famc.main.o bin/famc0.rtmain.o
-
-# the runtime, which tools/famc adds to every link: startup and library,
-# and the last step (call main, or report the tests)
-compile bin/rt.o      bin/famc lib/rt.fam
-compile bin/rtmain.o  bin/famc lib/rtmain.fam
-compile bin/rttest.o  bin/famc lib/rttest.fam
+                  bin/famc.obj.o bin/famc.types.o bin/famc.emit.o \
+                  bin/famc.parse.o bin/famc.std.o bin/famc.main.o \
+                  bin/famc0.rtmain.o
 
 # the packer, a fam program: compile, then link.  Then the linker, packed:
 # a quarter of the size, and it unpacks itself each time it runs.  It links
 # everything from here on.
-compile bin/fampack.o bin/famc  src/fampack.fam
-compile bin/fampack   bin/famld.unpacked bin/rt.o bin/fampack.o bin/rtmain.o
+program bin/fampack.o src/fampack.fam
+compile bin/fampack   bin/famld.unpacked bin/fampack.o
 compile bin/famld     bin/fampack bin/famld.unpacked
 
 # a check: the seed, given its own source, builds itself
 compile bin/fam0      fam0.seed src/fam0.fam0
-compile bin/same.o    bin/famc  src/same.fam
-compile bin/same      bin/famld bin/rt.o bin/same.o bin/rtmain.o
+program bin/same.o    src/same.fam
+compile bin/same      bin/famld bin/same.o
 verify  bin/fam0      fam0.seed

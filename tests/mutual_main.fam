@@ -1,6 +1,6 @@
 // main itself in a cycle.
-fn main() { return run(3); }
-fn run(n) {
+fn main() -> i32 { return run(3); }
+fn run(n: i32) -> i32 {
     if n == 3 { return n; }
     return main();
 }

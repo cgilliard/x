@@ -1,2 +1,2 @@
 use other::helper;
-fn main() { return helper(); }
+fn main() -> i32 { return helper(); }

@@ -1,4 +1,4 @@
-// A function nothing calls is left out of the binary, even if it calls
-// something that does not exist.
-fn unused() { return nowhere(1); }
-fn main() { return 4; }
+// A function nothing calls is left out of the binary: the program is the
+// same size with or without it.
+fn unused() -> i32 { return unused() + 1; }
+fn main() -> i32 { return 4; }

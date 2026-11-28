@@ -1,5 +1,0 @@
-// A normal build skips test blocks, whatever is in them.
-fn main() { return 5; }
-test "not compiled" {
-    assert no_such_function(1) { "}" } == 2;
-}

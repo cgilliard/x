@@ -1,24 +1,24 @@
-fn check(got, want) {
+fn check(got: bool, want: bool) -> i32 {
     if got == want { return 6; }
     return 0;
 }
-fn main() {
+fn main() -> i32 {
     let n = 0;
-    n = n + check(1 < 2, 1);
-    n = n + check(2 < 1, 0);
-    n = n + check(-1 < 1, 1);       // signed
-    n = n + check(2 > 1, 1);
-    n = n + check(2 <= 2, 1);
-    n = n + check(3 <= 2, 0);
-    n = n + check(2 >= 3, 0);
-    n = n + check(3 >= 3, 1);
-    n = n + check(4 == 4, 1);
-    n = n + check(4 != 4, 0);
-    n = n + check(4 != 5, 1);
-    n = n + check(!5, 0);
-    n = n + check(!0, 1);
-    n = n + check(1 + 1 == 2, 1);   // + before ==
-    n = n + check(1 < 2 && 2 < 3, 1);
-    n = n + check(1 > 2 || 2 > 3, 0);
+    n = n + check(1 < 2, true);
+    n = n + check(2 < 1, false);
+    n = n + check(-1 < 1, true);    // signed
+    n = n + check(2 > 1, true);
+    n = n + check(2 <= 2, true);
+    n = n + check(3 <= 2, false);
+    n = n + check(2 >= 3, false);
+    n = n + check(3 >= 3, true);
+    n = n + check(4 == 4, true);
+    n = n + check(4 != 4, false);
+    n = n + check(4 != 5, true);
+    n = n + check(!true, false);
+    n = n + check(!false, true);
+    n = n + check(1 + 1 == 2, true);    // + before ==
+    n = n + check(1 < 2 && 2 < 3, true);
+    n = n + check(1 > 2 || 2 > 3, false);
     return n;
 }

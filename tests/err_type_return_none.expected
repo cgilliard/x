@@ -1,0 +1,2 @@
+tests/err_type_return_none.fam:2: expected nothing, found a number
+exit 1

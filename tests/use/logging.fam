@@ -2,11 +2,11 @@ use config::LIMIT;
 
 pub let lines = 0;
 
-fn twice(x) { return x * 100; }     // this file's own, not main's
+fn twice(x: i32) -> i32 { return x * 100; }     // this file's own, not main's
 
-pub fn count() { return twice(lines); }
+pub fn count() -> i32 { return twice(lines); }
 
-pub fn log(what, n) {
+pub fn log(what: *u8, n: i32) {
     lines = lines + 1;
     if n > LIMIT { n = LIMIT; }
     print(what);

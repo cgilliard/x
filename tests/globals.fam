@@ -3,21 +3,25 @@ const LIMIT = 3;
 const NEG = -5;
 const SAME = LIMIT;
 const BIG = 0x12345678;
+const YES = true;
 
 let count = 0;
 let start = LIMIT;
 let low = -LIMIT;
+let small: u8 = 200;
+let on: bool = YES;
+let text: *u8 = 0;
 
-fn bump() {
+fn bump() -> i32 {
     count = count + 1;
     return count;
 }
 
-fn main() {
+fn main() -> i32 {
     print_int(LIMIT); putc(32);
     print_int(NEG); putc(32);
     print_int(SAME); putc(32);
-    print_int(BIG == 305419896); putc(10);
+    print_int((BIG == 305419896) as i32); putc(10);
 
     print_int(count); putc(32);
     bump();
@@ -25,6 +29,11 @@ fn main() {
     print_int(count); putc(32);
     print_int(start); putc(32);
     print_int(low); putc(10);
+
+    small = small + 100;            // a u8 wraps at 256
+    print_int(small as i32); putc(32);
+    if on { text = "on"; }
+    print(text); putc(10);
 
     let count = 9;                  // a local hides the global
     print_int(count); putc(32);

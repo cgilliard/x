@@ -3,7 +3,7 @@
 init asm {
     930C7000        // li s9, 7
 }
-fn s9() {
+fn s9() -> i32 {
     asm { 13850C00 }    // mv a0, s9
 }
-fn main() { return s9(); }
+fn main() -> i32 { return s9(); }

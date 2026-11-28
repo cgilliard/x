@@ -1,0 +1,2 @@
+tests/err_type_cond.fam:3: expected bool, found i32
+exit 1

@@ -1,11 +1,11 @@
-// lib/rt.fam -- the runtime.  scripts/build.sh compiles it to bin/rt.o, and
-// tools/famc puts it first in every link; only the functions a program uses
-// end up in its binary.
+// lib/rt.fam -- the runtime: the prelude.  tools/famc gives it to the
+// compiler with every program, which may use what is `pub` here without
+// saying so; only the functions a program uses end up in its binary.
 //
 // It starts with the startup code, which lays out memory and guards against
 // the two stacks running out.  That runs into the init records of the
-// objects after it, the last of which is lib/rtmain.fam (call main and
-// exit) or lib/rttest.fam (report the tests).
+// program, the last of which the compiler adds: call main and exit, or
+// report the tests.
 //
 // The machine is QEMU's virt: a UART at 0x10000000 for output and the test
 // finisher at 0x100000 to leave.
@@ -106,7 +106,7 @@ init asm {
 // ---- output ---------------------------------------------------------------
 
 // putc(c): write one byte to the console.
-pub fn putc(c) {
+pub fn putc(c: u8) {
     asm {
         B7030010    // lui t2,0x10000
         // wait:
@@ -118,15 +118,15 @@ pub fn putc(c) {
 }
 
 // print(s): write a string (bytes up to a zero byte).
-pub fn print(s) {
-    while load8(s) != 0 {
-        putc(load8(s));
+pub fn print(s: *u8) {
+    while *s != 0 {
+        putc(*s);
         s = s + 1;
     }
 }
 
 // print_int(n): write a number in decimal.
-pub fn print_int(n) {
+pub fn print_int(n: i32) {
     if n < 0 {
         putc(45);                               // -
         if n == 0x80000000 {                    // has no positive
@@ -136,30 +136,30 @@ pub fn print_int(n) {
         n = -n;
     }
     if n >= 10 { print_int(n / 10); }
-    putc(48 + n % 10);
+    putc((48 + n % 10) as u8);
 }
 
 // print_hex(n): write a number as 0x and eight hex digits.
-pub fn print_hex(n) {
+pub fn print_hex(n: u32) {
     print("0x");
     let shift = 28;
     while shift >= 0 {
-        putc(__hex_digit(n >> shift));
+        putc(__hex_digit(n >> shift as u32));
         shift = shift - 4;
     }
 }
 
 // __hex_digit(n): the character for the low four bits of n: 0-9, A-F.
-fn __hex_digit(n) {
+fn __hex_digit(n: u32) -> u8 {
     n = n & 15;
-    if n < 10 { return 48 + n; }
-    return 55 + n;
+    if n < 10 { return (48 + n) as u8; }
+    return (55 + n) as u8;
 }
 
 // ---- input ----------------------------------------------------------------
 
 // getc(): the next byte from the console.  Waits until there is one.
-pub fn getc() {
+pub fn getc() -> u8 {
     asm {
         B7030010    // lui t2,0x10000
         // wait:
@@ -173,7 +173,7 @@ pub fn getc() {
 // ---- leaving --------------------------------------------------------------
 
 // exit(code): end the program.  The low 8 bits of the code reach the shell.
-pub fn exit(code) {
+pub fn exit(code: i32) {
     asm {
         B7031000    // lui t2,0x100
         630E0500    // beqz a0,pass
@@ -194,7 +194,7 @@ pub fn exit(code) {
 }
 
 // panic(message): write "panic: " and the message, and exit with code 1.
-pub fn panic(message) {
+pub fn panic(message: *u8) {
     print("panic: ");
     print(message);
     putc(10);
@@ -206,43 +206,17 @@ pub fn panic(message) {
 // alloc(size): the address of a new piece of memory of that many bytes,
 // for the program to keep.  Nothing gives it back.  The pieces come from
 // the space below the stack; running into the stack is a panic.
-pub fn alloc(size) {
+pub fn alloc(size: u32) -> *u8 {
     let v = __vars();
-    let piece = load32(v + 20);
+    let piece = v[5];
     let next = piece + ((size + 15) & ~15);
-    if size < 0 || __sp() - next < 65536 { panic("out of memory"); }
-    store32(v + 20, next);
-    return piece;
+    if size > 0x7FFFFFFF || (__sp() - next) as i32 < 65536 { panic("out of memory"); }
+    v[5] = next;
+    return piece as *u8;
 }
-fn __sp() {
+fn __sp() -> u32 {
     asm {
         13050100    // mv a0,sp
-    }
-}
-
-// The compiler turns calls of these four into single instructions; the
-// functions are here for `&load8` and the like.
-// load8(address), load32(address): the byte (0 to 255) or word there.
-pub fn load8(address) {
-    asm {
-        03450500    // lbu a0,0(a0)
-    }
-}
-pub fn load32(address) {
-    asm {
-        03250500    // lw a0,0(a0)
-    }
-}
-
-// store8(address, value), store32(address, value): put a byte or word there.
-pub fn store8(address, value) {
-    asm {
-        2300B500    // sb a1,0(a0)
-    }
-}
-pub fn store32(address, value) {
-    asm {
-        2320B500    // sw a1,0(a0)
     }
 }
 
@@ -251,8 +225,9 @@ pub fn store32(address, value) {
 // The CPU has no multiply or divide instructions: `a * b`, `a / b` and
 // `a % b` are calls to these.
 
-// __mul(a, b): add a, shifted, for each bit set in b.
-pub fn __mul(a, b) {
+// __mul(a, b): add a, shifted, for each bit set in b.  It serves the
+// integers without a sign too: the low 32 bits are the same.
+pub fn __mul(a: i32, b: i32) -> i32 {
     asm {
         93030500    // mv t2,a0
         13050000    // li a0,0
@@ -270,18 +245,28 @@ pub fn __mul(a, b) {
 
 // __div(a, b), __rem(a, b): the quotient, rounded toward zero, and the
 // remainder, which has the sign of a.  Dividing by zero is a panic.
-pub fn __div(a, b) {
+pub fn __div(a: i32, b: i32) -> i32 {
     if b == 0 { panic("division by zero"); }
     return __div_bits(a, b);
 }
-pub fn __rem(a, b) {
+pub fn __rem(a: i32, b: i32) -> i32 {
     if b == 0 { panic("division by zero"); }
     return __rem_bits(a, b);
 }
 
+// __udiv(a, b), __urem(a, b): the same for integers without a sign.
+pub fn __udiv(a: u32, b: u32) -> u32 {
+    if b == 0 { panic("division by zero"); }
+    return __udiv_bits(a, b);
+}
+pub fn __urem(a: u32, b: u32) -> u32 {
+    if b == 0 { panic("division by zero"); }
+    return __urem_bits(a, b);
+}
+
 // Long division of the sizes of a and b, a bit at a time: t2 = quotient,
 // t3 = remainder, t5 and t6 keep the signs for the result.
-pub fn __div_bits(a, b) {
+fn __div_bits(a: i32, b: i32) -> i32 {
     asm {
         334FB500    // xor t5,a0,a1
         930F0500    // mv t6,a0
@@ -311,7 +296,7 @@ pub fn __div_bits(a, b) {
         3305A040    // neg a0,a0
     }
 }
-pub fn __rem_bits(a, b) {
+fn __rem_bits(a: i32, b: i32) -> i32 {
     asm {
         334FB500    // xor t5,a0,a1
         930F0500    // mv t6,a0
@@ -342,14 +327,56 @@ pub fn __rem_bits(a, b) {
     }
 }
 
+// The same with no signs to keep.
+fn __udiv_bits(a: u32, b: u32) -> u32 {
+    asm {
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13850300    // mv a0,t2
+    }
+}
+fn __urem_bits(a: u32, b: u32) -> u32 {
+    asm {
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13050E00    // mv a0,t3
+    }
+}
+
 // ---- the runtime's variables -----------------------------------------------
 
-// The startup code leaves tp pointing at a zeroed page for them:
-//     +0   tests passed            +4   tests failed
-//     +8   the running test's name +12  its file
-//     +16  1 once it has failed
-//     +20  where alloc's next piece goes
-pub fn __vars() {
+// The startup code leaves tp pointing at a zeroed page for them, as words:
+//     0   tests passed             1   tests failed
+//     2   the running test's name  3   its file
+//     4   1 once it has failed
+//     5   where alloc's next piece goes
+fn __vars() -> *u32 {
     asm {
         13050200    // mv a0,tp
     }
@@ -357,49 +384,43 @@ pub fn __vars() {
 
 // ---- tests ------------------------------------------------------------------
 
-// A `test "name" { ... }` block, compiled for testing, is an init record:
-// it runs at startup, between these two calls.  A failed assert calls
-// __test_fail with its line and jumps to the end of the block.
-pub fn __test_begin(name, file) {
+// A `#[test] fn name() { ... }`, compiled for testing, is an init record:
+// it runs at startup, between __test_begin and __test_end.  A failed
+// `assert(x, reason)` calls __test_why, and a failed `assert_eq(a, b,
+// reason)` calls __test_differ, with its line and the reason (0: none
+// given); then it jumps to the end of the test.
+pub fn __test_begin(name: *u8, file: *u8) {
     let v = __vars();
-    store32(v + 8, name);
-    store32(v + 12, file);
-    store32(v + 16, 0);
+    v[2] = name as u32;
+    v[3] = file as u32;
+    v[4] = 0;
 }
-pub fn __test_fail(line) {
-    __test_failed(line);
-    putc(10);
-}
-fn __test_failed(line) {
+fn __test_failed(line: i32) {
     let v = __vars();
     print("FAIL  ");
-    print(load32(v + 8));
+    print(v[2] as *u8);
     print(" (");
-    print(load32(v + 12));
+    print(v[3] as *u8);
     putc(58);                                   // :
     print_int(line);
     print(")");
-    store32(v + 16, 1);
+    v[4] = 1;
 }
-
-// A `#[test] fn name() { ... }` is the same, and its asserts may give a
-// reason (0: none): `assert(x, reason)` calls __test_why if x is zero, and
-// `assert_eq(a, b, reason)` calls __test_differ if a is not b.
-pub fn __test_why(line, reason) {
+pub fn __test_why(line: i32, reason: *u8) {
     __test_failed(line);
-    if reason {
+    if reason != 0 as *u8 {
         print(": ");
         print(reason);
     }
     putc(10);
 }
-pub fn __test_differ(line, reason, left, right) {
+pub fn __test_differ(line: i32, reason: *u8, left: i32, right: i32) {
     __test_failed(line);
     print(": ");
     print_int(left);
     print(" is not ");
     print_int(right);
-    if reason {
+    if reason != 0 as *u8 {
         print(": ");
         print(reason);
     }
@@ -407,26 +428,26 @@ pub fn __test_differ(line, reason, left, right) {
 }
 pub fn __test_end() {
     let v = __vars();
-    if load32(v + 16) {
-        store32(v + 4, load32(v + 4) + 1);
+    if v[4] != 0 {
+        v[1] = v[1] + 1;
     } else {
         print("ok    ");
-        print(load32(v + 8));
+        print(v[2] as *u8);
         putc(10);
-        store32(v, load32(v) + 1);
+        v[0] = v[0] + 1;
     }
 }
 
-// __tests_done(): after the last test (lib/rttest.fam).  Exit code 1 if any
-// failed.
+// __tests_done(): after the last test.  Exit code 1 if any failed.
 pub fn __tests_done() {
     let v = __vars();
     putc(10);
-    print_int(load32(v));
+    print_int(v[0] as i32);
     print(" passed, ");
-    print_int(load32(v + 4));
+    print_int(v[1] as i32);
     print(" failed\n");
-    exit(load32(v + 4) != 0);
+    if v[1] != 0 { exit(1); }
+    exit(0);
 }
 
 // ---- traps ------------------------------------------------------------------
@@ -434,17 +455,17 @@ pub fn __tests_done() {
 // __trap(cause, pc, address, guard, ids_guard): the startup code comes here
 // on a trap, with the CPU's cause, the pc and the address it faulted on, and
 // the addresses of the guard pages under the stack and under the return ids.
-pub fn __trap(cause, pc, address, guard, ids_guard) {
+fn __trap(cause: u32, pc: u32, address: u32, guard: u32, ids_guard: u32) {
     print("fam: ");
-    if (cause == 5 || cause == 7) && address - ids_guard >= 0 && address - ids_guard < 4096 {
+    if (cause == 5 || cause == 7) && address - ids_guard < 4096 {
         print("calls nested too deep");
-    } else if (cause == 5 || cause == 7) && address - guard >= 0 && address - guard < 4096 {
+    } else if (cause == 5 || cause == 7) && address - guard < 4096 {
         print("stack overflow");
     } else if cause == 2 {
         print("bad instruction, or a call through a number that is no function's id,");
     } else {
         print("trap ");
-        print_int(cause);
+        print_int(cause as i32);
         print(" on address ");
         print_hex(address);
     }
@@ -456,67 +477,113 @@ pub fn __trap(cause, pc, address, guard, ids_guard) {
 
 // ---- the runtime's own tests ----------------------------------------------
 //
-//     tools/famc --test lib
+//     tools/famc --test lib/rt.fam
 
-test "multiplying" {
-    assert 6 * 7 == 42;
-    assert -6 * 7 == -42;
-    assert -6 * -7 == 42;
-    assert 0 * 99 == 0;
-    assert 1000 * 1000 == 1000000;
-    assert 65536 * 65536 == 0;                  // wraps at 32 bits
-}
-
-test "dividing rounds toward zero" {
-    assert 7 / 2 == 3;
-    assert -7 / 2 == -3;
-    assert 7 / -2 == -3;
-    assert -7 / -2 == 3;
-    assert 1 / 2 == 0;
-    assert 2147483647 / 1 == 2147483647;
-}
-
-test "the remainder has the sign of the left side" {
-    assert 7 % 2 == 1;
-    assert -7 % 2 == -1;
-    assert 7 % -2 == 1;
-    assert -7 % -2 == -1;
-    assert 6 % 3 == 0;
-}
-
-test "dividing and the remainder agree" {
-    let a = -1000;
-    while a <= 1000 {
-        assert a / 7 * 7 + a % 7 == a;
-        a = a + 37;
+#[cfg(test)]
+{
+    #[test]
+    fn multiplying() {
+        assert(6 * 7 == 42);
+        assert(-6 * 7 == -42);
+        assert(-6 * -7 == 42);
+        assert(0 * 99 == 0);
+        assert(1000 * 1000 == 1000000);
+        assert(65536 * 65536 == 0);             // wraps at 32 bits
     }
-}
 
-test "hex digits are 0 to 9 and A to F" {
-    assert __hex_digit(0) == 48;                // 0
-    assert __hex_digit(9) == 57;                // 9
-    assert __hex_digit(10) == 65;               // A
-    assert __hex_digit(15) == 70;               // F
-    assert __hex_digit(0x1234ABCD) == 68;       // D: only the low four bits
-}
+    #[test]
+    fn dividing_rounds_toward_zero() {
+        assert(7 / 2 == 3);
+        assert(-7 / 2 == -3);
+        assert(7 / -2 == -3);
+        assert(-7 / -2 == 3);
+        assert(1 / 2 == 0);
+        assert(2147483647 / 1 == 2147483647);
+    }
 
-test "alloc gives pieces that do not overlap, each on a 16-byte boundary" {
-    let a = alloc(10);
-    let b = alloc(100);
-    let c = alloc(1);
-    assert (a & 15) == 0;
-    assert (b & 15) == 0;
-    assert b - a >= 10;
-    assert c - b >= 100;
-}
+    #[test]
+    fn the_remainder_has_the_sign_of_the_left_side() {
+        assert(7 % 2 == 1);
+        assert(-7 % 2 == -1);
+        assert(7 % -2 == 1);
+        assert(-7 % -2 == -1);
+        assert(6 % 3 == 0);
+    }
 
-test "load and store, a byte and a word" {
-    let p = alloc(8);
-    store32(p, 0x12345678);
-    assert load32(p) == 0x12345678;
-    assert load8(p) == 0x78;                    // the lowest byte first
-    assert load8(p + 3) == 0x12;
-    store8(p + 1, 0xFF);
-    assert load32(p) == 0x1234FF78;
-    assert load8(p + 1) == 255;                 // a byte is 0 to 255
+    #[test]
+    fn dividing_and_the_remainder_agree() {
+        let a = -1000;
+        while a <= 1000 {
+            assert(a / 7 * 7 + a % 7 == a);
+            a = a + 37;
+        }
+    }
+
+    #[test]
+    fn without_a_sign_dividing_and_order_take_all_32_bits() {
+        let big: u32 = 0xFFFFFFFE;
+        assert(big / 2 == 0x7FFFFFFF);
+        assert(big % 7 == 2);
+        assert(big > 1);
+        assert(big >> 31 == 1);
+        let minus: i32 = 0xFFFFFFFE;
+        assert(minus / 2 == -1);
+        assert(minus < 1);
+        assert(minus >> 31 == -1);
+    }
+
+    #[test]
+    fn small_integers_wrap_at_their_size() {
+        let b: u8 = 250;
+        b = b + 10;
+        assert(b == 4);
+        let s: i8 = 127;
+        s = s + 1;
+        assert(s == -128);
+        let w: u16 = 0xFFFF;
+        w = w * 2;
+        assert(w == 0xFFFE);
+        assert((300 as u8) == 44);
+        assert((b as i32) - 5 == -1);
+    }
+
+    #[test]
+    fn hex_digits_are_0_to_9_and_A_to_F() {
+        assert(__hex_digit(0) == 48);           // 0
+        assert(__hex_digit(9) == 57);           // 9
+        assert(__hex_digit(10) == 65);          // A
+        assert(__hex_digit(15) == 70);          // F
+        assert(__hex_digit(0x1234ABCD) == 68);  // D: only the low four bits
+    }
+
+    #[test]
+    fn alloc_gives_pieces_that_do_not_overlap_each_on_a_16_byte_boundary() {
+        let a = alloc(10) as u32;
+        let b = alloc(100) as u32;
+        let c = alloc(1) as u32;
+        assert((a & 15) == 0);
+        assert((b & 15) == 0);
+        assert(b - a >= 10);
+        assert(c - b >= 100);
+    }
+
+    #[test]
+    fn pointers_load_and_store_by_their_type() {
+        let p = alloc(8) as *u32;
+        *p = 0x12345678;
+        assert(*p == 0x12345678);
+        let b = p as *u8;
+        assert(*b == 0x78);                     // the lowest byte first
+        assert(b[3] == 0x12);
+        b[1] = 0xFF;
+        assert(*p == 0x1234FF78);
+        let s = p as *i8;
+        assert(s[1] == -1);
+        p[1] = 7;
+        assert(*(p + 1) == 7);
+        let n = 5;
+        let q = &n;
+        *q = *q + 1;
+        assert(n == 6);
+    }
 }

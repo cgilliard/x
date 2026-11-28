@@ -1,4 +1,4 @@
 // helper is main.fam's own: this file cannot call it
-pub fn f() {
+pub fn f() -> i32 {
     return helper();
 }

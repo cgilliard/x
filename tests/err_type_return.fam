@@ -1,0 +1,4 @@
+fn name() -> *u8 {
+    return 7;
+}
+fn main() -> i32 { return 0; }

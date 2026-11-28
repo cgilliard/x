@@ -1,0 +1,2 @@
+tests/err_type_assign.fam:3: expected i32, found bool
+exit 1

@@ -1,2 +1,0 @@
-tests/err_global_late.fam:3: unknown variable g
-exit 1

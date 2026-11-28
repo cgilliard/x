@@ -1,5 +1,0 @@
-// A function named without ( ) is taken for a global, and is not one.
-import shapes;
-fn main() {
-    return shapes.area;
-}

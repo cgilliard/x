@@ -1,0 +1,11 @@
+use shapes;
+fn area(w: i32, h: i32) -> i32 { return 20; }
+fn main() -> i32 {
+    let f = &shapes::area;
+    let g = &shapes::around;
+    let h = &area;
+    print_int(f(3, 4)); putc(32);
+    print_int(g(3, 4)); putc(32);
+    print_int(h(3, 4)); putc(10);
+    return 0;
+}

@@ -1,2 +1,0 @@
-tests/err_assert.fam:2: assert outside a test
-exit 1

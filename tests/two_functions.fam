@@ -1,6 +1,6 @@
-fn unused() { return 9; }   // a comment
+fn unused() -> i32 { return 9; }   // a comment
 
-fn main()
+fn main() -> i32
 {
     return 5 ;
 }

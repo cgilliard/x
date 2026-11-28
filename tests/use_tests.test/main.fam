@@ -1,0 +1,5 @@
+// The tests of every file that is used run, with this one's, in order.
+use more::thrice;
+pub fn twice(x: i32) -> i32 { return x + x; }
+#[test]
+fn here() { assert_eq(thrice(2), 6); }

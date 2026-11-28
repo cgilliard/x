@@ -1,2 +1,0 @@
-// The same in the root module.
-fn main() { return helper(); }

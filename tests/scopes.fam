@@ -1,5 +1,5 @@
 // A let lasts to the end of its block and may hide an outer one.
-fn main() {
+fn main() -> i32 {
     let x = 1;
     let y = 0;
     if x == 1 {

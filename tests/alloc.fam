@@ -1,17 +1,17 @@
-fn main() {
+fn main() -> i32 {
     let a = alloc(10);
     let b = alloc(100);
-    print_int(b - a); putc(32);         // pieces are 16 bytes apart at least
-    print_int((a & 15) == 0); putc(32);
-    let i = 0;
-    while i < 100 { store8(b + i, i); i = i + 1; }
-    let sum = 0;
+    print_int((b as u32 - a as u32) as i32); putc(32);     // pieces are 16 bytes apart at least
+    print_int((a as u32 & 15 == 0) as i32); putc(32);
+    let i: u32 = 0;
+    while i < 100 { b[i] = i as u8; i = i + 1; }
+    let sum: u32 = 0;
     i = 0;
-    while i < 100 { sum = sum + load8(b + i); i = i + 1; }
-    print_int(sum); putc(32);
-    let big = alloc(4000000);           // 4 MB is fine
-    store32(big + 3999996, 7);
-    print_int(load32(big + 3999996) - 7);
+    while i < 100 { sum = sum + b[i] as u32; i = i + 1; }
+    print_int(sum as i32); putc(32);
+    let big = alloc(4000000) as *u32;   // 4 MB is fine
+    big[999999] = 7;
+    print_int(big[999999] as i32 - 7);
     putc(10);
     return 0;
 }

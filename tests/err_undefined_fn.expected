@@ -1,2 +1,2 @@
-famld: undefined: missing in main
+tests/err_undefined_fn.fam:1: unknown function missing
 exit 1

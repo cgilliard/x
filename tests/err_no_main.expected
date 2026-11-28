@@ -1,0 +1,2 @@
+tests/err_no_main.fam:1: there is no fn main() -> i32
+exit 1

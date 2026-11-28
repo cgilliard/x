@@ -1,0 +1,2 @@
+tests/err_type_unknown.fam:2: unknown type int
+exit 1

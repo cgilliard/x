@@ -1,5 +1,6 @@
 use even::is_even;
-pub fn is_odd(n) {
-    if n == 0 { return 0; }
+pub const START = 0;
+pub fn is_odd(n: i32) -> bool {
+    if n == 0 { return false; }
     return is_even(n - 1);
 }

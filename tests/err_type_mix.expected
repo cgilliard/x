@@ -1,0 +1,2 @@
+tests/err_type_mix.fam:4: u8 and i32 do not go together
+exit 1

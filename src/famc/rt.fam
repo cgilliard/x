@@ -1,0 +1,522 @@
+// lib/rt.fam -- the runtime.  scripts/build.sh compiles it to bin/rt.o, and
+// tools/famc puts it first in every link; only the functions a program uses
+// end up in its binary.
+//
+// It starts with the startup code, which lays out memory and guards against
+// the two stacks running out.  That runs into the init records of the
+// objects after it, the last of which is lib/rtmain.fam (call main and
+// exit) or lib/rttest.fam (report the tests).
+//
+// The machine is QEMU's virt: a UART at 0x10000000 for output and the test
+// finisher at 0x100000 to leave.
+
+// ---- startup ----------------------------------------------------------------
+
+//   image | variables | guard page | return ids | guard page | heap > ... < stack | device tree
+//         tp                       s10          s11 at first                sp at first
+//
+// On entry gp = the image's end (the linker's doing) and a1 = the address of
+// the device tree, which QEMU puts just under the top of RAM.  There is no
+// stack yet, so this is code and nothing else.
+init asm {
+
+    // The runtime's variables are the first whole page after the image, zeroed,
+    // and tp points at them for good (__vars, below, says what is where).
+    B7130000    // lui t2,0x1
+    9383F3FF    // addi t2,t2,-1
+    338D7100    // add s10,gp,t2
+    B7F3FFFF    // lui t2,0xfffff
+    337D7D00    // and s10,s10,t2
+    13020D00    // mv tp,s10
+    B7130000    // lui t2,0x1
+    330D7D00    // add s10,s10,t2        (the return ids start after them)
+    93030200    // mv t2,tp
+    // clear:
+    23A00300    // sw zero,0(t2)
+    93834300    // addi t2,t2,4
+    E3ECA3FF    // bltu t2,s10,clear
+    B7130000    // lui t2,0x1
+    330D7D00    // add s10,s10,t2        (and a guard page after them)
+
+    // The stack starts just under the device tree.  If a1 is not at least 1 MiB
+    // above the image (something other than QEMU started us), assume 1 MiB.
+    370E1000    // lui t3,0x100
+    330ECD01    // add t3,s10,t3
+    63F4C501    // bgeu a1,t3,sized
+    93050E00    // mv a1,t3
+    // sized:
+    13F105FF    // andi sp,a1,-16
+
+    // The return ids get a sixteenth of the space, in whole pages.
+    B383A541    // sub t2,a1,s10
+    93D30301    // srli t2,t2,0x10
+    9393C300    // slli t2,t2,0xc
+    B30D7D00    // add s11,s10,t2
+
+    // What alloc hands out starts above the guard page and grows up, toward the
+    // stack: variable 20 is where the next piece goes.
+    B7130000    // lui t2,0x1
+    B3837D00    // add t2,s11,t2
+    232A7200    // sw t2,20(tp)
+
+    // The page above them is a guard: a locked PMP entry makes any access to it
+    // trap, so a stack that grows down into it is caught.  The trap code finds
+    // the page again through mscratch.
+    73900D34    // csrw mscratch,s11
+    93D32D00    // srli t2,s11,0x2
+    93E3F31F    // ori t2,t2,511         (a 4 KiB region at s11)
+    7390033B    // csrw pmpaddr0,t2
+
+    // So is the page below them: a call stores its return id before anything
+    // else, so a call nested too deep is caught there.  The call sequence has
+    // no check of its own.
+    B7F3FFFF    // lui t2,0xfffff
+    B3037D00    // add t2,s10,t2
+    93D32300    // srli t2,t2,0x2
+    93E3F31F    // ori t2,t2,511         (a 4 KiB region under s10)
+    7390133B    // csrw pmpaddr1,t2
+    B7A30000    // lui t2,0xa
+    93838389    // addi t2,t2,-1896      (both locked, no read, write or execute)
+    7390033A    // csrw pmpcfg0,t2
+
+    // Traps come to the code below.
+    97030000    // auipc t2,0x0
+    93830301    // addi t2,t2,16
+    73905330    // csrw mtvec,t2
+    6F00C003    // j done
+
+    // trap: a call nested too deep (the guard page below the return ids),
+    // a stack overflow (the one above), or any other fault.  Nothing can be
+    // resumed: take a fresh piece of both stacks and report it.
+    //   __trap(cause, pc, address, the stack's guard page, the return ids')
+    73252034    // csrr a0,mcause
+    F3251034    // csrr a1,mepc
+    73263034    // csrr a2,mtval
+    F3260034    // csrr a3,mscratch
+    B7230000    // lui t2,0x2
+    33817600    // add sp,a3,t2          (the stack's lowest page)
+    B7F3FFFF    // lui t2,0xfffff
+    33077D00    // add a4,s10,t2
+    930D0D10    // addi s11,s10,256      (the lowest 64 return ids)
+    @__trap
+    6F000000    // j .
+    // done:
+}
+
+// ---- output ---------------------------------------------------------------
+
+// putc(c): write one byte to the console.
+pub fn putc(c) {
+    asm {
+        B7030010    // lui t2,0x10000
+        // wait:
+        03CE5300    // lbu t3,5(t2)
+        137E0E02    // andi t3,t3,32
+        E30C0EFE    // beqz t3,wait
+        2380A300    // sb a0,0(t2)
+    }
+}
+
+// print(s): write a string (bytes up to a zero byte).
+pub fn print(s) {
+    while load8(s) != 0 {
+        putc(load8(s));
+        s = s + 1;
+    }
+}
+
+// print_int(n): write a number in decimal.
+pub fn print_int(n) {
+    if n < 0 {
+        putc(45);                               // -
+        if n == 0x80000000 {                    // has no positive
+            print("2147483648");
+            return;
+        }
+        n = -n;
+    }
+    if n >= 10 { print_int(n / 10); }
+    putc(48 + n % 10);
+}
+
+// print_hex(n): write a number as 0x and eight hex digits.
+pub fn print_hex(n) {
+    print("0x");
+    let shift = 28;
+    while shift >= 0 {
+        putc(__hex_digit(n >> shift));
+        shift = shift - 4;
+    }
+}
+
+// __hex_digit(n): the character for the low four bits of n: 0-9, A-F.
+fn __hex_digit(n) {
+    n = n & 15;
+    if n < 10 { return 48 + n; }
+    return 55 + n;
+}
+
+// ---- input ----------------------------------------------------------------
+
+// getc(): the next byte from the console.  Waits until there is one.
+pub fn getc() {
+    asm {
+        B7030010    // lui t2,0x10000
+        // wait:
+        03CE5300    // lbu t3,5(t2)
+        137E1E00    // andi t3,t3,1
+        E30C0EFE    // beqz t3,wait
+        03C50300    // lbu a0,0(t2)
+    }
+}
+
+// ---- leaving --------------------------------------------------------------
+
+// exit(code): end the program.  The low 8 bits of the code reach the shell.
+pub fn exit(code) {
+    asm {
+        B7031000    // lui t2,0x100
+        630E0500    // beqz a0,pass
+        13150501    // slli a0,a0,0x10
+        373E0000    // lui t3,0x3
+        130E3E33    // addi t3,t3,819
+        3365C501    // or a0,a0,t3
+        23A0A300    // sw a0,0(t2)
+        // fail:
+        6F000000    // j fail
+        // pass:
+        375E0000    // lui t3,0x5
+        130E5E55    // addi t3,t3,1365
+        23A0C301    // sw t3,0(t2)
+        // stop:
+        6F000000    // j stop
+    }
+}
+
+// panic(message): write "panic: " and the message, and exit with code 1.
+pub fn panic(message) {
+    print("panic: ");
+    print(message);
+    putc(10);
+    exit(1);
+}
+
+// ---- memory ---------------------------------------------------------------
+
+// alloc(size): the address of a new piece of memory of that many bytes,
+// for the program to keep.  Nothing gives it back.  The pieces come from
+// the space below the stack; running into the stack is a panic.
+pub fn alloc(size) {
+    let v = __vars();
+    let piece = load32(v + 20);
+    let next = piece + ((size + 15) & ~15);
+    if size < 0 || __sp() - next < 65536 { panic("out of memory"); }
+    store32(v + 20, next);
+    return piece;
+}
+fn __sp() {
+    asm {
+        13050100    // mv a0,sp
+    }
+}
+
+// The compiler turns calls of these four into single instructions; the
+// functions are here for `&load8` and the like.
+// load8(address), load32(address): the byte (0 to 255) or word there.
+pub fn load8(address) {
+    asm {
+        03450500    // lbu a0,0(a0)
+    }
+}
+pub fn load32(address) {
+    asm {
+        03250500    // lw a0,0(a0)
+    }
+}
+
+// store8(address, value), store32(address, value): put a byte or word there.
+pub fn store8(address, value) {
+    asm {
+        2300B500    // sb a1,0(a0)
+    }
+}
+pub fn store32(address, value) {
+    asm {
+        2320B500    // sw a1,0(a0)
+    }
+}
+
+// ---- what the compiler calls ----------------------------------------------
+
+// The CPU has no multiply or divide instructions: `a * b`, `a / b` and
+// `a % b` are calls to these.
+
+// __mul(a, b): add a, shifted, for each bit set in b.
+pub fn __mul(a, b) {
+    asm {
+        93030500    // mv t2,a0
+        13050000    // li a0,0
+        // next:
+        638E0500    // beqz a1,done
+        13FE1500    // andi t3,a1,1
+        63040E00    // beqz t3,skip
+        33057500    // add a0,a0,t2
+        // skip:
+        93931300    // slli t2,t2,0x1
+        93D51500    // srli a1,a1,0x1
+        6FF09FFE    // j next
+    }
+}
+
+// __div(a, b), __rem(a, b): the quotient, rounded toward zero, and the
+// remainder, which has the sign of a.  Dividing by zero is a panic.
+pub fn __div(a, b) {
+    if b == 0 { panic("division by zero"); }
+    return __div_bits(a, b);
+}
+pub fn __rem(a, b) {
+    if b == 0 { panic("division by zero"); }
+    return __rem_bits(a, b);
+}
+
+// Long division of the sizes of a and b, a bit at a time: t2 = quotient,
+// t3 = remainder, t5 and t6 keep the signs for the result.
+pub fn __div_bits(a, b) {
+    asm {
+        334FB500    // xor t5,a0,a1
+        930F0500    // mv t6,a0
+        63540500    // bgez a0,apos
+        3305A040    // neg a0,a0
+        // apos:
+        63D40500    // bgez a1,bpos
+        B305B040    // neg a1,a1
+        // bpos:
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13850300    // mv a0,t2
+        63540F00    // bgez t5,done
+        3305A040    // neg a0,a0
+    }
+}
+pub fn __rem_bits(a, b) {
+    asm {
+        334FB500    // xor t5,a0,a1
+        930F0500    // mv t6,a0
+        63540500    // bgez a0,apos
+        3305A040    // neg a0,a0
+        // apos:
+        63D40500    // bgez a1,bpos
+        B305B040    // neg a1,a1
+        // bpos:
+        93030000    // li t2,0
+        130E0000    // li t3,0
+        930E0002    // li t4,32
+        // next:
+        131E1E00    // slli t3,t3,0x1
+        1356F501    // srli a2,a0,0x1f
+        336ECE00    // or t3,t3,a2
+        13151500    // slli a0,a0,0x1
+        93931300    // slli t2,t2,0x1
+        6366BE00    // bltu t3,a1,small
+        330EBE40    // sub t3,t3,a1
+        93E31300    // ori t2,t2,1
+        // small:
+        938EFEFF    // addi t4,t4,-1
+        E39E0EFC    // bnez t4,next
+        13050E00    // mv a0,t3
+        63D40F00    // bgez t6,done
+        3305A040    // neg a0,a0
+    }
+}
+
+// ---- the runtime's variables -----------------------------------------------
+
+// The startup code leaves tp pointing at a zeroed page for them:
+//     +0   tests passed            +4   tests failed
+//     +8   the running test's name +12  its file
+//     +16  1 once it has failed
+//     +20  where alloc's next piece goes
+pub fn __vars() {
+    asm {
+        13050200    // mv a0,tp
+    }
+}
+
+// ---- tests ------------------------------------------------------------------
+
+// A `test "name" { ... }` block, compiled for testing, is an init record:
+// it runs at startup, between these two calls.  A failed assert calls
+// __test_fail with its line and jumps to the end of the block.
+pub fn __test_begin(name, file) {
+    let v = __vars();
+    store32(v + 8, name);
+    store32(v + 12, file);
+    store32(v + 16, 0);
+}
+pub fn __test_fail(line) {
+    __test_failed(line);
+    putc(10);
+}
+fn __test_failed(line) {
+    let v = __vars();
+    print("FAIL  ");
+    print(load32(v + 8));
+    print(" (");
+    print(load32(v + 12));
+    putc(58);                                   // :
+    print_int(line);
+    print(")");
+    store32(v + 16, 1);
+}
+
+// A `#[test] fn name() { ... }` is the same, and its asserts may give a
+// reason (0: none): `assert(x, reason)` calls __test_why if x is zero, and
+// `assert_eq(a, b, reason)` calls __test_differ if a is not b.
+pub fn __test_why(line, reason) {
+    __test_failed(line);
+    if reason {
+        print(": ");
+        print(reason);
+    }
+    putc(10);
+}
+pub fn __test_differ(line, reason, left, right) {
+    __test_failed(line);
+    print(": ");
+    print_int(left);
+    print(" is not ");
+    print_int(right);
+    if reason {
+        print(": ");
+        print(reason);
+    }
+    putc(10);
+}
+pub fn __test_end() {
+    let v = __vars();
+    if load32(v + 16) {
+        store32(v + 4, load32(v + 4) + 1);
+    } else {
+        print("ok    ");
+        print(load32(v + 8));
+        putc(10);
+        store32(v, load32(v) + 1);
+    }
+}
+
+// __tests_done(): after the last test (lib/rttest.fam).  Exit code 1 if any
+// failed.
+pub fn __tests_done() {
+    let v = __vars();
+    putc(10);
+    print_int(load32(v));
+    print(" passed, ");
+    print_int(load32(v + 4));
+    print(" failed\n");
+    exit(load32(v + 4) != 0);
+}
+
+// ---- traps ------------------------------------------------------------------
+
+// __trap(cause, pc, address, guard, ids_guard): the startup code comes here
+// on a trap, with the CPU's cause, the pc and the address it faulted on, and
+// the addresses of the guard pages under the stack and under the return ids.
+pub fn __trap(cause, pc, address, guard, ids_guard) {
+    print("fam: ");
+    if (cause == 5 || cause == 7) && address - ids_guard >= 0 && address - ids_guard < 4096 {
+        print("calls nested too deep");
+    } else if (cause == 5 || cause == 7) && address - guard >= 0 && address - guard < 4096 {
+        print("stack overflow");
+    } else if cause == 2 {
+        print("bad instruction, or a call through a number that is no function's id,");
+    } else {
+        print("trap ");
+        print_int(cause);
+        print(" on address ");
+        print_hex(address);
+    }
+    print(" at ");
+    print_hex(pc);
+    putc(10);
+    exit(1);
+}
+
+// ---- the runtime's own tests ----------------------------------------------
+//
+//     tools/famc --test lib
+
+test "multiplying" {
+    assert 6 * 7 == 42;
+    assert -6 * 7 == -42;
+    assert -6 * -7 == 42;
+    assert 0 * 99 == 0;
+    assert 1000 * 1000 == 1000000;
+    assert 65536 * 65536 == 0;                  // wraps at 32 bits
+}
+
+test "dividing rounds toward zero" {
+    assert 7 / 2 == 3;
+    assert -7 / 2 == -3;
+    assert 7 / -2 == -3;
+    assert -7 / -2 == 3;
+    assert 1 / 2 == 0;
+    assert 2147483647 / 1 == 2147483647;
+}
+
+test "the remainder has the sign of the left side" {
+    assert 7 % 2 == 1;
+    assert -7 % 2 == -1;
+    assert 7 % -2 == 1;
+    assert -7 % -2 == -1;
+    assert 6 % 3 == 0;
+}
+
+test "dividing and the remainder agree" {
+    let a = -1000;
+    while a <= 1000 {
+        assert a / 7 * 7 + a % 7 == a;
+        a = a + 37;
+    }
+}
+
+test "hex digits are 0 to 9 and A to F" {
+    assert __hex_digit(0) == 48;                // 0
+    assert __hex_digit(9) == 57;                // 9
+    assert __hex_digit(10) == 65;               // A
+    assert __hex_digit(15) == 70;               // F
+    assert __hex_digit(0x1234ABCD) == 68;       // D: only the low four bits
+}
+
+test "alloc gives pieces that do not overlap, each on a 16-byte boundary" {
+    let a = alloc(10);
+    let b = alloc(100);
+    let c = alloc(1);
+    assert (a & 15) == 0;
+    assert (b & 15) == 0;
+    assert b - a >= 10;
+    assert c - b >= 100;
+}
+
+test "load and store, a byte and a word" {
+    let p = alloc(8);
+    store32(p, 0x12345678);
+    assert load32(p) == 0x12345678;
+    assert load8(p) == 0x78;                    // the lowest byte first
+    assert load8(p + 3) == 0x12;
+    store8(p + 1, 0xFF);
+    assert load32(p) == 0x1234FF78;
+    assert load8(p + 1) == 255;                 // a byte is 0 to 255
+}

@@ -1,0 +1,2 @@
+tests/err_type_arg.fam:2: expected *u8, found a number
+exit 1

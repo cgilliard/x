@@ -7,9 +7,9 @@ use logging;
 use net::packet;
 use net::packet::size;
 
-fn twice(x) { return x + x; }
+fn twice(x: i32) -> i32 { return x + x; }
 
-fn main() {
+fn main() -> i32 {
     log("limit", LIMIT);
     log("level", level);
     level = level + 1;

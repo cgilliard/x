@@ -1,2 +1,0 @@
-tests/err_module_late.fam:2: module must come first, and once
-exit 1

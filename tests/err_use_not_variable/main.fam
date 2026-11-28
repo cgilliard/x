@@ -1,0 +1,5 @@
+// A function named without ( ) is not a value: its id is &shapes::area.
+use shapes;
+fn main() -> i32 {
+    return shapes::area;
+}

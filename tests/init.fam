@@ -1,11 +1,11 @@
 // init blocks run at startup, before main, in the order written.
 init { print("first "); }
-fn main() {
+fn main() -> i32 {
     print("main\n");
     return 0;
 }
 init {
     let word = "second ";
-    if load8(word) == 115 { print(word); return; }
+    if *word == 115 { print(word); return; }
     print("never ");
 }

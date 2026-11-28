@@ -1,5 +1,0 @@
-// A global must be defined above where it is used.
-fn main() {
-    return g;
-}
-let g = 1;

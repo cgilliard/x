@@ -1,20 +1,22 @@
 // Enough functions for the dispatcher to branch every way, a call through
 // an id with stack arguments, and a function that is only ever called
 // through its id.
-fn f1() { return 1; }
-fn f2() { return 2; }
-fn f3() { return 3; }
-fn f4() { return 4; }
-fn f5() { return 5; }
-fn f6() { return 6; }
-fn f7() { return 7; }
-fn show(f) { print_int(f()); putc(32); }
-fn sum(a, b, c, d, e, f, g, h, i, j) { return a + j + i; }
-fn total(f, n) {
+fn f1() -> i32 { return 1; }
+fn f2() -> i32 { return 2; }
+fn f3() -> i32 { return 3; }
+fn f4() -> i32 { return 4; }
+fn f5() -> i32 { return 5; }
+fn f6() -> i32 { return 6; }
+fn f7() -> i32 { return 7; }
+fn show(f: fn() -> i32) { print_int(f()); putc(32); }
+fn sum(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+    return a + j + i;
+}
+fn total(f: fn() -> i32, n: i32) -> i32 {
     if n == 0 { return 0; }
     return f() + total(f, n - 1);
 }
-fn main() {
+fn main() -> i32 {
     show(&f1); show(&f2); show(&f3); show(&f4); show(&f5); show(&f6); show(&f7);
     print("| ");
     print_int(total(&f7, 4));

@@ -55,6 +55,7 @@ module emit;
 
 import lex;
 import obj;
+import types;
 
 // ---- a function's frame ----------------------------------------------------
 
@@ -64,10 +65,11 @@ let vout = 0;           // the most stack arguments a call in it passes
 let vpro = 0;           // where its first three instructions are
 pub let vtest = 0;      // 1 while compiling a test block
 
-// The locals in scope, 12 bytes each: name, length, slot.
+// The locals in scope, 16 bytes each: name, length, slot, type.
 let lbase = 0;
 let ltop = 0;
 let llim = 0;
+pub let ltype = 0;      // the type of the local that look found last
 
 // The blocks that are open, 12 bytes each: the locals and the slots in use
 // when it opened, and its number.  Each function, and each block as it
@@ -124,23 +126,28 @@ pub fn outgoing(n) {
     if n - 8 > vout { vout = n - 8; }
 }
 
-// local(name, len, s): a name for a slot, from here to the end of its block.
-pub fn local(name, len, s) {
-    if ltop + 12 > llim { lex.ebig(); }
+// local(name, len, s, t): a name for a slot, from here to the end of its
+// block, and the type of what it holds.
+pub fn local(name, len, s, t) {
+    if ltop + 16 > llim { lex.ebig(); }
     store32(ltop, name);
     store32(ltop + 4, len);
     store32(ltop + 8, s);
-    ltop = ltop + 12;
+    store32(ltop + 12, t);
+    ltop = ltop + 16;
 }
 
 // look(name, len): the slot of the local of a name, the latest if several
-// (-1: none).
+// (-1: none), and its type in ltype.
 pub fn look(name, len) {
     let p = ltop;
     while p > lbase {
-        p = p - 12;
+        p = p - 16;
         if load32(p + 4) == len {
-            if lex.same(load32(p), name, len) { return load32(p + 8); }
+            if lex.same(load32(p), name, len) {
+                ltype = load32(p + 12);
+                return load32(p + 8);
+            }
         }
     }
     return -1;
@@ -195,6 +202,57 @@ pub fn sw(s, register) {
 pub fn lw(s, register) {
     let off = 0 - ((s << 2) + 8);
     obj.word((register << 7) | (off << 20) | 0x00042003);
+}
+
+// ---- values by their type --------------------------------------------------
+
+// A value in a register is 32 bits whatever its type: a u8 has its upper 24
+// bits zero, an i8 has them all as its sign bit.  In memory it takes the
+// bytes of its type.
+
+// loading(t): the bits that say how much a load takes, and how: funct3.
+fn loading(t) {
+    if t == 1 { return 0x0000; }                // i8: lb
+    if t == 2 { return 0x1000; }                // i16: lh
+    if t == 4 || t == 7 { return 0x4000; }      // u8, bool: lbu
+    if t == 5 { return 0x5000; }                // u16: lhu
+    return 0x2000;                              // lw
+}
+
+// get(s, t): append the loading of a local of type t into a0.
+pub fn get(s, t) {
+    let off = 0 - ((s << 2) + 8);
+    obj.word((10 << 7) | (off << 20) | 0x00040003 | loading(t));
+}
+
+// address(s): append the loading of a local's address into a0.
+pub fn address(s) {
+    let off = 0 - ((s << 2) + 8);
+    obj.word((off << 20) | 0x00040513);         // addi a0, s0, off
+}
+
+// fetch(t): append the loading of the value of type t that a0 points at:
+// l? a0, 0(a0).
+pub fn fetch(t) {
+    obj.word(0x00050503 | loading(t));
+}
+
+// put(t): append the storing of a0, a value of type t, where a1 points:
+// s? a0, 0(a1).
+pub fn put(t) {
+    let n = types.size(t);
+    if n == 1 { obj.word(0x00A58023); return; }
+    if n == 2 { obj.word(0x00A59023); return; }
+    obj.word(0x00A5A023);
+}
+
+// fit(t): append what makes the 32 bits in a0 a value of type t again,
+// after arithmetic that may have run over.
+pub fn fit(t) {
+    if t == 4 { obj.word(0x0FF57513); }                             // andi a0,a0,255
+    if t == 5 { obj.word(0x01051513); obj.word(0x01055513); }       // slli 16; srli 16
+    if t == 1 { obj.word(0x01851513); obj.word(0x41855513); }       // slli 24; srai 24
+    if t == 2 { obj.word(0x01051513); obj.word(0x41055513); }       // slli 16; srai 16
 }
 
 // swsp(register, off): append `sw <register>, <off>(sp)`, off not negative.

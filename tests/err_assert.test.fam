@@ -1,3 +1,4 @@
-test "broken" {
-    assert 1
+#[test]
+fn broken() {
+    assert(true)
 }

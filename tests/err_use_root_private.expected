@@ -1,2 +1,2 @@
-tests/err_use_root_private/other.fam:3: private: helper
+tests/err_use_root_private/other.fam:3: unknown function helper
 exit 1

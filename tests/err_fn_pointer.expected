@@ -1,2 +1,2 @@
-famld: undefined: missing in __call
+tests/err_fn_pointer.fam:2: unknown variable missing
 exit 1

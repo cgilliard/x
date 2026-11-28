@@ -1,18 +1,18 @@
 // A cycle of three, entered at each of its members, and a second cycle
 // inside the first.
-fn a(n) {
+fn a(n: i32) -> i32 {
     if n <= 0 { return 0; }
     return b(n - 1) + 1;
 }
-fn b(n) {
+fn b(n: i32) -> i32 {
     if n <= 0 { return 0; }
     if n == 5 { return a(n - 1) + 1; }
     return c(n - 1) + 1;
 }
-fn c(n) {
+fn c(n: i32) -> i32 {
     if n <= 0 { return 0; }
     return a(n - 1) + 1;
 }
-fn main() {
+fn main() -> i32 {
     return c(7) + b(10) + a(23);
 }

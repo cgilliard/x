@@ -1,0 +1,27 @@
+// Pointers load and store what they point at, by its type.
+fn first(p: *u32) -> u32 { return *p; }
+fn set(p: *u8, v: u8) { *p = v; }
+fn main() -> i32 {
+    let p = alloc(8) as *u32;
+    *p = 0x41414141;
+    let b = p as *u8;
+    b[1] = 66;
+    print_int(*b as i32); putc(32);
+    print_int(b[1] as i32); putc(32);
+    let f = &first;
+    b[1] = 65;
+    print_int(f(p) as i32); putc(32);
+    let g = &set;
+    g(b, 9);
+    print_int(b[0] as i32); putc(32);
+    let n = 5;                          // the address of a local
+    let q = &n;
+    *q = *q * 2;
+    print_int(n); putc(32);
+    let w = (p + 1) as *i16;            // p + 1: one u32 on
+    *w = -2;
+    print_int(*w as i32); putc(32);
+    print_int(p[1] as i32);
+    putc(10);
+    return 0;
+}

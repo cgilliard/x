@@ -1,2 +1,2 @@
 // 4103 does not fit one addi; the exit code is its low byte.
-fn main() { return 4103; }
+fn main() -> i32 { return 4103; }

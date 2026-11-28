@@ -1,5 +1,5 @@
-fn show(n) { print_int(n); putc(32); }
-fn main() {
+fn show(n: i32) { print_int(n); putc(32); }
+fn main() -> i32 {
     show(0); show(7); show(42); show(-1); show(1000000);
     show(2147483647); show(0x80000000);
     print_hex(0); putc(32); print_hex(0xdeadbeef); putc(10);

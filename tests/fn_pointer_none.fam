@@ -1,5 +1,7 @@
-// The same when no function has an id at all.
-fn main() {
-    let bad = 0;
+// The same when no function has an id at all: memory that alloc gives is
+// zeros, and zero is never a function's id.
+fn main() -> i32 {
+    let slot = alloc(4) as *fn() -> i32;
+    let bad = *slot;
     return bad();
 }

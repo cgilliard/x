@@ -1,0 +1,187 @@
+// types -- what a value can be.
+//
+// Part of the fam compiler (src/famc/): see main.fam.
+//
+// A type is a number.  The simple ones:
+//     1 i8    2 i16   3 i32   4 u8    5 u16   6 u32   7 bool
+//     8 void     what a function without `->` gives: nothing
+//     9          a number written in the source, which has not been told
+//                yet what it is: it becomes what stands beside it
+// The others are the address of a record here, and there is one record for
+// each, so two types are the same if their numbers are:
+//     pointer    1, the type pointed at
+//     function   2, the type it gives, how many parameters, their types
+
+module types;
+
+import lex;
+
+let tb = 0;
+let tn = 0;
+let tlim = 0;
+
+pub fn setup() {
+    tb = alloc(0x100000);
+    tn = tb;
+    tlim = tb + 0x100000;
+}
+
+pub fn i32() { return 3; }
+pub fn u8() { return 4; }
+pub fn u32() { return 6; }
+pub fn bool() { return 7; }
+pub fn void() { return 8; }
+pub fn literal() { return 9; }
+
+// simple(t): is it one of the simple ones?
+fn simple(t) {
+    return t >= 1 && t <= 9;
+}
+
+// is_int(t): is it one of the six kinds of integer?
+pub fn is_int(t) {
+    return t >= 1 && t <= 6;
+}
+
+// signed(t): is it an integer with a sign?  (A number not yet told what it
+// is counts as one.)
+pub fn signed(t) {
+    return (t >= 1 && t <= 3) || t == 9;
+}
+
+pub fn is_ptr(t) {
+    if simple(t) { return 0; }
+    return load32(t) == 1;
+}
+
+pub fn is_fn(t) {
+    if simple(t) { return 0; }
+    return load32(t) == 2;
+}
+
+// size(t): how many bytes a value of the type takes in memory.
+pub fn size(t) {
+    if t == 1 || t == 4 || t == 7 { return 1; }
+    if t == 2 || t == 5 { return 2; }
+    if t == 8 { return 0; }
+    return 4;
+}
+
+// ptr(t): the type `*t`.
+pub fn ptr(t) {
+    let p = tb;
+    while p < tn {
+        if load32(p) == 1 {
+            if load32(p + 4) == t { return p; }
+            p = p + 8;
+        } else {
+            p = p + 12 + (load32(p + 8) << 2);
+        }
+    }
+    if tn + 8 > tlim { lex.ebig(); }
+    store32(tn, 1);
+    store32(tn + 4, t);
+    tn = tn + 8;
+    return tn - 8;
+}
+
+// target(t): what a pointer type points at.
+pub fn target(t) {
+    return load32(t + 4);
+}
+
+// func(gives, n, params): the type of a function: what it gives, and its n
+// parameters' types, which are the n words at params.
+pub fn func(gives, n, params) {
+    let p = tb;
+    while p < tn {
+        if load32(p) == 1 {
+            p = p + 8;
+        } else {
+            let same = load32(p + 4) == gives && load32(p + 8) == n;
+            let i = 0;
+            while same && i < n {
+                same = load32(p + 12 + (i << 2)) == load32(params + (i << 2));
+                i = i + 1;
+            }
+            if same { return p; }
+            p = p + 12 + (load32(p + 8) << 2);
+        }
+    }
+    if tn + 12 + (n << 2) > tlim { lex.ebig(); }
+    p = tn;
+    store32(p, 2);
+    store32(p + 4, gives);
+    store32(p + 8, n);
+    let i = 0;
+    while i < n {
+        store32(p + 12 + (i << 2), load32(params + (i << 2)));
+        i = i + 1;
+    }
+    tn = p + 12 + (n << 2);
+    return p;
+}
+
+// gives(t), count(t), param(t, i): of a function type: what it gives, how
+// many parameters it has, and the type of parameter i.
+pub fn gives(t) {
+    return load32(t + 4);
+}
+pub fn count(t) {
+    return load32(t + 8);
+}
+pub fn param(t, i) {
+    return load32(t + 12 + (i << 2));
+}
+
+// named(name, len): the simple type of that name (0: there is none).
+pub fn named(name, len) {
+    if lex.zeq(name, len, "i8") { return 1; }
+    if lex.zeq(name, len, "i16") { return 2; }
+    if lex.zeq(name, len, "i32") { return 3; }
+    if lex.zeq(name, len, "u8") { return 4; }
+    if lex.zeq(name, len, "u16") { return 5; }
+    if lex.zeq(name, len, "u32") { return 6; }
+    if lex.zeq(name, len, "bool") { return 7; }
+    return 0;
+}
+
+// fits(value, t): can an integer type hold a number written in the source?
+// (0xFFFFFFFF is taken as -1 where that is wanted.)
+pub fn fits(value, t) {
+    if t == 1 { return value >= -128 && value <= 127; }
+    if t == 2 { return value >= -32768 && value <= 32767; }
+    if t == 4 { return (value & 0xFFFFFF00) == 0; }
+    if t == 5 { return (value & 0xFFFF0000) == 0; }
+    return 1;
+}
+
+// show(t): write a type as it is written in the source.
+pub fn show(t) {
+    if t == 1 { print("i8"); return; }
+    if t == 2 { print("i16"); return; }
+    if t == 3 { print("i32"); return; }
+    if t == 4 { print("u8"); return; }
+    if t == 5 { print("u16"); return; }
+    if t == 6 { print("u32"); return; }
+    if t == 7 { print("bool"); return; }
+    if t == 8 { print("nothing"); return; }
+    if t == 9 { print("a number"); return; }
+    if load32(t) == 1 {
+        putc(42);
+        show(load32(t + 4));
+        return;
+    }
+    print("fn(");
+    let i = 0;
+    while i < load32(t + 8) {
+        if i { print(", "); }
+        show(load32(t + 12 + (i << 2)));
+        i = i + 1;
+    }
+    putc(41);
+    if load32(t + 4) != 8 {
+        print(" -> ");
+        show(load32(t + 4));
+    }
+}

@@ -1,9 +1,9 @@
 // Each line adds 7 if its expression is right.
-fn check(got, want) {
+fn check(got: i32, want: i32) -> i32 {
     if got == want { return 7; }
     return 0;
 }
-fn main() {
+fn main() -> i32 {
     let n = 0;
     n = n + check(2 + 3 - 1, 4);
     n = n + check(10 - 2 - 3, 5);               // left to right

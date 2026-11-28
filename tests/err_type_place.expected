@@ -1,0 +1,2 @@
+tests/err_type_place.fam:3: cannot assign to that
+exit 1

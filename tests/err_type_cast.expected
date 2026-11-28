@@ -1,0 +1,2 @@
+tests/err_type_cast.fam:3: cannot make bool of i32
+exit 1

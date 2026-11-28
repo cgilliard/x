@@ -1,4 +1,4 @@
-fn add(a, b) { return a + b; }
+fn add(a: i32, b: i32) -> i32 { return a + b; }
 
 #[test]
 fn alone() {
@@ -10,9 +10,14 @@ fn alone() {
     const BIG = 1000;
     let calls = 0;
 
-    fn helper(n) {
+    fn helper(n: i32) -> i32 {
         calls = calls + 1;
         return n + BIG;
+    }
+
+    fn why() -> *u8 {
+        calls = calls + 1;
+        return "never asked";
     }
 
     #[test]
@@ -25,7 +30,7 @@ fn alone() {
     #[test]
     fn fails_with_a_reason() {
         assert(add(2, 2) == 5, "two and two are not five");
-        assert(0, "not reached");
+        assert(false, "not reached");
     }
 
     #[test]
@@ -45,18 +50,29 @@ fn alone() {
     }
 
     #[test]
+    fn bytes_differ() {
+        let b: u8 = 200;
+        assert_eq(b, 201);
+    }
+
+    #[test]
     fn the_reason_is_only_computed_on_failure() {
-        assert(1, helper(0));
+        assert(true, why());
         assert_eq(calls, 2);
+    }
+
+    #[test]
+    fn returns_early() {
+        if add(1, 1) == 2 { return; }
+        assert(false);
     }
 }
 
 #[cfg(test)]
-fn unused() { return 1; }
+fn unused() -> i32 { return 1; }
 
 #[cfg(other)]
 fn not_compiled() { this is not fam at all; }
 
-test "the old kind still works" {
-    assert add(1, 1) == 2;
-}
+// main is not called in a test build.
+fn main() -> i32 { return 9; }

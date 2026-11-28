@@ -1,0 +1,2 @@
+tests/err_use_private_global/main.fam:4: private: calls
+exit 1

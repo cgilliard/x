@@ -1,1 +1,1 @@
-fn main() { return missing(1); }
+fn main() -> i32 { return missing(1); }

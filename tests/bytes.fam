@@ -1,17 +1,17 @@
-fn main() {
+fn main() -> i32 {
     let d = bytes { 13 00 006FC0 00 0000
                     78563412 };         // any grouping; two digits a byte
-    print_int(load8(d)); putc(32);
-    print_int(load8(d + 1)); putc(32);
-    print_int(load8(d + 3)); putc(32);
-    print_int(load8(d + 4));
+    print_int(d[0] as i32); putc(32);
+    print_int(d[1] as i32); putc(32);
+    print_int(d[3] as i32); putc(32);
+    print_int(d[4] as i32);
     print(" | ");
-    print_int(load32(d + 8));
+    print_int((d as *i32)[2]);
     print(" | ");
     print(bytes { 61 62 63 00 });
     print(" | ");
     let one = bytes { 07 };             // padded with zero bytes to a word
-    print_int(load32(one));
+    print_int(*(one as *i32));
     putc(10);
     return 0;
 }

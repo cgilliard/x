@@ -9,14 +9,14 @@
 }
 
 #[test]
-fn alone() { assert(0); }
+fn alone() { assert(false); }
 
 #[cfg(test)]
 let only_for_tests = 1;
 
 #[cfg(test)] #[test] fn both() { }
 
-fn main() {
+fn main() -> i32 {
     print("no tests here\n");
     return 0;
 }

@@ -1,2 +1,0 @@
-tests/err_twice_module.fam:3: defined twice: m.f
-exit 1

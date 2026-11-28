@@ -1,0 +1,2 @@
+tests/err_type_fit.fam:2: the number does not fit u8
+exit 1

@@ -1,2 +1,0 @@
-fn f() { return 1; }
-module late;

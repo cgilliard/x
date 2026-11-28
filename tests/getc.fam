@@ -1,5 +1,5 @@
 // Read a line and write it in capitals.
-fn main() {
+fn main() -> i32 {
     let c = getc();
     while c != 10 {
         putc(c - 32);

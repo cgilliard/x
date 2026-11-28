@@ -1,1 +1,1 @@
-fn main() { return 4294967296; }
+fn main() -> i32 { return 4294967296; }

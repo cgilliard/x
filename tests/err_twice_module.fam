@@ -1,3 +1,0 @@
-module m;
-fn f() { return 1; }
-pub fn f() { return 2; }

@@ -1,5 +1,0 @@
-// A global that is not pub cannot be named from another module.
-import counter;
-fn main() {
-    return counter.calls;
-}

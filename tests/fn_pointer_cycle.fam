@@ -1,7 +1,8 @@
 // A function that calls through an id and has its own id taken: it and the
 // dispatcher call each other.
-fn count(f, n) {
+fn step(n: i32) -> i32 {
     if n == 0 { return 0; }
-    return n + f(f, n - 1);
+    let f = &step;
+    return n + f(n - 1);
 }
-fn main() { return count(&count, 5); }
+fn main() -> i32 { return step(5); }

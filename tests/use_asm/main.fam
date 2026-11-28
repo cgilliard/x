@@ -1,0 +1,25 @@
+// In asm, @f is a call of f and &f loads f's id into a0.
+use shapes;
+fn five() -> i32 { return 5; }
+fn ten() -> i32 {
+    asm {
+        @five           // a0 = 5
+        93040500        // mv s1, a0
+        @five
+        33059500        // add a0, a0, s1
+    }
+}
+fn id_of_five() -> fn() -> i32 {
+    asm { &five }
+}
+fn area() -> i32 {
+    asm {
+        13052000        // li a0, 2
+        93051000        // li a1, 1
+        @shapes::area   // another file's
+    }
+}
+fn main() -> i32 {
+    let f = id_of_five();
+    return ten() + area() + f() - 5;
+}

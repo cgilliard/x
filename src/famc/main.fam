@@ -21,54 +21,60 @@
 // SOFTWARE.
 // famc -- the fam compiler's front end (docs/LANGUAGE.md, docs/OBJECT.md).
 //
-// Reads one source file from the console (up to the byte 0x04) and writes
-// its object.  On an error it writes a message in place of the object and
-// exits with 1.
+// It reads everything from the console, up to the byte 0x04: the file to
+// compile, the prelude (the library every program has, lib/rt.fam) and the
+// files that may be used, as tools/famc sends them (lex.fam, "reading the
+// source").  It writes one object, for all of them.  On an error it writes
+// a message in place of the object and exits with 1.
 //
-// It is written in the language it compiles.  src/famc.forth, the stage
-// compiler, compiles the same language to the same bytes, and builds this
-// one from the seed (scripts/build.sh).  Its parts, each a module:
+// It is not written in the language it compiles, but in an older one with
+// no types, which the stage compiler, src/famc.forth, compiles: that one
+// builds this one from the seed (scripts/build.sh).  rt.fam and
+// rtmain.fam, beside this file, are the runtime this program is linked
+// with, in that language too.  Its parts, each a module:
 //     lex     the source, its tokens, and the error messages
-//     obj     the object being written, and the names of modules
+//     obj     the object being written, and the names of its symbols
+//     types   what a value can be
 //     emit    a function's frame, and the instructions written
-//     parse   the language, but for what controls flow
+//     parse   the language, but for what the macros say
 //     std     the macros: `if`, `while`, `return`, `||`, `&&`, and
 //             `#[cfg]`, `#[test]`, `assert`, `assert_eq`
 //
-// The language (every value is a 32-bit integer):
-//     program   = [ "module" NAME ";" ]
-//                 { item }
-//     item      = import | use | constant | global | function | test | init
+// The language:
+//     program   = { item }
+//     item      = use | constant | global | function | init
 //               | "#" "[" NAME ...              an attribute: a macro says
 //                                               what follows (std.fam)
-//     import    = "import" NAME ";"
 //     use       = "use" NAME { "::" NAME } ";"  another file, or something in it
-//     constant  = [ "pub" ] "const" NAME "=" value ";"    a name for a number
-//     global    = [ "pub" ] "let" NAME "=" value ";"    a variable outside any
-//                                               function, starting at value
-//     value     = [ "-" ] ( NUMBER | NAME )     the name of a constant
-//     function  = [ "pub" ] "fn" NAME "(" [ NAME { "," NAME } ] ")" block
-//     test      = "test" STRING block
+//     constant  = [ "pub" ] "const" NAME "=" value ";"
+//     global    = [ "pub" ] "let" NAME [ ":" type ] "=" value ";"
+//     value     = [ "-" ] ( NUMBER | NAME ) | "true" | "false"
+//     function  = [ "pub" ] "fn" NAME "(" [ NAME ":" type { "," NAME ":" type } ] ")"
+//                 [ "->" type ] block
 //     init      = "init" block                  run at startup, in order
 //               | "init" "asm" "{" ... "}"      the same, nothing but the code
+//     type      = "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "bool"
+//               | "*" type                      a pointer
+//               | "fn" "(" [ type { "," type } ] ")" [ "->" type ]
 //     block     = "{" { statement } "}"
-//     statement = "let" NAME "=" expr ";"
-//               | [ NAME ( "." | "::" ) ] NAME "=" expr ";"
-//               | "if" expr block [ "else" ( block | if-statement ) ]
-//               | "while" expr block
-//               | "return" [ expr ] ";"
+//     statement = "let" NAME [ ":" type ] "=" expr ";"
+//               | [ NAME "::" ] NAME "=" expr ";"
+//               | expr "=" expr ";"             the first: *p or p[i]
 //               | "asm" "{" { HEXWORD | "@" fname | "&" fname } "}"
-//               | "assert" expr ";"             in a test
 //               | expr ";"
+//               | what a macro reads: if, while, return, assert, assert_eq
 //     expr      = unary { OPERATOR unary }      by precedence, lowest first:
 //                   ||   &&   == != < <= > >=   |   ^   &   << >>   + -
 //                   * / %
-//     unary     = ( "-" | "!" | "~" ) unary | NUMBER | STRING | fname
-//               | "&" fname                     a function's id
+//     unary     = prefix { "as" type }
+//     prefix    = ( "-" | "!" | "~" | "*" ) prefix
+//               | "&" fname                     an address, or a function's id
+//               | primary { "[" expr "]" }
+//     primary   = NUMBER | STRING | "true" | "false" | fname
 //               | "bytes" "{" { HEXBYTES } "}"  data: its value is its address
 //               | fname "(" [ expr { "," expr } ] ")"
 //               | "(" expr ")"
-//     fname     = [ NAME ( "." | "::" ) ] NAME
+//     fname     = [ NAME "::" ] NAME
 //     NAME      = a letter or '_', then letters, digits, '_'
 //     NUMBER    = decimal digits, or 0x and hex digits (up to 32 bits)
 //     STRING    = "..." with \n \t \0 \\ \" for a newline, a tab, a zero
@@ -77,39 +83,25 @@
 //     HEXBYTES  = uppercase hex digits, two for each byte
 //     // starts a comment that runs to the end of the line
 //
-// Modules.  A function `f` of a file that says `module m;` is the symbol
-// `m.f`; without a module line it is `f` (the root module).  It is a local
-// symbol, which only this object can call, unless it is `pub` (or is the
-// root's `main`, in a build that is not for the tests).  A call `m.f()` is
-// of the symbol `m.f`, and m must be this file's module or imported.  A
-// call `f()` in module m is of this file's `m.f` if it defines one, else of
-// the root's `f`.  A global `g` is the symbol `m.g` likewise, local unless
-// `pub`.  It must be defined above where it is used by its bare name;
-// another module's is `m.g`, and needs no more.
-//
 // Files that use others.  `use a::b;` is for the file a.fam, or a/b.fam,
 // in the directory of the file being compiled.  It is compiled where the
 // first `use` of it stands, into the same object, as the module `a` (or
-// `a.b`): parse.fam, "names in other files".
-//
-// What is read.  Each file starts with the byte 0x01 or 0x02 and a line
-// that is its name, as tools/famc sends it.  The first is the file to
-// compile and 0x01 on it asks for the tests; the others are the files it
-// may use.  Errors are reported as "NAME:LINE: what".  If the first byte
-// is neither, everything is one file with no name, and errors are
-// reported as "famc: line LINE: what".
+// `a.b`): a function f of it is the symbol `a.f`.  The file to compile and
+// the prelude are the root module: their f is the symbol `f`.
 
 import lex;
 import obj;
+import types;
 import emit;
 import parse;
 
 fn main() {
     obj.setup();
+    types.setup();
     emit.setup();
     parse.setup();
     lex.read();
-    parse.file();
+    parse.program();
     obj.write();
     return 0;
 }

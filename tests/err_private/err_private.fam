@@ -1,3 +1,0 @@
-// A function that is not pub cannot be called from another file.
-import shapes;
-fn main() { return shapes.twice(2); }

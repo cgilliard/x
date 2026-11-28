@@ -1,0 +1,9 @@
+// A file for the test in this directory to use.
+pub fn area(w: i32, h: i32) -> i32 { return w * h; }
+
+// A bare name is this file's function, or the library's.
+pub fn around(w: i32, h: i32) -> i32 { return twice(w) + twice(h); }
+
+fn twice(x: i32) -> i32 { return x + x; }       // not pub: only this file can call it
+
+pub fn name() -> *u8 { return "shapes"; }

@@ -23,13 +23,13 @@
 // `return`, `||`, `&&`), and tests (`#[cfg(...)]`, `#[test]`, `assert`,
 // `assert_eq`).
 //
-// Part of the fam compiler written in fam (src/famc/): see main.fam.
+// Part of the fam compiler (src/famc/): see main.fam.
 //
 // The compiler proper does not know these words.  Each is a function here
-// that is called when a statement starts with the word, or where the
-// operator stands: it reads what follows, has the compiler compile the
-// expressions and blocks in it, and joins them with labels and jumps
-// (emit.fam, docs/CORE.md).
+// that is called when a statement starts with the word, where the operator
+// stands, or for the attribute: it reads what follows, has the compiler
+// compile the expressions and blocks in it, and joins them with labels and
+// jumps (emit.fam, docs/CORE.md).
 
 module std;
 
@@ -37,11 +37,12 @@ import lex;
 import obj;
 import emit;
 import parse;
+import types;
 
 // if expr block [ else ( block | if-statement ) ]
 fn if_macro() {
     let other = emit.label();
-    parse.expression();
+    parse.condition();
     emit.jump_if_zero(other);
     parse.block();
     if lex.accept("else") {
@@ -61,7 +62,7 @@ fn while_macro() {
     let top = emit.label();
     let end = emit.label();
     emit.place(top);
-    parse.expression();
+    parse.condition();
     emit.jump_if_zero(end);
     parse.block();
     emit.jump(top);
@@ -73,33 +74,34 @@ fn return_macro() {
     lex.peek();
     if lex.punct(59) {
         lex.next();
-        obj.word(0x00000513);                   // li a0, 0
+        parse.returned(types.void());
     } else {
-        parse.expression();
+        parse.returned(parse.expression());
         lex.expect(59);
     }
     emit.jump(emit.exit_label());
 }
 
-// left || right: 1 if either side is not zero.  The right side is skipped
-// if the left decides.
-fn or_macro(level) {
+// left || right, of two bools.  The right side is skipped if the left
+// decides.
+fn or_macro(level, left) {
+    parse.check(left, types.bool());
     let past = emit.label();
-    obj.word(0x00A03533);                       // snez a0, a0
     emit.jump_if_nonzero(past);
-    parse.right(level);
-    obj.word(0x00A03533);                       // snez a0, a0
+    parse.check(parse.right(level), types.bool());
     emit.place(past);
+    return types.bool();
 }
 
-// left && right: 1 if both sides are not zero.  The right side is skipped
-// if the left decides.
-fn and_macro(level) {
+// left && right, of two bools.  The right side is skipped if the left
+// decides.
+fn and_macro(level, left) {
+    parse.check(left, types.bool());
     let past = emit.label();
     emit.jump_if_zero(past);
-    parse.right(level);
-    obj.word(0x00A03533);                       // snez a0, a0
+    parse.check(parse.right(level), types.bool());
     emit.place(past);
+    return types.bool();
 }
 
 // #[cfg(NAME)] item: the item, or the items in { }, are there only if the
@@ -124,7 +126,7 @@ fn cfg_macro() {
 // Otherwise it is passed over.
 fn test_macro() {
     lex.expect(93);
-    if lex.flag("test", 4) == 0 {
+    if lex.flag("test", 4) == 0 || parse.declaring() {
         parse.skip_item();
         return;
     }
@@ -139,21 +141,22 @@ fn test_macro() {
     lex.expect(41);
     obj.init();
     emit.begin();
-    emit.vtest = 2;
+    emit.vtest = 1;
     emit.string(lex.file, lex.fend);
     obj.word(0x00050593);                       // mv a1, a0
     emit.string(name, name + len);
     obj.call("__test_begin", 12);
+    parse.body(types.void());
     parse.block();
     emit.end();
 }
 
-// reason(): [ , expr ] ) : the reason given for a failure, into a1 (0: none
-// is given).
+// reason(): [ , expr ] ) : the reason given for a failure, a string, into
+// a1 (0: none is given).
 fn reason() {
     lex.next();
     if lex.punct(44) {
-        parse.expression();
+        parse.check(parse.expression(), types.ptr(types.u8()));
         obj.word(0x00050593);                   // mv a1, a0
         lex.expect(41);
     } else {
@@ -163,13 +166,13 @@ fn reason() {
 }
 
 // assert(expr [, reason]); in a test: the test fails, and stops, if the
-// expression is zero.  The reason is a string; it is only computed then.
+// bool is false.  The reason is a string; it is only computed then.
 fn assert_macro() {
     if emit.vtest == 0 { lex.error("assert outside a test"); }
     let line = lex.line;
     let ok = emit.label();
     lex.expect(40);
-    parse.expression();
+    parse.condition();
     emit.jump_if_nonzero(ok);
     reason();
     emit.li(line);
@@ -180,17 +183,24 @@ fn assert_macro() {
 }
 
 // assert_eq(expr, expr [, reason]); in a test: the test fails, and stops,
-// if the two are not equal.
+// if the two, which are integers of one type, are not equal.
 fn assert_eq_macro() {
     if emit.vtest == 0 { lex.error("assert outside a test"); }
     let line = lex.line;
     let ok = emit.label();
     lex.expect(40);
-    parse.expression();
+    let t = parse.expression();
     let left = emit.slot();
     emit.sw(left, 10);
     lex.expect(44);
-    parse.expression();
+    let u = parse.expression();
+    if t == types.literal() {
+        t = u;
+        if u == types.literal() { t = types.i32(); }
+    } else {
+        parse.check(u, t);
+    }
+    if types.is_int(t) == 0 { parse.check(t, types.i32()); }
     let right = emit.slot();
     emit.sw(right, 10);
     emit.lw(left, 11);

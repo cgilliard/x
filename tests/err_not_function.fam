@@ -1,5 +1,5 @@
 // A global cannot be called.
 let g = 1;
-fn main() {
+fn main() -> i32 {
     return g();
 }

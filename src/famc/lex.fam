@@ -66,6 +66,11 @@ fn where() {
     print(": ");
 }
 
+// complain(): start a message that is written in parts: where.  stop()
+// ends it.
+pub fn complain() { where(); }
+pub fn stop() { fail(); }
+
 // error(what): stop with a message.
 pub fn error(what) {
     where();
@@ -262,6 +267,7 @@ pub fn chkident() {
     if kind != 1 { syntax(); }
     if is("return") || is("assert") || is("while") || is("fn") || is("if") { syntax(); }
     if is("let") || is("asm") || is("else") || is("const") { syntax(); }
+    if is("as") || is("true") || is("false") || is("use") || is("pub") { syntax(); }
 }
 
 // number(): the value of the number token: decimal digits, or 0x and one
@@ -326,14 +332,18 @@ pub fn odd() { etoken(); }
 // ---- reading the source ----------------------------------------------------
 
 // The files given, 32 bytes each: where its name starts and ends (0: it
-// has none), where its text starts and ends, 0 or 1 while it is being
-// compiled or 2 once it has been, and the name of its module and that
-// name's length (parse.fam sets those three).  The first is the file to
-// compile; the others are there to be used by it (`use`).
+// has none), where its text starts and ends, how far it has got (parse.fam
+// says), the name of its module and that name's length (parse.fam sets
+// those three), and 1 if it is the prelude.  One is the file to compile
+// (root); the prelude, if there is one, is the library that every file
+// uses without saying so; the others are there to be used (`use`).
 let fb = 0;
 let fn_top = 0;
 let flim = 0;
 pub let unit = 0;       // the file being read: its entry
+let first = 0;          // the file to compile: its entry
+let library = 0;        // the prelude: its entry (0: there is none)
+let libtests = 0;       // 1 if the prelude's own tests are wanted
 
 // Where the reading of the files that use the one being read stopped,
 // 36 bytes each.
@@ -349,7 +359,10 @@ let glim = 0;
 
 // flag(name, len): is the flag of that name set?
 pub fn flag(name, len) {
-    if zeq(name, len, "test") { return mode; }
+    if zeq(name, len, "test") {                 // the prelude's tests are
+        if unit == library { return libtests; } //   not every program's
+        return mode;
+    }
     let p = gb;
     while p < gn {
         if load32(p + 4) == len {
@@ -369,6 +382,7 @@ fn addfile(name, nend, from, to) {
     store32(fn_top + 16, 0);
     store32(fn_top + 20, 0);
     store32(fn_top + 24, 0);
+    store32(fn_top + 28, 0);
     fn_top = fn_top + 32;
 }
 
@@ -413,7 +427,12 @@ pub fn pop() {
 
 // root(): the file to compile: its entry.
 pub fn root() {
-    return fb;
+    return first;
+}
+
+// prelude(): the library every file uses: its entry (0: there is none).
+pub fn prelude() {
+    return library;
 }
 
 // lookup(path, len): the file that a path names: its entry (0: none).  A
@@ -422,8 +441,8 @@ pub fn root() {
 pub fn lookup(path, len) {
     let dir = 0;                                // how much of the first file's
     let i = 0;                                  //   name is its directory
-    let rname = load32(fb);
-    let rlen = load32(fb + 4) - rname;
+    let rname = load32(first);
+    let rlen = load32(first + 4) - rname;
     while i < rlen {
         if load8(rname + i) == 47 { dir = i + 1; }
         i = i + 1;
@@ -448,11 +467,15 @@ pub fn lookup(path, len) {
 // read(): read everything from the console, up to the byte 0x04: the file
 // to compile, and after it the files it may use.
 //
-// Each file starts with the byte 0x01 or 0x02 and a line that is its name,
-// as tools/famc sends it, and runs to the next such byte.  0x01 on the
-// first asks for the tests.  If the first byte is neither, everything is
-// one file with no name.  Before the files there may be lines that start
-// with the byte 0x03: each is the name of a flag that is set.
+// Each file starts with a byte that says what it is and a line that is its
+// name, as tools/famc sends it, and runs to the next such byte:
+//     0x02   the file to compile, or after it a file it may use
+//     0x01   the file to compile, and its tests are wanted
+//     0x05   the prelude
+//     0x06   the prelude, and its tests are wanted
+// If the first byte is none of them, everything is one file with no name.
+// Before the files there may be lines that start with the byte 0x03: each
+// is the name of a flag that is set.
 pub fn read() {
     fb = alloc(0x10000);
     fn_top = fb;
@@ -497,11 +520,14 @@ pub fn read() {
     let named = 0;
     if p < to {
         c = load8(p);
-        named = c == 1 || c == 2;
-        if c == 1 { mode = 1; }
+        named = c == 1 || c == 2 || c == 5 || c == 6;
     }
-    if named == 0 { addfile(0, 0, from, to); }
-    while p < to {                              // p is at a 0x01 or 0x02
+    if named == 0 {
+        addfile(0, 0, from, to);
+        first = fb;
+    }
+    while p < to {                              // p is at one of those bytes
+        let mark = load8(p);
         let name = p + 1;
         p = name;
         let more = 1;
@@ -517,10 +543,19 @@ pub fn read() {
         while more {
             if p >= to { more = 0; } else {
                 c = load8(p);
-                if c == 1 || c == 2 { more = 0; } else { p = p + 1; }
+                if c == 1 || c == 2 || c == 5 || c == 6 { more = 0; } else { p = p + 1; }
             }
         }
         addfile(name, nend, text, p);
+        if mark == 6 { libtests = 1; }
+        if mark == 5 || mark == 6 {
+            library = fn_top - 32;
+            store32(library + 28, 1);
+        } else {
+            if first == 0 { first = fn_top - 32; }
+        }
+        if mark == 1 { mode = 1; }
     }
-    enter(fb);
+    if first == 0 { error("no file to compile"); }
+    enter(first);
 }

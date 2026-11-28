@@ -19,20 +19,28 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// parse -- the language: what a file, a statement and an expression are.
+// parse -- the language: what a file, a statement and an expression are,
+// and what type each value has.
 //
-// Part of the fam compiler written in fam (src/famc/): see main.fam, which
-// has the grammar.
+// Part of the fam compiler (src/famc/): see main.fam, which has the
+// grammar.
 //
+// Every file is read twice.  The first time (pass 1) only what it defines
+// is taken down: its constants, its globals, its functions with their
+// types, and what it uses of other files; the bodies of functions are
+// passed over.  The second time (pass 2) the code is written.  So anything
+// can be named before it is defined, in any file.
+//
+// The code:
+//   - An expression leaves its value in a0, as 32 bits whatever its type
+//     (emit.fam, "values by their type").
 //   - An operator saves its left side in a temporary, computes the right
 //     side, and reloads the left into a1.
-//   - `*`, `/` and `%` are calls of __mul, __div and __rem (lib/rt.fam):
-//     the CPU has no instructions for them.
+//   - `*`, `/` and `%` are calls of __mul, __div, __rem, __udiv and __urem
+//     (lib/rt.fam): the CPU has no instructions for them.
 //   - `&f` is an id site: the linker fills in the two instructions that
 //     load f's id.  A call `p(...)` where p is a local is a call through an
 //     id: a call of __call, which the linker writes, with the id in t2.
-//   - load8, load32, store8 and store32 are not calls but one instruction
-//     each, on a0 (and a1).
 //   - In `asm`, `@f` is a call site for f and `&f` an id site.
 //   - A global is a data record: one word, its starting value.  Reading or
 //     writing it is an address site -- the linker fills in the two
@@ -41,42 +49,38 @@
 //   - An `init` block is an init record with a frame, like a function's.
 //     `init asm` has no frame: it is for the startup code, which runs
 //     before there is a stack.
-//
-// Tests.  If the tests are wanted, each test block becomes an init record,
-// so it runs at startup, in order (lib/rt.fam has the functions):
-//         __test_begin(name, file)
-//         the block: a failed assert calls __test_fail(line) and jumps
-//         to the end, as `return` does
-//         __test_end()
-// Otherwise test blocks are skipped.
 
 module parse;
 
 import lex;
 import obj;
 import emit;
+import types;
 
-// ---- constants and globals -------------------------------------------------
+let pass = 0;           // 1: taking down what is defined; 2: writing code
 
-// The names each file knows besides its functions, 24 bytes each: name,
-// length, what it is, a value, the file (its entry in lex.fam), and 1 if
-// other files may use it (`pub`).  What it is, and the value:
+// The names each file knows, 32 bytes each: name, length, what it is, a
+// value, the file (its entry in lex.fam), 1 if other files may use it
+// (`pub`), its type, and the line it is on.  What it is, and the value:
 //     0   a constant                              its number
 //     1   a global                                the index of its symbol
-//     2   another file's function (`use a::f;`)   the index of its symbol
 //     3   another file (`use a;`)                 that file's entry
+//     4   a function                              the index of its symbol
+//     5   something of another file (`use a::x;`) that file's entry
+//         that has not been looked up yet
 let gb = 0;
 let gn = 0;
 let glim = 0;
-
-// What member() found: what the name is, as above, and its value.
-let ikind = 0;
-let ivalue = 0;
 
 // For `use`: the names of a path, 8 bytes each (name, length), and room to
 // spell a path with one character between its names.
 let ub = 0;
 let pb = 0;
+
+// The types of the parameters of the function types being read.
+let yb = 0;
+let yn = 0;
+let ylim = 0;
 
 // How deep statements and expressions are nested.
 let depth = 0;
@@ -88,21 +92,43 @@ let mb = 0;
 let mn = 0;
 let mlim = 0;
 
-// setup(): room for the constants and globals.
+// The expression read last: if it was a number written in the source (or
+// a constant), its value, and whether that is known.
+let litv = 0;
+let litk = 0;
+
+// The expression read last: if it was `*p` or `p[i]`, where the code is
+// just after it (the instruction before that is the load), and its type.
+// A `=` after it makes that load a store.
+let place = 0;
+let ptype = 0;
+
+let rettype = 0;        // what the function being compiled gives
+
+// What constval() read: its type, a number's (9) or bool.
+let cvtype = 0;
+
+// setup(): room for the tables.
 pub fn setup() {
-    gb = alloc(0x60000);
+    gb = alloc(0x100000);
     gn = gb;
-    glim = gb + 0x60000;
+    glim = gb + 0x100000;
     ub = alloc(0x80);
     pb = alloc(0x400);
+    yb = alloc(0x1000);
+    yn = yb;
+    ylim = yb + 0x1000;
 }
+
+// ---- macros ----------------------------------------------------------------
 
 // define(name, f): a macro.  The name is a text that ends with a zero
 // byte.  A statement that starts with it is compiled by calling f, which
 // reads what follows the name and says what to emit (docs/CORE.md).
 // If the name is `||` or `&&`, f is called where that operator stands,
 // with its left side's value in a0, and is given the level to pass to
-// right() for its right side.
+// right() for its right side and the type of its left side; it gives the
+// type of the result.
 // Macros are defined in init blocks, before anything is compiled.
 pub fn define(name, f) {
     madd(name, f, 0);
@@ -111,12 +137,13 @@ pub fn define(name, f) {
 // attribute(name, f): a macro that is called as an attribute: `#[name`
 // where a function or another thing at the top of a file can start.  f
 // reads the rest, to the `]` and on, and says what becomes of the item
-// that follows: item() compiles it, skip_item() passes over it.
+// that follows: item() compiles it, skip_item() passes over it.  It is
+// called in both passes: declaring() says which.
 pub fn attribute(name, f) {
     madd(name, f, 1);
 }
 
-fn madd(name, f, place) {
+fn madd(name, f, where) {
     if mb == 0 {
         mb = alloc(0x1000);
         mn = mb;
@@ -128,22 +155,71 @@ fn madd(name, f, place) {
     store32(mn, name);
     store32(mn + 4, len);
     store32(mn + 8, f);
-    store32(mn + 12, place);
+    store32(mn + 12, where);
     mn = mn + 16;
 }
 
-// macro(place): the function of the macro the token names, for that place
+// macro(where): the function of the macro the token names, for that place
 // (0: it names none).
-fn macro(place) {
+fn macro(where) {
     let p = mb;
     while p < mn {
-        if load32(p + 4) == lex.tl && load32(p + 12) == place {
+        if load32(p + 4) == lex.tl && load32(p + 12) == where {
             if lex.same(load32(p), lex.tk, lex.tl) { return load32(p + 8); }
         }
         p = p + 16;
     }
     return 0;
 }
+
+// declaring(): is this the first pass, in which nothing is compiled?
+pub fn declaring() {
+    return pass == 1;
+}
+
+// ---- errors ----------------------------------------------------------------
+
+fn eunknown(name, len) { lex.error_name("unknown variable ", name, len); }
+fn edup(name, len) { lex.error_name("defined twice: ", name, len); }
+
+// mismatch(t, want): stop: a value of type t is where one of type want
+// must be.
+fn mismatch(t, want) {
+    lex.complain();
+    print("expected ");
+    types.show(want);
+    print(", found ");
+    types.show(t);
+    lex.stop();
+}
+
+// etype(what, t): stop with a message that ends with a type.
+fn etype(what, t) {
+    lex.complain();
+    print(what);
+    types.show(t);
+    lex.stop();
+}
+
+// need(t, want): a value of type t is where one of type want must be: it
+// must be that type, or a number written in the source that fits it.
+fn need(t, want) {
+    if t == want { return; }
+    if t == 9 && types.is_int(want) {
+        if litk {
+            if types.fits(litv, want) == 0 { etype("the number does not fit ", want); }
+        }
+        return;
+    }
+    mismatch(t, want);
+}
+
+// check(t, want): the same, for macros.
+pub fn check(t, want) {
+    need(t, want);
+}
+
+// ---- the names a file knows ------------------------------------------------
 
 // gin(f, name, len): the entry of a name in the file f (0: none).
 fn gin(f, name, len) {
@@ -152,103 +228,75 @@ fn gin(f, name, len) {
         if load32(p + 4) == len && load32(p + 16) == f {
             if lex.same(load32(p), name, len) { return p; }
         }
-        p = p + 24;
+        p = p + 32;
     }
     return 0;
 }
 
-// gfind(name, len): the entry of a name in this file (0: none).
-fn gfind(name, len) {
-    return gin(lex.unit, name, len);
-}
-
-// gkind(name, len): what a name is in this file (-1: nothing listed).
-fn gkind(name, len) {
-    let e = gfind(name, len);
-    if e == 0 { return -1; }
-    return load32(e + 8);
-}
-
-fn gadd(name, len, what, value, public) {
-    if gn + 24 > glim { lex.ebig(); }
+fn gadd(name, len, what, value, public, t) {
+    if gn + 32 > glim { lex.ebig(); }
     store32(gn, name);
     store32(gn + 4, len);
     store32(gn + 8, what);
     store32(gn + 12, value);
     store32(gn + 16, lex.unit);
     store32(gn + 20, public);
-    gn = gn + 24;
+    store32(gn + 24, t);
+    store32(gn + 28, lex.line);
+    gn = gn + 32;
 }
 
-fn eunknown(name, len) { lex.error_name("unknown variable ", name, len); }
-fn edup(name, len) { lex.error_name("defined twice: ", name, len); }
-
-// constval(): read [ "-" ] ( NUMBER | NAME ): a number, or a constant's.
-fn constval() {
-    lex.next();
-    let minus = 0;
-    if lex.punct1(45) {
-        minus = 1;
-        lex.next();
+// settle(e): look up what a `use a::x;` names, now that a is read.
+fn settle(e) {
+    let f = load32(e + 12);
+    let t = gin(f, load32(e), load32(e + 4));
+    let what = 3;
+    if t { what = load32(t + 8); }
+    if what == 3 || what == 5 || load32(t + 20) == 0 {
+        let mine = load32(e + 16);              // the message is about the
+        lex.file = load32(mine);                //   line of the `use`
+        lex.fend = load32(mine + 4);
+        lex.line = load32(e + 28);
+        if what == 3 || what == 5 { lex.error_name("undefined: ", load32(e), load32(e + 4)); }
+        lex.error_name("private: ", load32(e), load32(e + 4));
     }
-    let v = 0;
-    if lex.kind == 2 {
-        v = lex.number();
-    } else {
-        if lex.kind != 1 { lex.syntax(); }
-        let e = gfind(lex.tk, lex.tl);
-        if e == 0 { eunknown(lex.tk, lex.tl); }
-        if load32(e + 8) { lex.syntax(); }      // a global is not a constant
-        v = load32(e + 12);
+    store32(e + 8, what);
+    store32(e + 12, load32(t + 12));
+    store32(e + 24, load32(t + 24));
+}
+
+// find(name, len): the entry of a name in this file, or else of what the
+// prelude lets every file use (0: none).
+fn find(name, len) {
+    let e = gin(lex.unit, name, len);
+    if e {
+        if load32(e + 8) == 5 { settle(e); }
+        return e;
     }
-    if minus { return 0 - v; }
-    return v;
+    let pre = lex.prelude();
+    if pre != 0 && pre != lex.unit {
+        e = gin(pre, name, len);
+        if e {
+            if load32(e + 20) { return e; }
+        }
+    }
+    return 0;
 }
 
-// gload(index): append the loading of the global of a symbol into a0.
-fn gload(index) {
-    obj.asite(index);
-    obj.word(0x00052503);                       // lw a0, 0(a0)
-}
-
-// gstore(index): append the storing of a0 in the global of a symbol.
-fn gstore(index) {
-    obj.word(0x00050393);                       // mv t2, a0
-    obj.asite(index);
-    obj.word(0x00752023);                       // sw t2, 0(a0)
-}
-
-// ---- names in other files --------------------------------------------------
-
-// member(f, name, len): what a name is in the file f, which this file uses:
-// ikind and ivalue.  It must be `pub` there.  If f is still being compiled
-// (it uses this file, and this file it) and has not defined the name yet,
-// the name is taken for a function, to be checked at the end.
+// member(f, name, len): the entry of something `pub` that the file f
+// defines.
 fn member(f, name, len) {
     let e = gin(f, name, len);
-    let what = -1;
+    let what = 3;
     if e { what = load32(e + 8); }
-    if what == 0 || what == 1 {
-        if load32(e + 20) == 0 { lex.error_name("private: ", name, len); }
-        ikind = what;
-        ivalue = load32(e + 12);
-        return;
-    }
-    obj.join(load32(f + 20), load32(f + 24), name, len);
-    let index = obj.ref(obj.qname, obj.qlen, 0);
-    let k = obj.kind(index);
-    if k == 3 { lex.error_name("private: ", name, len); }
-    if k != 1 {
-        if load32(f + 16) == 2 { lex.error_name("undefined: ", name, len); }
-        obj.check(index, 1, lex.line);
-    }
-    ikind = 2;
-    ivalue = index;
+    if what == 3 || what == 5 { lex.error_name("undefined: ", name, len); }
+    if load32(e + 20) == 0 { lex.error_name("private: ", name, len); }
+    return e;
 }
 
 // used(name, len): the file a name stands for in this file (`use a;`).
 fn used(name, len) {
-    let e = gfind(name, len);
+    let e = gin(lex.unit, name, len);
     let what = -1;
     if e { what = load32(e + 8); }
     if what != 3 { lex.error_name("unknown module ", name, len); }
@@ -260,6 +308,57 @@ fn colons() {
     if lex.kind != 3 { return 0; }
     return lex.is("::");
 }
+
+// ---- types, as written -----------------------------------------------------
+
+// arrow(): read `->` if it is next.
+fn arrow() {
+    lex.next();
+    if lex.punct1(45) {
+        lex.next();
+        if lex.punct1(62) == 0 { lex.syntax(); }
+        return 1;
+    }
+    lex.cur = lex.tk;
+    return 0;
+}
+
+// type(): read a type:  NAME | "*" type | "fn" "(" [ type { "," type } ] ")"
+// [ "->" type ]
+fn type() {
+    lex.next();
+    if lex.punct1(42) { return types.ptr(type()); }
+    if lex.kind != 1 { lex.syntax(); }
+    if lex.is("fn") {
+        lex.expect(40);
+        let base = yn;
+        lex.next();
+        if lex.punct(41) == 0 {
+            lex.cur = lex.tk;
+            let more = 1;
+            while more {
+                let t = type();
+                if yn + 4 > ylim { lex.ebig(); }
+                store32(yn, t);
+                yn = yn + 4;
+                lex.next();
+                if lex.punct(41) { more = 0; } else {
+                    if lex.punct(44) == 0 { lex.syntax(); }
+                }
+            }
+        }
+        let gives = 8;
+        if arrow() { gives = type(); }
+        let f = types.func(gives, (yn - base) >> 2, base);
+        yn = base;
+        return f;
+    }
+    let t = types.named(lex.tk, lex.tl);
+    if t == 0 { lex.error_name("unknown type ", lex.tk, lex.tl); }
+    return t;
+}
+
+// ---- using other files -----------------------------------------------------
 
 // spell(n, between): the first n names of the path, with a character
 // between them, at pb: how long that is.
@@ -285,33 +384,25 @@ fn spell(n, between) {
     return at - pb;
 }
 
-// include(f, n): compile the file f now, as the module that the first n
-// names of the path spell.
-fn include(f, n) {
-    let len = spell(n, 46);
-    let name = alloc(len);
-    let i = 0;
-    while i < len {
-        store8(name + i, load8(pb + i));
-        i = i + 1;
-    }
-    store32(f + 20, name);
-    store32(f + 24, len);
-    store32(f + 16, 1);
+// run(f): read the file f through, in the pass we are in.  How far a file
+// has got is in its entry: 0 not read, 1 in pass 1, 2 through it, 3 in
+// pass 2, 4 through that.
+fn run(f) {
+    store32(f + 16, load32(f + 16) + 1);
     lex.push();
     lex.enter(f);
-    obj.enter(name, len);
+    obj.enter(load32(f + 20), load32(f + 24));
     file();
     obj.leave();
     lex.pop();
-    store32(f + 16, 2);
+    store32(f + 16, load32(f + 16) + 1);
 }
 
 // use(): use NAME { :: NAME } ; (the use is read).  All the names but the
 // last are a file, and the last is something `pub` in it; or, if there is
-// no such file, all the names are a file.  The file is compiled here, if
-// it has not been, and the last name stands in this file for what it is in
-// that one, or for the file.
+// no such file, all the names are a file.  In pass 1 the file is read, if
+// it has not been, and the last name is taken down.  In pass 2 the file is
+// compiled here, if it has not been.
 fn use() {
     let n = 0;
     let text = 0;
@@ -341,47 +432,55 @@ fn use() {
     }
     if f == 0 { lex.error_name("cannot find ", text, name + len - text); }
     if f == lex.root() { lex.error_name("cannot use the file being compiled: ", text, name + len - text); }
-    if gfind(name, len) { edup(name, len); }
-    if load32(f + 16) == 0 { include(f, n - 1 + whole); }
+    if pass == 2 {
+        if load32(f + 16) == 2 { run(f); }
+        return;
+    }
+    if gin(lex.unit, name, len) { edup(name, len); }
     if whole {
-        gadd(name, len, 3, f, 0);
+        gadd(name, len, 3, f, 0, 0);
     } else {
-        member(f, name, len);
-        gadd(name, len, ikind, ivalue, 0);
+        gadd(name, len, 5, f, 0, 0);
+    }
+    if load32(f + 16) == 0 {                    // its module is the names of
+        let plen = spell(n - 1 + whole, 46);    //   the file, with dots
+        let prefix = alloc(plen);
+        let i = 0;
+        while i < plen {
+            store8(prefix + i, load8(pb + i));
+            i = i + 1;
+        }
+        store32(f + 20, prefix);
+        store32(f + 24, plen);
+        run(f);
     }
 }
 
 // ---- names of functions, and asm -------------------------------------------
 
-// fnref(): read [ module "." ] name: the index of that function's symbol,
-// as a call would name it.
+// fnref(): read NAME [ :: NAME ]: the index of that function's symbol.
 fn fnref() {
     lex.next();
     lex.chkident();
     let name = lex.tk;
     let len = lex.tl;
+    let e = 0;
     lex.next();
-    if lex.punct(46) {
-        obj.chkmod(name, len);
-        lex.next();
-        lex.chkident();
-        obj.join(name, len, lex.tk, lex.tl);
-        return obj.ref(obj.qname, obj.qlen, 0);
-    }
     if colons() {                               // file :: name
         let f = used(name, len);
         lex.next();
         lex.chkident();
-        member(f, lex.tk, lex.tl);
-        if ikind != 2 { lex.error_name("not a function: ", lex.tk, lex.tl); }
-        return ivalue;
+        name = lex.tk;
+        len = lex.tl;
+        e = member(f, name, len);
+    } else {
+        lex.cur = lex.tk;
+        e = find(name, len);
     }
-    lex.cur = lex.tk;                           // a bare name
-    let e = gfind(name, len);
-    if e {
-        if load32(e + 8) == 2 { return load32(e + 12); }
-    }
-    return obj.bare(name, len);
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what != 4 { lex.error_name("unknown function ", name, len); }
+    return load32(e + 12);
 }
 
 // asmbody(): "{" { HEXWORD | "@" fname | "&" fname } "}": the words as they
@@ -430,44 +529,174 @@ fn bytes() {
     emit.endbytes();
 }
 
+// ---- constants -------------------------------------------------------------
+
+// constval(): read [ "-" ] ( NUMBER | NAME ) | "true" | "false": a number,
+// or a constant's, or a bool as 1 or 0.  cvtype says which it was.
+fn constval() {
+    lex.next();
+    cvtype = 9;
+    if lex.kind == 1 {
+        if lex.is("true") { cvtype = 7; return 1; }
+        if lex.is("false") { cvtype = 7; return 0; }
+    }
+    let minus = 0;
+    if lex.punct1(45) {
+        minus = 1;
+        lex.next();
+    }
+    let v = 0;
+    if lex.kind == 2 {
+        v = lex.number();
+    } else {
+        if lex.kind != 1 { lex.syntax(); }
+        let e = find(lex.tk, lex.tl);
+        if e == 0 { eunknown(lex.tk, lex.tl); }
+        if load32(e + 8) { lex.syntax(); }      // only a constant will do
+        v = load32(e + 12);
+        cvtype = load32(e + 24);
+        if minus && cvtype != 9 { lex.syntax(); }
+    }
+    if minus { return 0 - v; }
+    return v;
+}
+
+// gload(index, t): append the loading of the global of a symbol into a0.
+fn gload(index, t) {
+    obj.asite(index);
+    emit.fetch(t);
+}
+
+// gstore(index): append the storing of a0 in the global of a symbol.
+fn gstore(index) {
+    obj.word(0x00050393);                       // mv t2, a0
+    obj.asite(index);
+    obj.word(0x00752023);                       // sw t2, 0(a0)
+}
+
 // ---- operators -------------------------------------------------------------
 
 // binop(): is the token a binary operator?  Its precedence (0: it is not
-// one) and its one or two instructions, which compute a0 from a1 (the left
-// side) and a0 (the right); the second is 0 if there is only one.  For
-// * / % the first is 1, 2, 3: they are calls.  || and && have none: what
-// they do is a macro's to say.
+// one) and which it is:
+//     1 ==   2 !=   3 <    4 >    5 <=   6 >=   7 |    8 ^    9 &
+//     10 <<  11 >>  12 +   13 -   14 *   15 /   16 %
+// || and && have no number: what they do is a macro's to say.
 let bprec = 0;
-let bw1 = 0;
-let bw2 = 0;
+let bop = 0;
 
-fn bset(precedence, w1, w2) {
+fn bset(precedence, which) {
     bprec = precedence;
-    bw1 = w1;
-    bw2 = w2;
+    bop = which;
 }
 
 fn binop() {
     bprec = 0;
     if lex.kind != 3 { return; }
-    if lex.is("||") { bset(1, 0, 0); return; }
-    if lex.is("&&") { bset(2, 0, 0); return; }
-    if lex.is("==") { bset(3, 0x40A58533, 0x00153513); return; }    // sub a0,a1,a0 ; seqz a0,a0
-    if lex.is("!=") { bset(3, 0x40A58533, 0x00A03533); return; }    // sub a0,a1,a0 ; snez a0,a0
-    if lex.is("<")  { bset(3, 0x00A5A533, 0); return; }             // slt a0,a1,a0
-    if lex.is(">")  { bset(3, 0x00B52533, 0); return; }             // slt a0,a0,a1
-    if lex.is("<=") { bset(3, 0x00B52533, 0x00154513); return; }    // slt a0,a0,a1 ; xori a0,a0,1
-    if lex.is(">=") { bset(3, 0x00A5A533, 0x00154513); return; }    // slt a0,a1,a0 ; xori a0,a0,1
-    if lex.is("|")  { bset(4, 0x00A5E533, 0); return; }             // or  a0,a1,a0
-    if lex.is("^")  { bset(5, 0x00A5C533, 0); return; }             // xor a0,a1,a0
-    if lex.is("&")  { bset(6, 0x00A5F533, 0); return; }             // and a0,a1,a0
-    if lex.is("<<") { bset(7, 0x00A59533, 0); return; }             // sll a0,a1,a0
-    if lex.is(">>") { bset(7, 0x40A5D533, 0); return; }             // sra a0,a1,a0
-    if lex.is("+")  { bset(8, 0x00A58533, 0); return; }             // add a0,a1,a0
-    if lex.is("-")  { bset(8, 0x40A58533, 0); return; }             // sub a0,a1,a0
-    if lex.is("*")  { bset(9, 1, 0); return; }                      // __mul
-    if lex.is("/")  { bset(9, 2, 0); return; }                      // __div
-    if lex.is("%")  { bset(9, 3, 0); return; }                      // __rem
+    if lex.is("||") { bset(1, 0); return; }
+    if lex.is("&&") { bset(2, 0); return; }
+    if lex.is("==") { bset(3, 1); return; }
+    if lex.is("!=") { bset(3, 2); return; }
+    if lex.is("<")  { bset(3, 3); return; }
+    if lex.is(">")  { bset(3, 4); return; }
+    if lex.is("<=") { bset(3, 5); return; }
+    if lex.is(">=") { bset(3, 6); return; }
+    if lex.is("|")  { bset(4, 7); return; }
+    if lex.is("^")  { bset(5, 8); return; }
+    if lex.is("&")  { bset(6, 9); return; }
+    if lex.is("<<") { bset(7, 10); return; }
+    if lex.is(">>") { bset(7, 11); return; }
+    if lex.is("+")  { bset(8, 12); return; }
+    if lex.is("-")  { bset(8, 13); return; }
+    if lex.is("*")  { bset(9, 14); return; }
+    if lex.is("/")  { bset(9, 15); return; }
+    if lex.is("%")  { bset(9, 16); return; }
+}
+
+// scale(n): append the multiplying of a0 by the size of what a pointer
+// points at.
+fn scale(n) {
+    if n == 2 { obj.word(0x00151513); }         // slli a0, a0, 1
+    if n == 4 { obj.word(0x00251513); }         // slli a0, a0, 2
+}
+
+// combine(op, lt, rt, lv, lk): append what an operator does.  Its left
+// side, of type lt, waits in the slot taken last; its right side, of type
+// rt, is in a0.  lv and lk are the left side's litv and litk.  It gives
+// the type of the result.
+fn combine(op, lt, rt, lv, lk) {
+    if types.is_ptr(lt) && (op == 12 || op == 13) && (types.is_int(rt) || rt == 9) {
+        scale(types.size(types.target(lt)));    // pointer + n: n things on
+        emit.lw(emit.drop(1), 11);
+        if op == 12 { obj.word(0x00A58533); } else { obj.word(0x40A58533); }
+        return lt;
+    }
+    let t = lt;
+    if lt == 9 && rt == 9 {
+        litk = 0;                               // two numbers: still a number
+    } else {
+        if lt == 9 {
+            if types.is_int(rt) == 0 { mismatch(lt, rt); }
+            if lk {
+                if types.fits(lv, rt) == 0 { etype("the number does not fit ", rt); }
+            }
+            t = rt;
+        } else {
+            if rt == 9 {
+                need(rt, lt);
+            } else {
+                if lt != rt {
+                    lex.complain();
+                    types.show(lt);
+                    print(" and ");
+                    types.show(rt);
+                    print(" do not go together");
+                    lex.stop();
+                }
+            }
+        }
+    }
+    let number = types.is_int(t) || t == 9;
+    if op > 6 && number == 0 { etype("no arithmetic on ", t); }
+    if op > 2 && op <= 6 && number == 0 && types.is_ptr(t) == 0 { etype("no order on ", t); }
+    if t == 8 { etype("nothing to compare: ", t); }
+    let sign = types.signed(t);
+    if op >= 14 {                               // * / %: a call, left side in
+        obj.word(0x00050593);                   //   a0 and right in a1
+        emit.lw(emit.drop(1), 10);
+        if op == 14 { obj.call("__mul", 5); }
+        if op == 15 {
+            if sign { obj.call("__div", 5); } else { obj.call("__udiv", 6); }
+        }
+        if op == 16 {
+            if sign { obj.call("__rem", 5); } else { obj.call("__urem", 6); }
+        }
+        emit.fit(t);
+        return t;
+    }
+    emit.lw(emit.drop(1), 11);                  // the left side, into a1
+    let less = 0x00A5B533;                      // sltu a0, a1, a0
+    let more = 0x00B53533;                      // sltu a0, a0, a1
+    if sign {
+        less = 0x00A5A533;                      // slt a0, a1, a0
+        more = 0x00B52533;                      // slt a0, a0, a1
+    }
+    if op == 1 { obj.word(0x40A58533); obj.word(0x00153513); return 7; }   // sub ; seqz
+    if op == 2 { obj.word(0x40A58533); obj.word(0x00A03533); return 7; }   // sub ; snez
+    if op == 3 { obj.word(less); return 7; }
+    if op == 4 { obj.word(more); return 7; }
+    if op == 5 { obj.word(more); obj.word(0x00154513); return 7; }         // xori a0, a0, 1
+    if op == 6 { obj.word(less); obj.word(0x00154513); return 7; }
+    if op == 7 { obj.word(0x00A5E533); }        // or  a0, a1, a0
+    if op == 8 { obj.word(0x00A5C533); }        // xor a0, a1, a0
+    if op == 9 { obj.word(0x00A5F533); }        // and a0, a1, a0
+    if op == 10 { obj.word(0x00A59533); }       // sll a0, a1, a0
+    if op == 11 {
+        if sign { obj.word(0x40A5D533); } else { obj.word(0x00A5D533); }   // sra, srl
+    }
+    if op == 12 { obj.word(0x00A58533); }       // add a0, a1, a0
+    if op == 13 { obj.word(0x40A58533); }       // sub a0, a1, a0
+    emit.fit(t);
+    return t;
 }
 
 // ---- expressions -----------------------------------------------------------
@@ -479,20 +708,22 @@ fn deeper() {
     if depth > 4000 { lex.error("nested too deep"); }
 }
 
-// args(sym, how): the arguments of a call, and the call.  The ( is read.
+// args(ft, sym, how): the arguments of a call, and the call, of a function
+// of type ft.  The ( is read.  It gives the type of the result.
 //     how > 0: through an id, kept in the slot how - 1
-//     how < 0: one of the four built in, load8 load32 store8 store32
 //     how = 0: of the symbol whose index is sym
 // Each argument's value goes into a temporary; then the first eight into
 // a0 to a7 and the rest into the frame's low end; then the call.
-fn args(sym, how) {
+fn args(ft, sym, how) {
+    let want = types.count(ft);
     let n = 0;
     lex.next();
     if lex.punct(41) == 0 {
         lex.cur = lex.tk;
         let more = 1;
         while more {
-            expr(1);
+            let t = expr(1);
+            if n < want { need(t, types.param(ft, n)); }
             emit.sw(emit.slot(), 10);
             n = n + 1;
             lex.next();
@@ -503,6 +734,7 @@ fn args(sym, how) {
             }
         }
     }
+    if n != want { lex.error("wrong number of arguments"); }
     let first = emit.drop(n);
     let k = 0;
     while k < n {
@@ -512,46 +744,49 @@ fn args(sym, how) {
     emit.outgoing(n);
     if how == 0 {                               // a call of a symbol
         obj.site(sym);
-        return;
+    } else {
+        emit.lw(how - 1, 7);                    // through an id: lw t2, <slot>
+        obj.call("__call", 6);
     }
-    if how < 0 {                                // built in: one instruction
-        let want = 2;
-        let word = 0x00B52023;                  // sw  a1, 0(a0)
-        if how == -1 { want = 1; word = 0x00054503; }       // lbu a0, 0(a0)
-        if how == -2 { want = 1; word = 0x00052503; }       // lw  a0, 0(a0)
-        if how == -3 { word = 0x00B50023; }                 // sb  a1, 0(a0)
-        if n != want { lex.error("wrong number of arguments"); }
-        obj.word(word);
-        return;
-    }
-    emit.lw(how - 1, 7);                        // through an id: lw t2, <slot>
-    obj.call("__call", 6);
+    return types.gives(ft);
 }
 
-// named(name, len): a unary that starts with a name, which is read, as is
-// the token after it.
+// value(e, name, len): the value of a constant or a global, by its entry.
+fn value(e, name, len) {
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what == 0 {
+        emit.li(load32(e + 12));
+        litv = load32(e + 12);
+        litk = 1;
+        return load32(e + 24);
+    }
+    if what != 1 { eunknown(name, len); }
+    gload(load32(e + 12), load32(e + 24));
+    return load32(e + 24);
+}
+
+// called(e, name, len): a call of the function of an entry.  The ( is read.
+fn called(e, name, len) {
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what != 4 { lex.error_name("unknown function ", name, len); }
+    return args(load32(e + 24), load32(e + 12), 0);
+}
+
+// named(name, len): what starts with a name, which is read, as is the
+// token after it.
 fn named(name, len) {
     if lex.kind == 3 {
         let c = load8(lex.tk);
         if c == 40 {                            // name (
             let s = emit.look(name, len);
             if s >= 0 {                         // a local holding an id
-                args(0, s + 1);
-                return;
+                let ft = emit.ltype;
+                if types.is_fn(ft) == 0 { lex.error_name("not a function: ", name, len); }
+                return args(ft, 0, s + 1);
             }
-            if lex.zeq(name, len, "load8") { args(0, -1); return; }
-            if lex.zeq(name, len, "load32") { args(0, -2); return; }
-            if lex.zeq(name, len, "store8") { args(0, -3); return; }
-            if lex.zeq(name, len, "store32") { args(0, -4); return; }
-            let e = gfind(name, len);
-            if e {                              // another file's, by `use`
-                if load32(e + 8) == 2 {
-                    args(load32(e + 12), 0);
-                    return;
-                }
-            }
-            args(obj.bare(name, len), 0);
-            return;
+            return called(find(name, len), name, len);
         }
         if colons() {                           // file :: name
             let f = used(name, len);
@@ -559,94 +794,204 @@ fn named(name, len) {
             lex.chkident();
             let qn = lex.tk;
             let ql = lex.tl;
-            member(f, qn, ql);
-            let what = ikind;
-            let value = ivalue;
+            let e = member(f, qn, ql);
             lex.next();
-            if lex.punct(40) {
-                if what != 2 { lex.error_name("not a function: ", qn, ql); }
-                args(value, 0);
-                return;
-            }
+            if lex.punct(40) { return called(e, qn, ql); }
             lex.cur = lex.tk;
-            if what == 0 { emit.li(value); return; }
-            if what == 1 { gload(value); return; }
-            eunknown(qn, ql);
-        }
-        if c == 46 {                            // module . name: a call if (
-            obj.chkmod(name, len);              //   follows, else a global
-            lex.next();
-            lex.chkident();
-            obj.join(name, len, lex.tk, lex.tl);
-            let index = obj.ref(obj.qname, obj.qlen, 0);
-            lex.next();
-            if lex.punct(40) {
-                args(index, 0);
-                return;
-            }
-            lex.cur = lex.tk;
-            gload(index);
-            return;
+            return value(e, qn, ql);
         }
         if c == 123 {                           // bytes { ... } ?
             if lex.zeq(name, len, "bytes") {
                 bytes();
-                return;
+                return types.ptr(4);
             }
         }
     }
     lex.cur = lex.tk;                           // else a local, a global or a
     let s = emit.look(name, len);               //   constant
     if s >= 0 {
-        emit.lw(s, 10);
-        return;
+        let t = emit.ltype;
+        emit.get(s, t);
+        return t;
     }
-    let what = gkind(name, len);
-    if what != 0 && what != 1 { eunknown(name, len); }
-    let e = gfind(name, len);
-    if what {
-        gload(load32(e + 12));
-    } else {
-        emit.li(load32(e + 12));
-    }
+    return value(find(name, len), name, len);
 }
 
-fn unary() {
+// primary(): NUMBER | STRING | true | false | what starts with a name
+// | "(" expr ")"
+fn primary() {
     lex.next();
     if lex.kind == 2 {
-        emit.li(lex.number());
-        return;
+        litv = lex.number();
+        litk = 1;
+        emit.li(litv);
+        return 9;
     }
     if lex.kind == 4 {
         emit.string(lex.tk + 1, lex.tk + lex.tl - 1);
-        return;
+        return types.ptr(4);
     }
     if lex.kind == 1 {
+        if lex.is("true") { emit.li(1); return 7; }
+        if lex.is("false") { emit.li(0); return 7; }
         lex.chkident();
         let name = lex.tk;
         let len = lex.tl;
         lex.next();
-        named(name, len);
-        return;
+        return named(name, len);
     }
-    if lex.kind == 0 { lex.syntax(); }
-    if lex.tl != 1 { lex.syntax(); }
-    let c = load8(lex.tk);
-    if c == 40 {
-        expr(1);
-        lex.expect(41);
-        return;
-    }
-    if c == 45 { unary(); obj.word(0x40A00533); return; }       // neg a0, a0
-    if c == 33 { unary(); obj.word(0x00153513); return; }       // seqz a0, a0
-    if c == 126 { unary(); obj.word(0xFFF54513); return; }      // not a0, a0
-    if c == 38 { obj.idsite(fnref()); return; }                 // & fname
-    lex.syntax();
+    if lex.punct1(40) == 0 { lex.syntax(); }
+    let t = expr(1);
+    lex.expect(41);
+    return t;
 }
 
-// operators(min): { OPERATOR unary }, of operators of precedence min and up.
-// The left side is in a0.
-fn operators(min) {
+// addressof(): & NAME [ :: NAME ] (the & is read): the address of a local
+// or a global, or the id of a function.
+fn addressof() {
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    let e = 0;
+    lex.next();
+    if colons() {
+        let f = used(name, len);
+        lex.next();
+        lex.chkident();
+        name = lex.tk;
+        len = lex.tl;
+        e = member(f, name, len);
+    } else {
+        lex.cur = lex.tk;
+        let s = emit.look(name, len);
+        if s >= 0 {
+            emit.address(s);
+            return types.ptr(emit.ltype);
+        }
+        e = find(name, len);
+    }
+    let what = -1;
+    if e { what = load32(e + 8); }
+    if what == 4 {
+        obj.idsite(load32(e + 12));
+        return load32(e + 24);
+    }
+    if what != 1 { eunknown(name, len); }
+    obj.asite(load32(e + 12));
+    return types.ptr(load32(e + 24));
+}
+
+// index(t): [ expr ] after a pointer of type t, which is in a0 (the [ is
+// read): what it points at, that many on.
+fn index(t) {
+    if types.is_ptr(t) == 0 { etype("not a pointer: ", t); }
+    let to = types.target(t);
+    if types.size(to) == 0 { etype("nothing to load: ", t); }
+    emit.sw(emit.slot(), 10);
+    let it = expr(1);
+    if types.is_int(it) == 0 && it != 9 { etype("not a number to count with: ", it); }
+    lex.expect(93);
+    scale(types.size(to));
+    emit.lw(emit.drop(1), 11);
+    obj.word(0x00A58533);                       // add a0, a1, a0
+    emit.fetch(to);
+    place = obj.cn;
+    ptype = to;
+    return to;
+}
+
+// prefix(): ( "-" | "!" | "~" | "*" ) prefix | "&" name | primary { "[" expr "]" }
+fn prefix() {
+    lex.next();
+    if lex.kind == 3 && lex.tl == 1 {
+        let c = load8(lex.tk);
+        if c == 45 {
+            let t = prefix();
+            if types.is_int(t) == 0 && t != 9 { etype("no arithmetic on ", t); }
+            obj.word(0x40A00533);               // neg a0, a0
+            emit.fit(t);
+            litv = 0 - litv;
+            return t;
+        }
+        if c == 33 {
+            let t = prefix();
+            if t != 7 { mismatch(t, 7); }
+            obj.word(0x00153513);               // seqz a0, a0
+            return 7;
+        }
+        if c == 126 {
+            let t = prefix();
+            if types.is_int(t) == 0 && t != 9 { etype("no arithmetic on ", t); }
+            obj.word(0xFFF54513);               // not a0, a0
+            emit.fit(t);
+            litv = ~litv;
+            return t;
+        }
+        if c == 42 {
+            let t = prefix();
+            if types.is_ptr(t) == 0 { etype("not a pointer: ", t); }
+            let to = types.target(t);
+            if types.size(to) == 0 { etype("nothing to load: ", t); }
+            emit.fetch(to);
+            place = obj.cn;
+            ptype = to;
+            return to;
+        }
+        if c == 38 { return addressof(); }
+    }
+    lex.cur = lex.tk;
+    let t = primary();
+    lex.next();
+    while lex.punct1(91) {
+        t = index(t);
+        lex.next();
+    }
+    lex.cur = lex.tk;
+    return t;
+}
+
+// cast(t, to): append what makes a value of type t one of type `to`.
+fn cast(t, to) {
+    if t == to { return; }
+    let ok = 0;
+    if types.is_int(to) {
+        ok = types.is_int(t) || t == 9 || t == 7;
+        if types.is_ptr(t) { ok = types.size(to) == 4; }
+        if ok { emit.fit(to); }
+    }
+    if types.is_ptr(to) {
+        ok = types.is_ptr(t) || t == 9;
+        if types.is_int(t) { ok = types.size(t) == 4; }
+    }
+    if ok == 0 {
+        lex.complain();
+        print("cannot make ");
+        types.show(to);
+        print(" of ");
+        types.show(t);
+        lex.stop();
+    }
+}
+
+// unary(): prefix { "as" type }
+fn unary() {
+    let t = prefix();
+    let more = lex.accept("as");
+    while more {
+        let to = type();
+        cast(t, to);
+        t = to;
+        place = 0;
+        more = lex.accept("as");
+    }
+    return t;
+}
+
+// operators(min, lt): { OPERATOR unary }, of operators of precedence min
+// and up.  The left side, of type lt, is in a0.  It gives the type of the
+// whole.
+fn operators(min, lt) {
     lex.next();
     binop();
     while bprec != 0 && bprec >= min {
@@ -654,47 +999,49 @@ fn operators(min) {
         if p < 3 {                              // || and && are macros: they
             let m = macro(0);                   //   may skip their right side
             if m == 0 { lex.syntax(); }
-            m(p + 1);
+            lt = m(p + 1, lt);
         } else {
-            let w1 = bw1;
-            let w2 = bw2;
+            let op = bop;
+            let lv = litv;
+            let lk = litk;
             emit.sw(emit.slot(), 10);           // the left side waits in a slot
-            expr(p + 1);
-            if w1 < 16 {                        // * / %: a call, left side in a0
-                obj.word(0x00050593);           //   and right in a1.  mv a1, a0
-                emit.lw(emit.drop(1), 10);
-                if w1 == 1 { obj.call("__mul", 5); }
-                if w1 == 2 { obj.call("__div", 5); }
-                if w1 == 3 { obj.call("__rem", 5); }
-            } else {
-                emit.lw(emit.drop(1), 11);      // the left side, into a1
-                obj.word(w1);
-                if w2 { obj.word(w2); }
-            }
+            let rt = expr(p + 1);
+            lt = combine(op, lt, rt, lv, lk);
         }
+        place = 0;
         lex.next();
         binop();
     }
     lex.cur = lex.tk;                           // not ours: leave it unread
+    return lt;
 }
 
-// expr(min): an expression: unary { OPERATOR unary }.
+// expr(min): an expression: unary { OPERATOR unary }.  It gives its type.
 fn expr(min) {
     deeper();
-    unary();
-    operators(min);
+    let t = unary();
+    t = operators(min, t);
     depth = depth - 1;
+    return t;
 }
 
 // right(level): compile the right side of an operator, for the macro of
-// that operator, which is given the level: its value is left in a0.
+// that operator, which is given the level: its value is left in a0.  It
+// gives its type.
 pub fn right(level) {
-    expr(level);
+    return expr(level);
 }
 
-// expression(): compile an expression: its value is left in a0.
+// expression(): compile an expression: its value is left in a0.  It gives
+// its type.
 pub fn expression() {
-    expr(1);
+    return expr(1);
+}
+
+// condition(): compile an expression that must be a bool.
+pub fn condition() {
+    let t = expr(1);
+    if t != 7 { mismatch(t, 7); }
 }
 
 // ---- statements ------------------------------------------------------------
@@ -713,20 +1060,37 @@ pub fn block() {
     emit.close();
 }
 
+// body(gives): what the block compiled next gives, as a function's body:
+// a type, or 8 for nothing.
+pub fn body(gives) {
+    rettype = gives;
+}
+
+// returned(t): a `return` with a value of type t (8: with none) is here.
+pub fn returned(t) {
+    if t == 8 || rettype == 8 {
+        if t != rettype { mismatch(t, rettype); }
+        return;
+    }
+    need(t, rettype);
+}
+
 // assign(name, len): NAME = expr ; (the = is read)
 fn assign(name, len) {
     let s = emit.look(name, len);
     if s >= 0 {
-        expr(1);
+        let want = emit.ltype;
+        need(expr(1), want);
         lex.expect(59);
         emit.sw(s, 10);
         return;
     }
-    let what = gkind(name, len);                // not a local: a global
-    if what < 0 || what > 1 { eunknown(name, len); }
+    let e = find(name, len);                    // not a local: a global
+    let what = -1;
+    if e { what = load32(e + 8); }
     if what == 0 { lex.error("cannot assign to a constant"); }
-    let e = gfind(name, len);
-    expr(1);
+    if what != 1 { eunknown(name, len); }
+    need(expr(1), load32(e + 24));
     lex.expect(59);
     gstore(load32(e + 12));
 }
@@ -740,162 +1104,120 @@ pub fn statement() {
 
 fn stmt1() {
     lex.next();
-    if lex.kind != 1 {
-        lex.cur = lex.tk;
-        expr(1);
-        lex.expect(59);
-        return;
-    }
-    if lex.is("let") {                          // let NAME = expr
-        lex.next();
-        lex.chkident();
-        let name = lex.tk;
-        let len = lex.tl;
-        lex.expect(61);
-        expr(1);
-        lex.expect(59);
-        let s = emit.slot();                    // in scope from here on, not in
-        emit.local(name, len, s);               //   its own expression
-        emit.sw(s, 10);
-        return;
-    }
-    let m = 0;                                  // a macro?  (In a `test`
-    if emit.vtest != 1 || lex.is("assert") == 0 {       // block, `assert` is
-        m = macro(0);                           //   the statement below.)
-    }
-    if m {
-        m();
-        return;
-    }
-    if lex.is("asm") {
-        asmbody();
-        return;
-    }
-    if lex.is("assert") {                       // assert expr
-        if emit.vtest == 0 { lex.error("assert outside a test"); }
+    if lex.kind == 1 {
+        if lex.is("let") {                      // let NAME [ : type ] = expr ;
+            lex.next();
+            lex.chkident();
+            let name = lex.tk;
+            let len = lex.tl;
+            let want = 0;
+            lex.next();
+            if lex.punct1(58) {
+                want = type();
+                lex.next();
+            }
+            if lex.punct1(61) == 0 { lex.syntax(); }
+            let t = expr(1);
+            if want {
+                need(t, want);
+                t = want;
+            }
+            if t == 9 { t = 3; }                // a number, nothing said: i32
+            if t == 8 { lex.error("nothing to keep"); }
+            lex.expect(59);
+            let s = emit.slot();                // in scope from here on, not in
+            emit.local(name, len, s, t);        //   its own expression
+            emit.sw(s, 10);
+            return;
+        }
+        let m = macro(0);
+        if m {
+            m();
+            return;
+        }
+        if lex.is("asm") {
+            asmbody();
+            return;
+        }
+        let name = lex.tk;                      // a name: `NAME = ...` or an
+        let len = lex.tl;                       //   expression.  Look one on.
         let at_line = lex.line;
-        expr(1);
-        lex.expect(59);
-        obj.word(0x00050463);                   // beqz a0, +8
-        let at = emit.hole();                   // j <past the failure>
-        emit.li(at_line);                       // __test_fail(line)
-        obj.call("__test_fail", 11);
-        emit.jump(emit.exit_label());           // as `return` does
-        emit.here(at);
-        return;
-    }
-    let name = lex.tk;                          // a name: `NAME = ...` or an
-    let len = lex.tl;                           //   expression.  Look one on.
-    let at_line = lex.line;
-    lex.next();
-    if lex.punct1(61) {
-        lex.tk = name;
-        lex.tl = len;
-        lex.kind = 1;
-        lex.chkident();
-        assign(name, len);
-        return;
-    }
-    if lex.punct1(46) {
-        lex.next();                             // module . NAME = ... ?
-        if lex.kind == 1 {
-            let qn = lex.tk;
-            let ql = lex.tl;
-            lex.next();
-            if lex.punct1(61) {
-                obj.chkmod(name, len);
-                obj.join(name, len, qn, ql);
-                let index = obj.ref(obj.qname, obj.qlen, 0);
-                expr(1);
-                lex.expect(59);
-                gstore(index);
-                return;
+        lex.next();
+        if lex.punct1(61) {
+            lex.tk = name;
+            lex.tl = len;
+            lex.kind = 1;
+            lex.chkident();
+            assign(name, len);
+            return;
+        }
+        if colons() {
+            lex.next();                         // file :: NAME = ... ?
+            if lex.kind == 1 {
+                let qn = lex.tk;
+                let ql = lex.tl;
+                lex.next();
+                if lex.punct1(61) {
+                    let e = member(used(name, len), qn, ql);
+                    if load32(e + 8) == 0 { lex.error("cannot assign to a constant"); }
+                    if load32(e + 8) != 1 { eunknown(qn, ql); }
+                    need(expr(1), load32(e + 24));
+                    lex.expect(59);
+                    gstore(load32(e + 12));
+                    return;
+                }
             }
         }
+        lex.line = at_line;                     // an expression: back to the name
+        lex.cur = name;
+    } else {
+        lex.cur = lex.tk;
     }
-    if colons() {
-        lex.next();                             // file :: NAME = ... ?
-        if lex.kind == 1 {
-            let qn = lex.tk;
-            let ql = lex.tl;
-            lex.next();
-            if lex.punct1(61) {
-                member(used(name, len), qn, ql);
-                if ikind == 0 { lex.error("cannot assign to a constant"); }
-                if ikind != 1 { eunknown(qn, ql); }
-                let index = ivalue;
-                expr(1);
-                lex.expect(59);
-                gstore(index);
-                return;
-            }
-        }
-    }
-    lex.line = at_line;                         // an expression: back to the name
-    lex.cur = name;
+    place = 0;
     expr(1);
-    lex.expect(59);
+    lex.next();
+    if lex.punct1(61) {                         // *p = expr ;  p[i] = expr ;
+        if place != obj.cn { lex.error("cannot assign to that"); }
+        let to = ptype;
+        obj.back();                             // not the load: the address
+        emit.sw(emit.slot(), 10);               //   waits in a slot
+        need(expr(1), to);
+        lex.expect(59);
+        emit.lw(emit.drop(1), 11);
+        emit.put(to);
+        return;
+    }
+    if lex.punct1(59) == 0 { lex.syntax(); }
 }
 
 // ---- the top of a file -----------------------------------------------------
 
-// skip(): past a block that is not wanted.
-fn skip() {
-    lex.expect(123);
-    let open = 1;                               // how many { are open
-    while open {
-        lex.next();
-        if lex.kind == 0 { lex.syntax(); }
-        if lex.punct1(123) { open = open + 1; }
-        if lex.punct1(125) { open = open - 1; }
-    }
-}
-
-// global(public): [ pub ] let NAME = value ; (the let is read)
-fn global(public) {
-    lex.next();
-    lex.chkident();
-    let name = lex.tk;
-    let len = lex.tl;
-    if gfind(name, len) { edup(name, len); }
-    obj.qualify(name, len);
-    let index = 0;
-    if public {
-        index = obj.define(obj.qname, obj.qlen, 4);
-    } else {
-        index = obj.define(obj.qname, obj.qlen, 5);
-    }
-    if index < 0 { edup(obj.qname, obj.qlen); }
-    lex.expect(61);
-    obj.word(constval());                       // its record: the one word
-    lex.expect(59);
-    obj.end();
-    gadd(name, len, 1, index, public);
-}
-
-// function(what): fn NAME ( [ NAME { , NAME } ] ) block (the fn is read).
-// what is its symbol's kind: 1, or 3 for a local function.
-fn function(what) {
-    lex.next();
-    lex.chkident();
-    if obj.modl == 0 && lex.mode == 0 {         // the root's main is public
-        if lex.is("main") { what = 1; }
-    }
-    if gkind(lex.tk, lex.tl) >= 2 { edup(lex.tk, lex.tl); }
-    obj.qualify(lex.tk, lex.tl);
-    if obj.define(obj.qname, obj.qlen, what) < 0 { edup(obj.qname, obj.qlen); }
-    emit.begin();
+// signature(bind): ( [ NAME : type { , NAME : type } ] ) [ -> type ]: the
+// type of the function.  If bind, the parameters become its locals:
+// parameter k goes to slot k.
+fn signature(bind) {
+    let base = yn;
     lex.expect(40);
     lex.next();
     if lex.kind == 3 {
         if load8(lex.tk) != 41 { lex.syntax(); }
     } else {
         let more = 1;
-        while more {                            // parameter k goes to slot k
+        while more {
             lex.chkident();
-            let s = emit.slot();
-            emit.local(lex.tk, lex.tl, s);
-            emit.param(s, s);
+            let name = lex.tk;
+            let len = lex.tl;
+            lex.expect(58);
+            let t = type();
+            if t == 8 { lex.syntax(); }
+            if yn + 4 > ylim { lex.ebig(); }
+            store32(yn, t);
+            yn = yn + 4;
+            if bind {
+                let s = emit.slot();
+                emit.local(name, len, s, t);
+                emit.param(s, s);
+            }
             lex.next();
             if lex.kind != 3 { lex.syntax(); }
             if load8(lex.tk) == 41 { more = 0; } else {
@@ -904,48 +1226,102 @@ fn function(what) {
             }
         }
     }
+    let gives = 8;
+    if arrow() { gives = type(); }
+    let f = types.func(gives, (yn - base) >> 2, base);
+    yn = base;
+    return f;
+}
+
+// function(public): fn NAME signature block (the fn is read).
+fn function(public) {
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    obj.qualify(name, len);
+    if pass == 1 {
+        if gin(lex.unit, name, len) { edup(name, len); }
+        let index = obj.ref(obj.qname, obj.qlen, 0);
+        gadd(name, len, 4, index, public, signature(0));
+        skip_item();
+        return;
+    }
+    let what = 3;                               // a local symbol, unless pub,
+    if public { what = 1; }                     //   or the root's main
+    if lex.unit == lex.root() {
+        if lex.zeq(name, len, "main") { what = 1; }
+    }
+    if obj.define(obj.qname, obj.qlen, what) < 0 { edup(name, len); }
+    emit.begin();
+    rettype = types.gives(signature(1));
     block();
     emit.end();
 }
 
+// global(public): [ pub ] let NAME [ : type ] = value ; (the let is read)
+fn global(public) {
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    let t = 3;
+    lex.next();
+    if lex.punct1(58) {
+        t = type();
+        lex.next();
+    }
+    if lex.punct1(61) == 0 { lex.syntax(); }
+    let v = constval();
+    if cvtype == 7 {
+        if t != 7 { mismatch(7, t); }
+    } else {
+        if types.is_int(t) {
+            if types.fits(v, t) == 0 { etype("the number does not fit ", t); }
+        } else {
+            if types.is_ptr(t) == 0 { mismatch(9, t); }
+        }
+    }
+    lex.expect(59);
+    obj.qualify(name, len);
+    if pass == 1 {
+        if gin(lex.unit, name, len) { edup(name, len); }
+        gadd(name, len, 1, obj.ref(obj.qname, obj.qlen, 0), public, t);
+        return;
+    }
+    let what = 5;
+    if public { what = 4; }
+    if obj.define(obj.qname, obj.qlen, what) < 0 { edup(name, len); }
+    obj.word(v);                                // its record: the one word
+    obj.end();
+}
+
+// constant(public): [ pub ] const NAME = value ; (the const is read)
+fn constant(public) {
+    lex.next();
+    lex.chkident();
+    let name = lex.tk;
+    let len = lex.tl;
+    lex.expect(61);
+    let v = constval();
+    lex.expect(59);
+    if pass == 1 {
+        if gin(lex.unit, name, len) { edup(name, len); }
+        gadd(name, len, 0, v, public, cvtype);
+    }
+}
+
 // top(): one thing at the top of a file.  Its first token is read, a name.
 fn top() {
-    if lex.is("module") {                       // before anything else, once
-        if obj.started() { lex.error("module must come first, and once"); }
-        lex.next();
-        lex.chkident();
-        obj.setmodule(lex.tk, lex.tl);
-        lex.expect(59);
-        return;
-    }
-    if lex.is("import") {
-        lex.next();
-        lex.chkident();
-        obj.imports(lex.tk, lex.tl);
-        lex.expect(59);
-        return;
-    }
-    if lex.is("test") {
-        lex.next();                             // its name
-        if lex.kind != 4 { lex.syntax(); }
-        if lex.mode == 0 {                      // not wanted
-            skip();
-            return;
-        }
-        let name = lex.tk;
-        let len = lex.tl;
-        obj.init();
-        emit.begin();
-        emit.vtest = 1;
-        emit.string(lex.file, lex.fend);        // __test_begin(name, file)
-        obj.word(0x00050593);                   // mv a1, a0
-        emit.string(name + 1, name + len - 1);  // the name, inside its quotes
-        obj.call("__test_begin", 12);
-        block();
-        emit.end();
+    if lex.is("use") {
+        use();
         return;
     }
     if lex.is("init") {
+        if pass == 1 {
+            skip_item();
+            return;
+        }
         obj.init();
         lex.next();
         let bare = 0;
@@ -957,12 +1333,9 @@ fn top() {
         }
         lex.cur = lex.tk;                       // a block, with a frame
         emit.begin();
+        rettype = 8;
         block();
         emit.end();
-        return;
-    }
-    if lex.is("use") {
-        use();
         return;
     }
     let public = 0;
@@ -971,16 +1344,8 @@ fn top() {
         lex.next();
         if lex.kind != 1 { lex.syntax(); }
     }
-    if lex.is("const") {                        // [ pub ] const NAME = value ;
-        lex.next();
-        lex.chkident();
-        let name = lex.tk;
-        let len = lex.tl;
-        if gfind(name, len) { edup(name, len); }
-        lex.expect(61);
-        let v = constval();
-        lex.expect(59);
-        gadd(name, len, 0, v, public);
+    if lex.is("const") {
+        constant(public);
         return;
     }
     if lex.is("let") {
@@ -988,7 +1353,7 @@ fn top() {
         return;
     }
     if lex.is("fn") == 0 { lex.syntax(); }
-    if public { function(1); } else { function(3); }
+    function(public);
 }
 
 // item1(): one thing at the top of a file, or an attribute and what it
@@ -1041,12 +1406,52 @@ pub fn skip_item() {
     }
 }
 
-// file(): the whole file.  The same for a file that the one being compiled
-// uses.
-pub fn file() {
+// file(): the whole file, in the pass we are in.
+fn file() {
     lex.next();
     while lex.kind {
         item1();
         lex.next();
     }
+}
+
+// last(root): the init record that ends a program that has the prelude:
+// call main and exit with what it gives; or, if the tests are wanted,
+// report them (lib/rt.fam).
+fn last(root) {
+    lex.enter(root);
+    obj.init();
+    emit.begin();
+    if lex.mode {
+        obj.call("__tests_done", 12);
+    } else {
+        let e = gin(root, "main", 4);
+        let ok = 0;
+        if e {
+            if load32(e + 8) == 4 { ok = load32(e + 24) == types.func(3, 0, 0); }
+        }
+        if ok == 0 { lex.error("there is no fn main() -> i32"); }
+        obj.site(load32(e + 12));
+        obj.call("exit", 4);
+    }
+    emit.end();
+}
+
+// program(): everything: the prelude, if there is one, and the file to
+// compile, with the files it uses.
+pub fn program() {
+    let pre = lex.prelude();
+    let root = lex.root();
+    pass = 1;
+    if pre { run(pre); }
+    run(root);
+    let e = gb;
+    while e < gn {
+        if load32(e + 8) == 5 { settle(e); }
+        e = e + 32;
+    }
+    pass = 2;
+    if pre { run(pre); }
+    run(root);
+    if pre { last(root); }
 }

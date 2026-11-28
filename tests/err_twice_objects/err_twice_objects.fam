@@ -1,3 +1,0 @@
-// Two objects may not both define a public function.
-pub fn twin() { return 1; }
-fn main() { return twin(); }

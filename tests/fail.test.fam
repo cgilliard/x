@@ -1,15 +1,19 @@
 // Every failure is reported; a test stops at its first failed assert.
-test "first" { assert 1; }
+#[test]
+fn first() { assert(true); }
 
-test "second" {
+#[test]
+fn second() {
     let x = 4;
-    assert x == 4;
-    assert x == 5;
-    assert x == 6;
+    assert(x == 4);
+    assert(x == 5);
+    assert(x == 6);
 }
 
-test "third" {
-    assert 1 > 2;
+#[test]
+fn third() {
+    assert(1 > 2);
 }
 
-test "fourth" { assert 2 > 1; }
+#[test]
+fn fourth() { assert(2 > 1); }

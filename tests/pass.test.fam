@@ -1,21 +1,24 @@
-fn add(a, b) { return a + b; }
+fn add(a: i32, b: i32) -> i32 { return a + b; }
 
-test "adds" {
-    assert add(2, 3) == 5;
-    assert add(-1, 1) == 0;
+#[test]
+fn adds() {
+    assert(add(2, 3) == 5);
+    assert(add(-1, 1) == 0);
 }
 
-test "loops and locals" {
+#[test]
+fn loops_and_locals() {
     let i = 0;
     let sum = 0;
     while i < 5 { sum = sum + i; i = i + 1; }
-    assert sum == 10;
+    assert_eq(sum, 10);
 }
 
-test "returns early" {
+#[test]
+fn returns_early() {
     if add(1, 1) == 2 { return; }
-    assert 0;
+    assert(false);
 }
 
 // main is not called in a test build.
-fn main() { return 9; }
+fn main() -> i32 { return 9; }

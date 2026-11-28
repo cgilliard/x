@@ -1,4 +1,4 @@
-fn main() {
-    assert(1, "not in a test");
+fn main() -> i32 {
+    assert(true, "not in a test");
     return 0;
 }

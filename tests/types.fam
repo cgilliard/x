@@ -1,0 +1,33 @@
+// Integers of every size, with and without a sign, and turning one into
+// another.
+fn show(n: i32) { print_int(n); putc(32); }
+fn half(n: u32) -> u32 { return n / 2; }
+fn main() -> i32 {
+    let b: u8 = 250;
+    b = b + 10;                         // wraps at 256
+    show(b as i32);
+    let s: i8 = 127;
+    s = s + 1;                          // wraps to -128
+    show(s as i32);
+    let w: u16 = 65535;
+    show((w + 1) as i32);
+    let h: i16 = -32768;
+    show((h - 1) as i32);
+    print("| ");
+    let big: u32 = 0xFFFFFFF0;
+    show((big > 16) as i32);            // no sign: it is large
+    show((big as i32 > 16) as i32);     // with one: it is -16
+    show((big >> 28) as i32);           // zeros come in
+    show(big as i32 >> 28);             // the sign comes in
+    show(half(big) as i32);
+    show((big % 7) as i32);
+    print("| ");
+    show(300 as u8 as i32);             // cut to a byte
+    show(-1 as u8 as i32);
+    show(200 as u8 as i8 as i32);       // the same byte, with a sign
+    show(true as i32 + true as i32);
+    let p = alloc(4);
+    show((p as u32 == (p + 0) as u32) as i32);
+    putc(10);
+    return 0;
+}

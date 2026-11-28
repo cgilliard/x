@@ -19,8 +19,8 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-// obj -- the object being written (docs/OBJECT.md), and the names of
-// modules.
+// obj -- the object being written (docs/OBJECT.md), and the names of its
+// symbols.
 //
 // Part of the fam compiler written in fam (src/famc/): see main.fam.
 
@@ -58,37 +58,16 @@ let rec = 0;            // the symbol of the record being written
 let hb = 0;
 let hn = 0;
 
-// This file's module, and its length (0: the root module).
+// The module of the file being compiled, and its length (0: the root
+// module): a function f of the module a.b is the symbol `a.b.f`.
 let modn = 0;
-pub let modl = 0;
+let modl = 0;
 
-// The modules imported, 8 bytes each: name, length.  Those of the file
-// being compiled start at ifile.
-let ibase = 0;
-let ifile = 0;
-let itop = 0;
-let ilim = 0;
-
-// The sites of this file that name a function without a module, 8 bytes
-// each: the site, and the line it is on.  resolve settles them when the
-// file ends.  Those of the file being compiled start at bfile.
-let bb = 0;
-let bfile = 0;
-let bn = 0;
-let blim = 0;
-
-// What is put aside while a file that this one uses is compiled, 16 bytes
-// each: modn, modl, ifile, bfile.
+// What is put aside while a file that this one uses is compiled, 8 bytes
+// each: modn, modl.
 let ub = 0;
 let un = 0;
 let ulim = 0;
-
-// What is still to be checked when everything is compiled, 20 bytes each:
-// a symbol's index, what it must be (1: a function that is pub; 2: not
-// private to another file), and the file and the line that say so.
-let kb = 0;
-let kn = 0;
-let klim = 0;
 
 let scr = 0;            // room to spell one `module.name`
 
@@ -102,12 +81,7 @@ pub fn setup() {
     clb = alloc(0x100000);  cln = clb;  cllim = clb + 0x100000;
     nb = alloc(0x200000);   nn = nb;    nlim = nb + 0x200000;
     cb = alloc(0x1000000);  cn = cb;    clim = cb + 0x1000000;
-    ibase = alloc(0x10000); itop = ibase; ilim = ibase + 0x10000;
-    ifile = ibase;
-    bb = alloc(0x100000);   bn = bb;    blim = bb + 0x100000;
-    bfile = bb;
     ub = alloc(0x1000);     un = ub;    ulim = ub + 0x1000;
-    kb = alloc(0x100000);   kn = kb;    klim = kb + 0x100000;
     scr = alloc(0x400);
     hn = alloc(0x40000);
     hb = alloc(0x4000);
@@ -210,34 +184,18 @@ pub fn ref(name, len, kind) {
     return i;
 }
 
-// bare(name, len): the index of the symbol of a function named without a
-// module.  In a file with a module, which function that is is settled by
-// resolve: the index then has the bit 0x20000000 set, which tells note to
-// list the site made with it.
-pub fn bare(name, len) {
-    if modl { return ref(name, len, 0) | 0x20000000; }
-    return ref(name, len, 0);
-}
-
 // kind(index): the kind of a symbol.
 pub fn kind(index) {
     return load32(sym(index));
 }
 
-// check(index, what, line): when everything is compiled, the symbol must
-// be a function that is pub (what 1), or not private to another file
-// (what 2): this file's line says so.
-pub fn check(index, what, line) {
-    if kn + 20 > klim { lex.ebig(); }
-    store32(kn, index);
-    store32(kn + 4, what);
-    store32(kn + 8, lex.file);
-    store32(kn + 12, lex.fend);
-    store32(kn + 16, line);
-    kn = kn + 20;
-}
-
 // ---- code and call sites ---------------------------------------------------
+
+// back(): take back the word appended last.  It must not be part of a
+// site.
+pub fn back() {
+    cn = cn - 4;
+}
 
 // word(w): append a word to the code.
 pub fn word(w) {
@@ -249,13 +207,6 @@ pub fn word(w) {
 // note(index, words): a site here for a symbol, and its zero words.
 fn note(index, words) {
     if cln + 8 > cllim { lex.ebig(); }
-    if index & 0x20000000 {                     // named without a module
-        index = index & 0xDFFFFFFF;
-        if bn + 8 > blim { lex.ebig(); }
-        store32(bn, cln);
-        store32(bn + 4, lex.line);
-        bn = bn + 8;
-    }
     store32(cln, cn - cb);
     store32(cln + 4, index);
     cln = cln + 8;
@@ -315,109 +266,22 @@ pub fn qualify(name, len) {
     join(modn, modl, name, len);
 }
 
-fn nameq(a, alen, b, blen) {
-    if alen != blen { return 0; }
-    return lex.same(a, b, alen);
-}
-
-// chkmod(name, len): a name must be this file's module or one it imports.
-pub fn chkmod(name, len) {
-    if nameq(name, len, modn, modl) { return; }
-    let p = ifile;
-    while p < itop {
-        if nameq(name, len, load32(p), load32(p + 4)) { return; }
-        p = p + 8;
-    }
-    lex.error_name("unknown module ", name, len);
-}
-
-// setmodule(name, len): this file's module.  It must come before anything
-// else, and once.
-pub fn setmodule(name, len) {
-    modn = name;
-    modl = len;
-}
-
-// started(): has the file a module, a symbol, code or an import yet?
-pub fn started() {
-    return modl != 0 || nsy != 0 || cn != cb || itop != ifile;
-}
-
-// imports(name, len): the file imports a module.
-pub fn imports(name, len) {
-    if itop + 8 > ilim { lex.ebig(); }
-    store32(itop, name);
-    store32(itop + 4, len);
-    itop = itop + 8;
-}
-
-// resolve(): at the end of a file with a module: settle the sites that
-// name a function without a module.  If the file defines `module.name`, the
-// site is for that; else it is for the root's function of that name.
-fn resolve() {
-    let p = bfile;
-    while p < bn {
-        let c = load32(p);
-        let v = load32(c + 4);
-        let s = sym(v & 0x3FFFFFFF);
-        qualify(load32(s + 4) + nb, load32(s + 8));
-        let i = find(qname, qlen);
-        let mine = 0;
-        if i >= 0 { mine = load32(sym(i)) != 0; }
-        if mine {
-            store32(c + 4, i | (v & 0xC0000000));
-        } else {
-            check(v & 0x3FFFFFFF, 2, load32(p + 4));
-        }
-        p = p + 8;
-    }
-    bn = bfile;
-}
-
-// enter(name, len): a file that the one being compiled uses is compiled
-// now, as the module of that name; what we know of this one is put aside.
+// enter(name, len): the file compiled from here on is the module of that
+// name (the length 0: the root module); the one so far is put aside.
 pub fn enter(name, len) {
-    if un + 16 > ulim { lex.error("files use each other too deep"); }
+    if un + 8 > ulim { lex.error("files use each other too deep"); }
     store32(un, modn);
     store32(un + 4, modl);
-    store32(un + 8, ifile);
-    store32(un + 12, bfile);
-    un = un + 16;
+    un = un + 8;
     modn = name;
     modl = len;
-    ifile = itop;
-    bfile = bn;
 }
 
-// leave(): that file ends: back to the one that uses it.
+// leave(): that file ends: back to the one put aside.
 pub fn leave() {
-    resolve();
-    itop = ifile;
-    un = un - 16;
+    un = un - 8;
     modn = load32(un);
     modl = load32(un + 4);
-    ifile = load32(un + 8);
-    bfile = load32(un + 12);
-}
-
-// checks(): everything is compiled: what was left to check.
-fn checks() {
-    let p = kb;
-    while p < kn {
-        let s = sym(load32(p));
-        let k = load32(s);
-        let what = load32(p + 4);
-        lex.file = load32(p + 8);
-        lex.fend = load32(p + 12);
-        lex.line = load32(p + 16);
-        if k == 3 || k == 5 {
-            lex.error_name("private: ", load32(s + 4) + nb, load32(s + 8));
-        }
-        if what == 1 && k != 1 {
-            lex.error_name("undefined: ", load32(s + 4) + nb, load32(s + 8));
-        }
-        p = p + 20;
-    }
 }
 
 // ---- writing the object ----------------------------------------------------
@@ -438,8 +302,6 @@ fn region(from, to) {
 
 // write(): write the object: header, symbols, call sites, code, names.
 pub fn write() {
-    resolve();
-    checks();
     while (nn - nb) & 3 {                       // the names: up to a whole word
         if nn >= nlim { lex.ebig(); }
         store8(nn, 0);

@@ -1,2 +1,2 @@
-famld: not a function: g
+tests/err_not_function.fam:4: unknown function g
 exit 1

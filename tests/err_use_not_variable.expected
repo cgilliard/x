@@ -1,0 +1,2 @@
+tests/err_use_not_variable/main.fam:4: unknown variable area
+exit 1
