@@ -436,14 +436,13 @@ pub fn prelude() {
     return library;
 }
 
-// lookup(path, len): the file that a path names: its entry (0: none).  A
-// path is names with / between them, as `a/b`: the file is a/b.fam in the
-// directory of the file to compile.
-pub fn lookup(path, len) {
-    let dir = 0;                                // how much of the first file's
+// beside(of, path, len): the file that a path names in the directory of
+// the file `of`: its entry (0: none).
+fn beside(of, path, len) {
+    let dir = 0;                                // how much of that file's
     let i = 0;                                  //   name is its directory
-    let rname = load32(first);
-    let rlen = load32(first + 4) - rname;
+    let rname = load32(of);
+    let rlen = load32(of + 4) - rname;
     while i < rlen {
         if load8(rname + i) == 47 { dir = i + 1; }
         i = i + 1;
@@ -463,6 +462,16 @@ pub fn lookup(path, len) {
         f = f + 32;
     }
     return 0;
+}
+
+// lookup(path, len): the file that a path names: its entry (0: none).  A
+// path is names with / between them, as `a/b`: the file is a/b.fam in the
+// directory of the file to compile; or, if there is none there, in the
+// directory of the prelude, which is where the library is.
+pub fn lookup(path, len) {
+    let f = beside(first, path, len);
+    if f == 0 && library != 0 { f = beside(library, path, len); }
+    return f;
 }
 
 // read(): read everything from the console, up to the byte 0x04: the file

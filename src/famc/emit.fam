@@ -91,6 +91,18 @@ let lablim = 0;
 let waiting = 0;        // how many are not placed yet
 let out = 0;            // the label at the function's end
 
+// Room in the frame for what operators on structs give: it lies below the
+// slots, and how many slots there are is not known until the function
+// ends.  So every instruction that loads the address of some of it is
+// listed, 8 bytes each: where the instruction is, and which word of the
+// room, counted from the slots, has the lowest address.  All of it is free
+// again when a statement ends.
+let wb = 0;
+let wn = 0;
+let wlim = 0;
+let wcur = 0;           // words of it in use
+let wmax = 0;           // the most in use at once in this function
+
 // setup(): room for the locals, the blocks and the labels.
 pub fn setup() {
     lbase = alloc(0x10000);
@@ -102,6 +114,9 @@ pub fn setup() {
     lab = alloc(0x400000);
     labn = lab;
     lablim = lab + 0x400000;
+    wb = alloc(0x40000);
+    wn = wb;
+    wlim = wb + 0x40000;
 }
 
 fn elocals() { lex.error("function needs too many locals"); }
@@ -122,6 +137,29 @@ pub fn slots(n) {
     if vcur > 500 { elocals(); }
     if vcur > vmax { vmax = vcur; }
     return vcur - 1;
+}
+
+// rewind(): a statement starts: the room for what operators on structs
+// give is all free.
+pub fn rewind() {
+    wcur = 0;
+}
+
+// temp(bytes): room for a struct of that size, until the statement ends:
+// the number that temp_address takes.
+pub fn temp(bytes) {
+    wcur = wcur + ((bytes + 3) >> 2);
+    if wcur > wmax { wmax = wcur; }
+    return wcur - 1;
+}
+
+// temp_address(k): append the loading of the address of that room into a0.
+pub fn temp_address(k) {
+    if wn + 8 > wlim { lex.ebig(); }
+    store32(wn, obj.cn);
+    store32(wn + 4, k);
+    wn = wn + 8;
+    obj.word(0x00040513);                       // addi a0, s0, <filled in by end>
 }
 
 // drop(n): give back the last n slots: the lowest of them.
@@ -473,6 +511,9 @@ pub fn begin() {
     vmax = 0;
     vout = 0;
     vtest = 0;
+    wn = wb;
+    wcur = 0;
+    wmax = 0;
     stop = sbase;
     serial = serial + 1;
     whole = serial;
@@ -493,7 +534,13 @@ pub fn end() {
     if vtest { obj.call("__test_end", 10); }
     obj.word(0x00040113);                       // mv sp, s0
     obj.word(0xFFC12403);                       // lw s0, -4(sp)
-    let frame = (((vmax + vout) << 2) + 19) & -16;
+    let w = wb;                                 // the room below the slots
+    while w < wn {
+        let at = 0 - (((vmax + load32(w + 4)) << 2) + 8);
+        store32(load32(w), (at << 20) | 0x00040513);
+        w = w + 8;
+    }
+    let frame = (((vmax + wmax + vout) << 2) + 19) & -16;
     if frame > 0x7F0 { elocals(); }
     store32(vpro, ((0 - frame) << 20) | 0x00010113);        // addi sp, sp, -frame
     let off = frame - 4;

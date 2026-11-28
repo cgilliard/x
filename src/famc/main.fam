@@ -92,8 +92,10 @@
 // Files that use others.  `use a::b;` is for the file a.fam, or a/b.fam,
 // in the directory of the file being compiled.  It is compiled where the
 // first `use` of it stands, into the same object, as the module `a` (or
-// `a.b`): a function f of it is the symbol `a.f`.  The file to compile and
-// the prelude are the root module: their f is the symbol `f`.
+// `a.b`): a function f of it is the symbol `a.f`.  The file to compile is
+// the module of its own name (main.fam: `main`), and the prelude is the
+// root module: its f is the symbol `f`.  A `use` that names no file there
+// names one beside the prelude: the library.
 
 import lex;
 import obj;

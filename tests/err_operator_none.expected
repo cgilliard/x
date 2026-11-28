@@ -1,0 +1,2 @@
+tests/err_operator_none.fam:4: no such operator on P and P
+exit 1

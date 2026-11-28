@@ -1,6 +1,8 @@
-// lib/rt.fam -- the runtime.  scripts/build.sh compiles it to bin/rt.o, and
-// tools/famc puts it first in every link; only the functions a program uses
-// end up in its binary.
+// src/famc/rt.fam -- the runtime of the compiler itself (bin/famc), in the
+// stage compiler's language, like the compiler.  It is what lib/rt.fam, the
+// runtime of the programs the compiler compiles, was before the language
+// had types.  scripts/build.sh compiles it to bin/famc0.rt.o and puts it
+// first in the link of bin/famc, and rtmain.fam, beside it, last.
 //
 // It starts with the startup code, which lays out memory and guards against
 // the two stacks running out.  That runs into the init records of the
@@ -158,8 +160,28 @@ fn __hex_digit(n) {
 
 // ---- input ----------------------------------------------------------------
 
-// getc(): the next byte from the console.  Waits until there is one.
+// getc(): the next byte of the input.
+//
+// The input is what comes from the console, unless it has been put in
+// memory: at 0x87000000, after the four bytes "FAMI".  tools/famc and
+// scripts/build.sh have QEMU put it there, because a program reads the
+// console slowly.  (They do so only for a machine of 128 MiB, where that
+// address is 16 MiB under the top of memory and above anything this
+// program allocates; with less memory it is not looked at.)
+let __input = 0;        // 0: not looked yet; -1: the console; else where
+                        //   the next byte is
 pub fn getc() {
+    if __input == 0 {
+        __input = -1;
+        if __sp() - 0x87000000 > 4 {
+            if load32(0x87000000) == 0x494D4146 { __input = 0x87000004; }
+        }
+    }
+    if __input == -1 { return __console(); }
+    __input = __input + 1;
+    return load8(__input - 1);
+}
+fn __console() {
     asm {
         B7030010    // lui t2,0x10000
         // wait:

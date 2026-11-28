@@ -20,8 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 // std -- the macros every file has: what controls flow (`if`, `while`,
-// `return`, `||`, `&&`), and tests (`#[cfg(...)]`, `#[test]`, `assert`,
-// `assert_eq`).
+// `return`, `||`, `&&`), tests (`#[cfg(...)]`, `#[test]`, `assert`,
+// `assert_eq`), and `#[operator(...)]`.
 //
 // Part of the fam compiler (src/famc/): see main.fam.
 //
@@ -151,6 +151,17 @@ fn test_macro() {
     emit.end();
 }
 
+// #[operator(OP)] fn ...: the function is what OP does for the types its
+// parameters say (parse.fam, overload).
+fn operator_macro() {
+    lex.expect(40);
+    let op = parse.operator_token();
+    lex.expect(41);
+    lex.expect(93);
+    parse.item();
+    if parse.declaring() { parse.overload(op); }
+}
+
 // reason(): [ , expr ] ) : the reason given for a failure, a string, into
 // a1 (0: none is given).
 fn reason() {
@@ -219,6 +230,7 @@ fn assert_eq_macro() {
 
 init {
     parse.attribute("cfg", &cfg_macro);
+    parse.attribute("operator", &operator_macro);
     parse.attribute("test", &test_macro);
     parse.define("assert", &assert_macro);
     parse.define("assert_eq", &assert_eq_macro);

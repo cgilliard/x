@@ -1,0 +1,29 @@
+// The library's 64-bit integers: a struct, with operators that are functions.
+use u64;      // the file, and the struct in it of the same name
+
+fn show(a: *u64) { u64::print_hex(a); putc(32); }
+
+fn main() -> i32 {
+    let one: u64;
+    u64::set(&one, 0, 1);
+    let big = one << 40;
+    show(&big);
+    let sum = big + big - one;
+    show(&sum);
+    let a: u64;
+    u64::set(&a, 0, 0xFFFFFFFF);
+    let sq = a * a + one;                       // operators in one expression
+    show(&sq);
+    if sq > big && big != one { print("larger "); }
+    let fact = one;                             // 20! needs 62 bits
+    let n = one;
+    let i = 1;
+    while i < 20 {
+        n = n + one;
+        fact = fact * n;
+        i = i + 1;
+    }
+    show(&fact);
+    putc(10);
+    return 0;
+}

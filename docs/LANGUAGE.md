@@ -159,9 +159,74 @@ fn main() -> i32 {
 - A struct can hold a pointer to itself, but not itself. Structs can be
   named before they are defined, and `pub struct` can be used from another
   file: `use shapes::Rect;`, or `shapes::Rect`.
-- Structs and arrays have no operators: `a == b` is an error.
+- Structs and arrays have no operators of their own: `a == b` is an
+  error, unless a function says what it means: see "Operators that are
+  functions".
 - A function's locals have about 2000 bytes between them: a larger array
   is a global, or comes from `alloc`.
+
+## Operators that are functions
+
+A function marked `#[operator(OP)]` is what the operator does for a struct
+(or an array):
+
+```
+pub struct u64 { lo: u32, hi: u32 }
+
+#[operator(+)]
+pub fn add(to: *u64, a: *u64, b: *u64) {
+    let lo = a.lo + b.lo;
+    let carry: u32 = 0;
+    if lo < a.lo { carry = 1; }
+    to.hi = a.hi + b.hi + carry;
+    to.lo = lo;
+}
+
+#[operator(==)]
+pub fn eq(a: *u64, b: *u64) -> bool {
+    return a.lo == b.lo && a.hi == b.hi;
+}
+```
+
+Then `a + b` is a call of `add`, and `a == b` of `eq`, wherever the two
+sides are of that type, in any file.
+
+| The function | Is what does |
+|---|---|
+| `fn(to: *T, a: *T, b: *T)` | `a OP b` for `\|` `^` `&` `<<` `>>` `+` `-` `*` `/` `%`: it puts the result where `to` points |
+| `fn(to: *T, a: *T, b: U)` | the same with a right side of another type, as in `a << 3` |
+| `fn(a: *T, b: *T) -> bool` | `==` and `<`; from those two, `!=` `>` `<=` `>=` are made |
+| `fn(to: *T, a: *T)` | `-a` and `~a` |
+
+- The result of such an operator is kept in the function's frame until the
+  statement ends, so `a * b + c` works, and `let d = a * b + c;` copies
+  it out.
+- The operators of integers, `bool`s and pointers are the compiler's own,
+  and cannot be given this way yet.
+
+## The library
+
+A `use` that names no file of the program names one of the library's, in
+`lib/`. So far there is one:
+
+| File | What it has |
+|---|---|
+| `u64` | Integers of 64 bits without a sign: the struct `u64`, with `+` `-` `*` `&` `\|` `^` `~` `<<` `>>` and the comparisons; `u64::set(&a, hi, lo)` and `u64::print_hex(&a)`. |
+
+```
+use u64;                    // the file, and the struct in it of that name
+
+fn main() -> i32 {
+    let one: u64;
+    u64::set(&one, 0, 1);
+    let big = (one << 40) + one;
+    u64::print_hex(&big);
+    return 0;
+}
+```
+
+A file's name stands for the struct of the same name in it, where a type
+is wanted.
 
 ## Functions
 
@@ -348,13 +413,14 @@ FAIL  subtracts (math.fam:21): 3 is not 4: three less one
 - The exit code is 0 if every test passed, else 1.
 - `famc --test main.fam -o t` keeps the test binary as `t` and does not
   run it; `tools/q32 t` runs it later.
-- `famc --test lib/rt.fam` runs the runtime's own tests.
+- `famc --test lib/rt.fam` runs the runtime's own tests, and
+  `famc --test lib/u64.fam` the library's.
 - A panic or a trap in a test ends the whole run.
 
 ## Macros
 
-`if`, `while`, `return`, `||`, `&&`, `#[cfg]`, `#[test]`, `assert` and
-`assert_eq` are not part of the compiler proper. Each is a macro: a
+`if`, `while`, `return`, `||`, `&&`, `#[cfg]`, `#[test]`, `#[operator]`,
+`assert` and `assert_eq` are not part of the compiler proper. Each is a macro: a
 function in `src/famc/std.fam` that the compiler calls where the word
 stands, which reads what follows and says what code to write, with labels
 and jumps (`docs/CORE.md`). A program cannot define its own yet.
@@ -452,7 +518,8 @@ prog.fam:7: expected u8, found i32
 
 ## Not yet
 
-- Integers of 64 bits, tagged unions and `match`.
+- Tagged unions and `match`.
+- Integers of 64 bits with a sign, and dividing those without one.
 - Writing a struct or an array out as a value; passing one to a function
   other than by pointer; checking an index against an array's length.
 - Character literals.
@@ -461,5 +528,5 @@ prog.fam:7: expected u8, found i32
 - Checking that every path through a function that gives a value ends in
   a `return`.
 - Macros defined by a program; `defer`; loops other than `while`.
-- Operators as library functions: what `+` does for each type is still in
-  the compiler.
+- The operators of integers as library functions: what `+` does for a
+  `u32` is still in the compiler.

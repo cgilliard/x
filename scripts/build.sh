@@ -23,6 +23,7 @@ fresh() {
 
 # run PROGRAM OUT IN... -- run PROGRAM under QEMU with the INs, one after
 # another, as what it reads from the serial port; what it writes is OUT.
+# $input, if set, is more for QEMU's command line, for this run only.
 # Its exit status is the program's.  bin/build.in is where the input is put
 # together; it is left there.
 run() {
@@ -36,8 +37,10 @@ run() {
                 -machine virt -m "$MEM" -cpu "$CPU" \
                 -display none -bios none \
                 -chardev file,id=ser0,path="$r_out",input-path=bin/build.in \
-                -serial chardev:ser0 \
+                -serial chardev:ser0 $input \
                 -device loader,file="$r_program",addr=0x80000000
+        r_status=$?; input=
+        return $r_status
 }
 
 # compile OUT PROGRAM IN... -- make OUT by running PROGRAM over the INs.
@@ -67,6 +70,15 @@ program() {
         echo "Building $src → $out" >&2
         printf '\005lib/rt.fam\n' > bin/build.rt
         printf '\002%s\n' "$src" > bin/build.name
+        # the same in memory, after "FAMI", which is where bin/famc looks
+        # first (src/famc/rt.fam, getc): the serial port is slow
+        input=
+        if [ "$MEM" = 128M ]; then
+                printf 'FAMI' > bin/build.fami
+                cat bin/build.fami bin/build.rt lib/rt.fam bin/build.name "$src" \
+                        bin/end.bin > bin/build.mem
+                input="-device loader,file=bin/build.mem,addr=0x87000000,force-raw=on"
+        fi
         if ! run bin/famc "$out" bin/build.rt lib/rt.fam bin/build.name "$src"; then
                 echo "build.sh: $out: error:" >&2
                 cat "$out" >&2

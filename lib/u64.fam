@@ -1,0 +1,226 @@
+// lib/u64.fam -- integers of 64 bits, without a sign.
+//
+//     use u64;
+//     let a: u64;
+//     u64::set(&a, 0, 1000);          // high word, low word
+//     let b = a * a + a;
+//
+// The machine's registers are 32 bits, so a u64 is a struct of two words,
+// and its operators are the functions here.
+
+pub struct u64 { lo: u32, hi: u32 }
+
+// set(to, hi, lo): the number whose high and low 32 bits are those.
+pub fn set(to: *u64, hi: u32, lo: u32) {
+    to.lo = lo;
+    to.hi = hi;
+}
+
+#[operator(+)]
+pub fn add(to: *u64, a: *u64, b: *u64) {
+    let lo = a.lo + b.lo;
+    let carry: u32 = 0;
+    if lo < a.lo { carry = 1; }
+    to.hi = a.hi + b.hi + carry;
+    to.lo = lo;
+}
+
+#[operator(-)]
+pub fn sub(to: *u64, a: *u64, b: *u64) {
+    let borrow: u32 = 0;
+    if a.lo < b.lo { borrow = 1; }
+    to.hi = a.hi - b.hi - borrow;
+    to.lo = a.lo - b.lo;
+}
+
+// -a: what added to a gives zero.
+#[operator(-)]
+pub fn neg(to: *u64, a: *u64) {
+    let zero: u64;
+    sub(to, &zero, a);
+}
+
+#[operator(~)]
+pub fn not(to: *u64, a: *u64) {
+    to.lo = ~a.lo;
+    to.hi = ~a.hi;
+}
+
+#[operator(&)]
+pub fn and(to: *u64, a: *u64, b: *u64) {
+    to.lo = a.lo & b.lo;
+    to.hi = a.hi & b.hi;
+}
+
+#[operator(|)]
+pub fn or(to: *u64, a: *u64, b: *u64) {
+    to.lo = a.lo | b.lo;
+    to.hi = a.hi | b.hi;
+}
+
+#[operator(^)]
+pub fn xor(to: *u64, a: *u64, b: *u64) {
+    to.lo = a.lo ^ b.lo;
+    to.hi = a.hi ^ b.hi;
+}
+
+// a << n, a >> n: n is 0 to 63.
+#[operator(<<)]
+pub fn shl(to: *u64, a: *u64, n: u32) {
+    let lo = a.lo;
+    let hi = a.hi;
+    if n >= 32 {
+        hi = lo << (n - 32);
+        lo = 0;
+    } else if n > 0 {
+        hi = hi << n | lo >> (32 - n);
+        lo = lo << n;
+    }
+    to.lo = lo;
+    to.hi = hi;
+}
+
+#[operator(>>)]
+pub fn shr(to: *u64, a: *u64, n: u32) {
+    let lo = a.lo;
+    let hi = a.hi;
+    if n >= 32 {
+        lo = hi >> (n - 32);
+        hi = 0;
+    } else if n > 0 {
+        lo = lo >> n | hi << (32 - n);
+        hi = hi >> n;
+    }
+    to.lo = lo;
+    to.hi = hi;
+}
+
+// mul32(to, x, y): the 64 bits of two words multiplied: in halves of 16
+// bits, whose products fit a word.
+fn mul32(to: *u64, x: u32, y: u32) {
+    let xl = x & 0xFFFF;
+    let xh = x >> 16;
+    let yl = y & 0xFFFF;
+    let yh = y >> 16;
+    let low = xl * yl;
+    let mid1 = xh * yl;
+    let mid2 = xl * yh;
+    let mid = mid1 + mid2;
+    let carry: u32 = 0;
+    if mid < mid1 { carry = 0x10000; }          // the middle ran over 32 bits
+    let lo = low + (mid << 16);
+    if lo < low { carry = carry + 1; }
+    to.lo = lo;
+    to.hi = xh * yh + (mid >> 16) + carry;
+}
+
+#[operator(*)]
+pub fn mul(to: *u64, a: *u64, b: *u64) {
+    let p: u64;
+    mul32(&p, a.lo, b.lo);
+    p.hi = p.hi + a.lo * b.hi + a.hi * b.lo;
+    to.lo = p.lo;
+    to.hi = p.hi;
+}
+
+#[operator(==)]
+pub fn eq(a: *u64, b: *u64) -> bool {
+    return a.lo == b.lo && a.hi == b.hi;
+}
+
+#[operator(<)]
+pub fn lt(a: *u64, b: *u64) -> bool {
+    if a.hi != b.hi { return a.hi < b.hi; }
+    return a.lo < b.lo;
+}
+
+// print_hex(a): write it as 0x and sixteen hex digits.
+pub fn print_hex(a: *u64) {
+    print("0x");
+    let word = a.hi;
+    let words = 0;
+    while words < 2 {
+        let shift = 28;
+        while shift >= 0 {
+            let digit = word >> shift as u32 & 15;
+            if digit < 10 { putc((48 + digit) as u8); } else { putc((55 + digit) as u8); }
+            shift = shift - 4;
+        }
+        word = a.lo;
+        words = words + 1;
+    }
+}
+
+#[cfg(test)]
+{
+    fn is(a: *u64, hi: u32, lo: u32) -> bool {
+        return a.hi == hi && a.lo == lo;
+    }
+
+    #[test]
+    fn adding_carries_and_subtracting_borrows() {
+        let a: u64;
+        let one: u64;
+        set(&a, 0, 0xFFFFFFFF);
+        set(&one, 0, 1);
+        let b = a + one;
+        assert(is(&b, 1, 0));
+        let c = b - one;
+        assert(is(&c, 0, 0xFFFFFFFF));
+        let d = -one;
+        assert(is(&d, 0xFFFFFFFF, 0xFFFFFFFF));
+        assert(d + one == c - c);
+    }
+
+    #[test]
+    fn multiplying_keeps_all_64_bits() {
+        let a: u64;
+        set(&a, 0, 0xFFFFFFFF);
+        let sq = a * a;
+        assert(is(&sq, 0xFFFFFFFE, 1));
+        let b: u64;
+        set(&b, 3, 5);
+        let c = b * b;                          // 9 << 64 is lost
+        assert(is(&c, 30, 25));
+    }
+
+    #[test]
+    fn shifts_cross_the_words() {
+        let one: u64;
+        set(&one, 0, 1);
+        let a = one << 40;
+        assert(is(&a, 256, 0));
+        let b = a >> 36;
+        assert(is(&b, 0, 16));
+        let c = (one << 63) >> 63;
+        assert(c == one);
+        let d = one << 0;
+        assert(d == one);
+    }
+
+    #[test]
+    fn order_looks_at_the_high_word_first() {
+        let a: u64;
+        let b: u64;
+        set(&a, 1, 0);
+        set(&b, 0, 0xFFFFFFFF);
+        assert(b < a);
+        assert(a > b);
+        assert(a >= a);
+        assert(a != b);
+        assert((a <= b) == false);
+    }
+
+    #[test]
+    fn the_bits() {
+        let a: u64;
+        set(&a, 0xF0F0F0F0, 0x12345678);
+        let n = ~a;
+        assert(is(&n, 0x0F0F0F0F, 0xEDCBA987));
+        let z = a & n;
+        assert(is(&z, 0, 0));
+        let all = a | n;
+        assert(is(&all, 0xFFFFFFFF, 0xFFFFFFFF));
+        assert((a ^ a) == z);
+    }
+}

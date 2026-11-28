@@ -15,8 +15,12 @@ the language is today):
   and `famc --cfg`.
 - Types: the integers, `bool`, pointers, function types, structs and
   arrays, checked, with no conversion that is not written. A struct or an
-  array is handled by its address and copied by a call. Wider integers are
-  not built, and the operators are still in the compiler, not the library.
+  array is handled by its address and copied by a call.
+- Operators as functions, for structs: `#[operator(+)]`. `u64` is a struct
+  in the library (`lib/u64.fam`) with its operators written that way. The
+  operators of the integers themselves are still in the compiler.
+- A library: a `use` that names no file of the program names one in
+  `lib/`.
 
 The compiler runs on a bare machine and cannot open a file. So
 `tools/famc` sends it, after the file to compile, every other `.fam` file
@@ -202,6 +206,6 @@ fn packed_size(input, n) {
 2. The interface for macros, then `if`, the loops and `return` moved out
    to the library. (Done, as `src/famc/std.fam`.)
 3. `use`, attributes, flags and tests. (Done.)
-4. Types (integers, `bool`, pointers, structs and arrays: done; `u64`
-   in the library: not yet), and operators as library functions (not
-   yet).
+4. Types (integers, `bool`, pointers, structs, arrays, and `u64` in the
+   library: done), and operators as library functions (done for structs;
+   not yet for the integers).
